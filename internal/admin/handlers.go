@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -3264,6 +3265,105 @@ func isoDownloadFilename(rawURL, requested string) (string, error) {
 	return requested, nil
 }
 
+// [bootimus-fork L1] fork-patch: iso-url-no-suffix —— 见 docs/FORK-PATCHES.md
+// 上游若自己实现了「靠探测识别不带 .iso 后缀的链接」，本块连同 resolveDownloadFilename /
+// probeRemoteISOFilename / filenameFromContentDisposition 一并删除，让上游实现在位。
+//
+// isoContentTypes are the response content types we accept as evidence that a
+// URL really serves a disc image. Mirrors are inconsistent here: some send
+// application/x-iso9660-image, many fall back to generic octet-stream.
+var isoContentTypes = map[string]bool{
+	"application/x-iso9660-image":  true,
+	"application/x-cd-image":       true,
+	"application/x-raw-disk-image": true,
+	"application/iso-image":        true,
+	"application/octet-stream":     true,
+	"binary/octet-stream":          true,
+}
+
+// resolveDownloadFilename picks the on-disk file name for a download.
+//
+// isoDownloadFilename intentionally stays strict (a URL has to end in .iso),
+// but plenty of legitimate sources hand out opaque links: Buzzheavier-style
+// file hosts, signed S3/CloudFront URLs, one-time tokens. Those have no usable
+// suffix, so before rejecting the request we ask the origin what it is about to
+// send. Only an ISO-ish Content-Type gets through, which keeps typos and
+// mistyped page URLs failing fast.
+func resolveDownloadFilename(rawURL, requested string) (string, error) {
+	filename, err := isoDownloadFilename(rawURL, requested)
+	if err == nil {
+		return filename, nil
+	}
+	if requested != "" {
+		// The caller named the file explicitly - never guess over their input.
+		return "", err
+	}
+
+	name, probeErr := probeRemoteISOFilename(rawURL)
+	if probeErr != nil {
+		return "", fmt.Errorf("%w. The server did not identify the content as a disc image either (%v); set the file name explicitly to override", err, probeErr)
+	}
+	return name, nil
+}
+
+// probeRemoteISOFilename issues a 2-byte ranged GET (servers that ignore Range
+// simply get their body closed early) and derives a .iso file name from the
+// response headers.
+func probeRemoteISOFilename(rawURL string) (string, error) {
+	client := &http.Client{Timeout: 20 * time.Second}
+
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Range", "bytes=0-1")
+	req.Header.Set("User-Agent", "bootimus/iso-download-probe")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return "", fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)
+	}
+
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	if !isoContentTypes[ct] {
+		return "", fmt.Errorf("unexpected content type %q", ct)
+	}
+
+	name := filenameFromContentDisposition(resp.Header.Get("Content-Disposition"))
+	if name == "" {
+		name = filepath.Base(resp.Request.URL.Path)
+	}
+	if name == "" || name == "." || name == "/" || name == ".." {
+		return "", fmt.Errorf("server did not report a file name")
+	}
+
+	name = filepath.Base(name)
+	if !strings.HasSuffix(strings.ToLower(name), ".iso") {
+		name += ".iso"
+	}
+	// Re-run the strict validation so path traversal / odd names are still rejected.
+	return isoDownloadFilename(rawURL, name)
+}
+
+// filenameFromContentDisposition extracts the file name from a
+// Content-Disposition header, including RFC 2231 encoded (filename*) values.
+func filenameFromContentDisposition(cd string) string {
+	if strings.TrimSpace(cd) == "" {
+		return ""
+	}
+	if _, params, err := mime.ParseMediaType(cd); err == nil {
+		if v := strings.TrimSpace(params["filename"]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL              string `json:"url"`
@@ -3300,7 +3400,9 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 		opts.SHA256 = sum
 	}
 
-	filename, err := isoDownloadFilename(req.URL, req.Filename)
+	// [bootimus-fork L1] 上游此处若不再直接依赖 isoDownloadFilename 的后缀校验，
+	// 说明上游已实现等价能力，本行改回上游写法即可（本补丁随之退役）。
+	filename, err := resolveDownloadFilename(req.URL, req.Filename)
 	if err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
 		return
@@ -3385,6 +3487,16 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 
 	if resp.StatusCode != http.StatusOK {
 		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status)
+		log.Printf("Failed to download ISO %s: %s", filename, errMsg)
+		downloadMgr.Error(filename, errMsg)
+		return
+	}
+
+	// [bootimus-fork L1] fork-patch: iso-url-no-suffix
+	// A link that quietly resolves to an HTML page (expired token, login wall,
+	// "file not found") must not be stored as an ISO.
+	if ct := strings.ToLower(resp.Header.Get("Content-Type")); strings.HasPrefix(ct, "text/html") {
+		errMsg := fmt.Sprintf("URL returned %s instead of a disc image (expired link or login page?)", ct)
 		log.Printf("Failed to download ISO %s: %s", filename, errMsg)
 		downloadMgr.Error(filename, errMsg)
 		return
