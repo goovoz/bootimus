@@ -1279,7 +1279,13 @@
                 <div class="form-group">
                     <label>ISO URL *</label>
                     <input type="url" name="url" placeholder="https://example.com/image.iso" required>
-                    <small style="color: var(--text-secondary);">Direct link to .iso file</small>
+                    <small style="color: var(--text-secondary);">Direct link to the ISO. Opaque links (signed, one-time or tokenised URLs) work too &mdash; set the file name below.</small>
+                </div>
+                <!-- [bootimus-fork L1] fork-patch: iso-url-no-suffix -->
+                <div class="form-group">
+                    <label>File name (optional)</label>
+                    <input type="text" name="filename" placeholder="ubuntu-24.04-live-server-amd64.iso" pattern=".*\.iso" title="Must end in .iso">
+                    <small style="color: var(--text-secondary);">Leave empty to derive it from the URL. Must end in .iso.</small>
                 </div>
                 <div class="form-group">
                     <label>Description</label>
