@@ -5038,6 +5038,24 @@ document.getElementById('download-form').addEventListener('submit', function(e) 
         description: formData.get('description')
     };
 
+    // [bootimus-fork L1] fork-patch: iso-url-no-suffix
+    // Pass the explicit file name when the user supplied one. This is what
+    // makes opaque download links (no .iso suffix) work from the UI.
+    const explicitName = (formData.get('filename') || '').trim();
+    if (explicitName) {
+        downloadData.filename = explicitName;
+    } else {
+        let derived = '';
+        try {
+            const parsed = new URL(downloadData.url);
+            const segs = parsed.pathname.split('/').filter(Boolean);
+            derived = segs.length ? segs[segs.length - 1] : '';
+        } catch (_) { /* url field is validated by the browser */ }
+        if (derived && !/\.iso$/i.test(derived)) {
+            showNotification('This URL does not end in .iso \u2014 the server will append it. Fill in "File name" to control the result.', 'info');
+        }
+    }
+
     // Disable submit button
     document.getElementById('download-submit-btn').disabled = true;
     document.getElementById('download-progress-container').style.display = 'block';
