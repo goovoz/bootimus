@@ -119,9 +119,11 @@ jobs:
           BODY=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RID}" --jq '.body // ""')
           # 只保留第一条 Full Changelog；清掉上一轮写的 fork 说明块，下面重新生成
           BODY=$(printf '%s\n' "$BODY" | awk '/^\*\*Full Changelog\*\*/{ if (seen++) next } { print }')
+          # 清掉上一轮写的说明块（含早期那版「这是 fork 构建」段落），下面重新生成
           BODY=$(printf '%s\n' "$BODY" | sed '/^## fork 构建信息$/,/^---$/d')
+          BODY=$(printf '%s\n' "$BODY" | sed '/^\*\*这是 fork 构建\*\*/,/^需要上游原版请取/d')
           # 用 printf 拼说明块：heredoc 里以 - 开头的行会把 YAML 块标量顶出缩进
-          NOTE=$(printf '\n## fork 构建信息\n\n- 版本串：`%s`（commit `%s`）\n- 基线上游：`%s`，加本地补丁 `iso-url-no-suffix`（不带 .iso 后缀的链接也能下载）、`i18n-zh-full`（管理台中文全量覆盖）\n- 镜像 tag：`%s:%s`、`%s:sha-%s`\n- 需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布\n\n---\n' \
+          NOTE=$(printf '\n\n## fork 构建信息\n\n- 版本串：`%s`（commit `%s`）\n- 基线上游：`%s`，加本地补丁 `iso-url-no-suffix`（不带 .iso 后缀的链接也能下载）、`i18n-zh-full`（管理台中文全量覆盖）\n- 镜像 tag：`%s:%s`、`%s:sha-%s`\n- 需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布\n\n---\n' \
             "${BUILD}" "${{ github.sha }}" "${TAG}" \
             "${IMAGE}" "${TAGVER}" "${IMAGE}" "${{ steps.version.outputs.rev }}")
           printf '%s%s\n' "$BODY" "$NOTE" > /tmp/release-body.md
