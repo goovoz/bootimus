@@ -1685,6 +1685,737 @@ function t(key, params) {
     return str;
 }
 
+// [bootimus-fork L1] fork-patch: i18n-zh-full
+// 上游的 i18n 只覆盖静态 HTML 骨架（151 个 key + data-i18n 标记），而管理台大半文案是
+// app.js 渲染时写死的英文，所以切到中文会中英混杂。本补丁不改 app.js：多挂一张
+// 「英文原文 → 译文」表，并在每次 DOM 变更后自动翻译；原文记在 WeakMap 里，切回英文可还原。
+const SOURCE_TEXT = {
+    'zh-CN': {
+        "(custom)": "（自定义）",
+        "(inherit from group or image)": "（继承自分组或镜像）",
+        "(inherit from image)": "（继承自镜像）",
+        "(none)": "（无）",
+        "(select a cluster)": "（请选择集群）",
+        "+ Add schedule": "+ 新建计划任务",
+        "0 clients": "0 个客户端",
+        "0 images": "0 个镜像",
+        "API Reference": "API 参考",
+        "Action": "操作",
+        "Action failed": "操作失败",
+        "Actions": "操作",
+        "Active": "活动",
+        "Add Client": "添加客户端",
+        "Add Client Group": "添加客户端分组",
+        "Add Cluster": "添加集群",
+        "Add Custom Distro Profile": "添加自定义发行版配置",
+        "Add Custom Tool": "添加自定义工具",
+        "Add Group": "添加分组",
+        "Add Node": "添加节点",
+        "Add Node Image": "添加节点镜像",
+        "Add User": "添加用户",
+        "Admin": "管理员",
+        "Administrator": "管理员",
+        "Again": "再次",
+        "Approved At": "批准时间",
+        "Archive Type": "归档类型",
+        "Are you sure you want to delete all extracted boot files? This will reset the image to sanboot mode. The autoinstall folder will be preserved.": "确定要删除所有已解压的启动文件吗？这会把该镜像重置为 SAN 启动模式，自动安装目录会被保留。",
+        "Are you sure you want to delete this file?": "确定要删除这个文件吗？",
+        "Assign": "分配",
+        "Assign a node image to the cluster first": "请先为该集群分配节点镜像",
+        "Assign selected clients to a group": "把选中的客户端分配到分组",
+        "Assign selected images to a group": "把选中的镜像分配到分组",
+        "Assign to Client Group": "分配到客户端分组",
+        "Assign to Group": "分配到分组",
+        "Assigned Images": "已分配镜像",
+        "Auto (next-boot, then first image)": "自动（先看下次启动设置，再取第一个镜像）",
+        "Auto-Install File": "自动安装文件",
+        "Auto-Install Type": "自动安装类型",
+        "Auto-detect": "自动检测",
+        "Auto-refresh client list every 5 seconds": "每 5 秒自动刷新客户端列表",
+        "Auto-refreshing (every 2s)": "自动刷新中（每 2 秒）",
+        "Autoinstall (Ubuntu cloud-init)": "Autoinstall（Ubuntu cloud-init）",
+        "Autoinstall (Ubuntu)": "Autoinstall（Ubuntu）",
+        "Autounattend (Windows)": "Autounattend（Windows）",
+        "BMC / Redfish (Power Control)": "BMC / Redfish（电源控制）",
+        "BMC / Redfish Defaults": "BMC / Redfish 默认值",
+        "BMC Host / IP": "BMC 主机 / IP",
+        "BMC:": "BMC：",
+        "Backup": "备份",
+        "Backup download failed": "备份下载失败",
+        "Backup download failed:": "备份下载失败：",
+        "Blank = use server default.": "留空表示使用服务器默认值。",
+        "Blank username/password/port inherit from the client group. Host is always per-client (each BMC has its own IP).": "用户名/密码/端口留空则继承客户端分组；主机地址始终按客户端单独填写（每台 BMC 都有自己的 IP）。",
+        "Boot Attempt History": "启动尝试历史",
+        "Boot Count": "启动次数",
+        "Boot History": "启动历史",
+        "Boot Image": "启动镜像",
+        "Boot Menu": "启动菜单",
+        "Boot Method": "启动方式",
+        "Boot Parameters": "启动参数",
+        "Boot Params": "启动参数",
+        "Boot Params with Squashfs": "使用 Squashfs 的启动参数",
+        "Boot from Local Disk": "从本地磁盘启动",
+        "Bootimus - Boot Menu": "Bootimus - 启动菜单",
+        "Bootimus Admin Panel": "Bootimus 管理台",
+        "Bootloader": "引导加载器",
+        "Bootloader Files *": "引导加载器文件 *",
+        "Bootloader Set": "引导加载器集",
+        "Bootloader Set Override": "覆盖引导加载器集",
+        "Bootloaders": "引导加载器",
+        "Brief description": "简要说明",
+        "Brief description of this file": "这个文件的简要说明",
+        "Built-in": "内置",
+        "Bulk Actions": "批量操作",
+        "Bulk power failed:": "批量电源操作失败：",
+        "Bundled": "随附",
+        "CSV File": "CSV 文件",
+        "Cancel": "取消",
+        "Chain (EFI)": "链式加载（EFI）",
+        "Clear": "清除",
+        "Clear Next Boot": "清除下次启动设置",
+        "Clear Next Boot on All": "清除全部的下次启动设置",
+        "Clear selection": "清除选择",
+        "Click \"Refresh Now\" to load server logs...": "点击“立即刷新”加载服务器日志……",
+        "Client": "客户端",
+        "Client Group": "客户端分组",
+        "Client Groups": "客户端分组",
+        "Client created successfully": "客户端创建成功",
+        "Client deleted successfully": "客户端已删除",
+        "Client group created": "客户端分组已创建",
+        "Client group deleted": "客户端分组已删除",
+        "Client group saved": "客户端分组已保存",
+        "Client updated successfully": "客户端已更新",
+        "Clients": "客户端",
+        "Close": "关闭",
+        "Cluster Nodes": "集群节点",
+        "Clusters": "集群",
+        "Config Patch (optional)": "配置补丁（可选）",
+        "Configs": "配置文件",
+        "Configure": "配置",
+        "Configure the PXE boot menu seen by clients — title, timeout, and default fallback action. Console resolution may not be supported by all iPXE firmware builds.": "配置客户端看到的 PXE 启动菜单——标题、超时时间和默认兜底动作。部分 iPXE 固件可能不支持设置控制台分辨率。",
+        "Connection error": "连接错误",
+        "Content": "内容",
+        "Control plane machine config": "控制平面节点配置",
+        "Copy": "复制",
+        "Create Bootloader Set": "创建引导加载器集",
+        "Create Client": "创建客户端",
+        "Create Cluster": "创建集群",
+        "Create Group": "创建分组",
+        "Create Profile": "创建配置",
+        "Create Schedule": "创建计划任务",
+        "Create Set": "创建集",
+        "Create Tool": "创建工具",
+        "Create User": "创建用户",
+        "Create failed:": "创建失败：",
+        "Created": "创建时间",
+        "Cron Expression": "Cron 表达式",
+        "Current next boot:": "当前下次启动：",
+        "Custom": "自定义",
+        "Daily at 03:00": "每天 03:00",
+        "Default": "默认",
+        "Default (global setting)": "默认（全局设置）",
+        "Default Boot Parameters": "默认启动参数",
+        "Default Install Disk": "默认安装磁盘",
+        "Default Menu Item": "默认菜单项",
+        "Default installation config for every machine in this group. Individual clients can still override.": "本分组内所有机器的默认安装配置。单个客户端仍可自行覆盖。",
+        "Delay between each WOL/next-boot action to avoid broadcast storms.": "每次 WOL／下次启动操作之间的间隔，用于避免广播风暴。",
+        "Delete": "删除",
+        "Delete Boot Folder": "删除启动目录",
+        "Delete Files": "删除文件",
+        "Delete ISO": "删除 ISO",
+        "Delete Set": "删除集",
+        "Delete failed:": "删除失败：",
+        "Delete selected clients": "删除选中的客户端",
+        "Delete selected images": "删除选中的镜像",
+        "Delete this schedule?": "确定删除这个计划任务？",
+        "Description": "描述",
+        "Destination Path": "目标路径",
+        "Direct link to the ISO. Opaque links (signed, one-time or tokenised URLs) work too — set the file name below.": "ISO 直链。带签名、一次性或 token 的形式也能用 —— 在下面填写文件名即可。",
+        "Disable": "停用",
+        "Disable selected clients": "停用选中的客户端",
+        "Disable selected images": "停用选中的镜像",
+        "Disabled": "已停用",
+        "Display Name": "显示名称",
+        "Distro Profile": "发行版配置",
+        "Download": "下载",
+        "Download ISO from URL": "从 URL 下载 ISO",
+        "Download URL": "下载地址",
+        "Download bootable USB images for machines that don't support PXE network booting. Write to a USB stick and boot from it to access the bootimus menu.": "为不支持 PXE 网络启动的机器下载可启动 U 盘镜像。写入 U 盘后从它启动即可进入 Bootimus 菜单。",
+        "Download the kernel/initrd netboot bundle from the distro mirror": "从发行版镜像站下载内核/initrd 网络启动包",
+        "Downloaded": "已下载",
+        "Downloaded ✓": "已下载 ✓",
+        "Downloads": "下载",
+        "Drop to iPXE shell": "进入 iPXE 命令行",
+        "EXPERIMENTAL": "实验性",
+        "Edit": "编辑",
+        "Edit Client": "编辑客户端",
+        "Edit Cluster": "编辑集群",
+        "Edit File": "编辑文件",
+        "Edit Group": "编辑分组",
+        "Edit User": "编辑用户",
+        "Edit in UI": "在界面中编辑",
+        "Empty directory": "空目录",
+        "Enable": "启用",
+        "Enable Auto-Install": "启用自动安装",
+        "Enable outbound webhook": "启用出站 Webhook",
+        "Enable selected clients": "启用选中的客户端",
+        "Enable selected images": "启用选中的镜像",
+        "Enabled": "已启用",
+        "Enter your auto-install script content here...": "在此输入自动安装脚本内容……",
+        "Error": "错误",
+        "Events": "事件",
+        "Every 15 minutes": "每 15 分钟",
+        "Every hour": "每小时",
+        "Extra Kernel Params": "额外内核参数",
+        "Extract": "解压",
+        "Extracting...": "解压中……",
+        "Failed to add node": "添加节点失败",
+        "Failed to add node image": "添加节点镜像失败",
+        "Failed to clear bulk next boot": "批量清除下次启动设置失败",
+        "Failed to copy": "复制失败",
+        "Failed to create client": "创建客户端失败",
+        "Failed to create client group": "创建客户端分组失败",
+        "Failed to delete client": "删除客户端失败",
+        "Failed to delete client group": "删除客户端分组失败",
+        "Failed to delete cluster": "删除集群失败",
+        "Failed to delete image": "删除镜像失败",
+        "Failed to delete node image": "删除节点镜像失败",
+        "Failed to download netboot files": "下载网络启动文件失败",
+        "Failed to download node image": "下载节点镜像失败",
+        "Failed to extract image": "解压镜像失败",
+        "Failed to load ISO catalogue": "加载 ISO 清单失败",
+        "Failed to load USB images": "加载 U 盘镜像失败",
+        "Failed to load boot history.": "加载启动历史失败。",
+        "Failed to load client": "加载客户端失败",
+        "Failed to load client group": "加载客户端分组失败",
+        "Failed to load client groups": "加载客户端分组失败",
+        "Failed to load clients": "加载客户端列表失败",
+        "Failed to load cluster nodes": "加载集群节点失败",
+        "Failed to load clusters": "加载集群失败",
+        "Failed to load file browser": "加载文件浏览器失败",
+        "Failed to load files": "加载文件失败",
+        "Failed to load group": "加载分组失败",
+        "Failed to load groups": "加载分组失败",
+        "Failed to load images": "加载镜像失败",
+        "Failed to load logs": "加载日志失败",
+        "Failed to load node images": "加载节点镜像失败",
+        "Failed to load profiles": "加载配置失败",
+        "Failed to load server info": "加载服务器信息失败",
+        "Failed to load template": "加载模板失败",
+        "Failed to save client group": "保存客户端分组失败",
+        "Failed to save cluster": "保存集群失败",
+        "Failed to save configs": "保存配置失败",
+        "Failed to save theme": "保存主题失败",
+        "Failed to scan images": "扫描镜像失败",
+        "Failed to send bulk wake": "批量唤醒失败",
+        "Failed to set boot method": "设置启动方式失败",
+        "Failed to set bulk next boot": "批量设置下次启动失败",
+        "Failed to update client": "更新客户端失败",
+        "Failed to update image": "更新镜像失败",
+        "Family": "系列",
+        "File": "文件",
+        "File *": "文件 *",
+        "File name (optional)": "文件名（可选）",
+        "Filename": "文件名",
+        "Filename Patterns": "文件名匹配规则",
+        "Filename Patterns (comma-separated)": "文件名匹配规则（逗号分隔）",
+        "Filename of the image to set as the next boot": "要设为下次启动的镜像文件名",
+        "Filter clients…": "筛选客户端……",
+        "Filter endpoints…": "筛选端点……",
+        "Filter files…": "筛选文件……",
+        "Filter groups…": "筛选分组……",
+        "Filter images…": "筛选镜像……",
+        "Filter users…": "筛选用户……",
+        "Filter…": "筛选……",
+        "Force Off": "强制关机",
+        "Force Off All": "全部强制关机",
+        "Graceful Off": "正常关机",
+        "Group": "分组",
+        "Group Name *": "分组名称 *",
+        "Group clients by their assigned client group": "按所属客户端分组归类",
+        "Group images by their assigned folder": "按所属目录归类",
+        "Group overlay: inherits allowed images and participates in bulk actions.": "分组叠加：继承允许的镜像，并参与批量操作。",
+        "Hardware Information": "硬件信息",
+        "Hardware Inventory History": "硬件清单历史",
+        "Hold Ctrl/Cmd to select multiple. Clients can belong to only one group.": "按住 Ctrl/Cmd 可多选。一个客户端只能属于一个分组。",
+        "Hold Ctrl/Cmd to select multiple. Public images are shown separately if enabled above.": "按住 Ctrl/Cmd 可多选。若上方已启用，公开镜像会单独显示。",
+        "IP Address": "IP 地址",
+        "ISO Image": "ISO 镜像",
+        "ISO URL *": "ISO 地址 *",
+        "Image": "镜像",
+        "Image Filename": "镜像文件名",
+        "Image Groups": "镜像分组",
+        "Image Ref": "镜像引用",
+        "Image Reference": "镜像引用",
+        "Image deleted successfully": "镜像已删除",
+        "Images": "镜像",
+        "Import": "导入",
+        "Import Clients from CSV": "从 CSV 导入客户端",
+        "Import failed:": "导入失败：",
+        "Include in autoinstall": "包含在自动安装中",
+        "Initrd Path": "initrd 路径",
+        "Initrd Paths (comma-separated)": "initrd 路径（逗号分隔）",
+        "Install Disk": "安装磁盘",
+        "Kernel": "内核",
+        "Kernel Paths (comma-separated)": "内核路径（逗号分隔）",
+        "Kernel/Binary Path": "内核/二进制路径",
+        "Kernel/Initrd": "内核/initrd",
+        "Kickstart (RHEL)": "Kickstart（RHEL）",
+        "Kickstart (RHEL/CentOS/Fedora/Rocky)": "Kickstart（RHEL/CentOS/Fedora/Rocky）",
+        "Kubernetes clusters that bootimus boots nodes into. Each cluster picks a node image for its OS; use Configure to edit or upload its join configs.": "Bootimus 启动节点加入的 Kubernetes 集群。每个集群选定一个节点镜像作为其操作系统；用「配置」编辑或上传加入配置。",
+        "Lab Machine 1": "实验室机器 1",
+        "Language": "语言",
+        "Last Boot": "最近启动",
+        "Last Login": "最近登录",
+        "Leave empty to derive it from the URL. Must end in .iso.": "留空则从 URL 推断，必须以 .iso 结尾。",
+        "Leave empty to keep original filename": "留空则保留原文件名",
+        "Leave empty to use the cluster's default install disk.": "留空则使用集群的默认安装磁盘。",
+        "Linux Distributions": "Linux 发行版",
+        "Load failed": "加载失败",
+        "Load template": "加载模板",
+        "Loading files...": "正在加载文件……",
+        "Loading...": "加载中……",
+        "Loading…": "加载中……",
+        "Logs": "日志",
+        "MAC Address": "MAC 地址",
+        "MAC Address *": "MAC 地址 *",
+        "Make Static": "转为静态",
+        "Manufacturer": "厂商",
+        "Mark Installed": "标记为已安装",
+        "Max file size: 100MB. Files will be automatically downloaded during OS installation.": "单个文件上限 100MB。安装操作系统时会自动下载这些文件。",
+        "Max file size: 100MB. This file will be available to all clients.": "单个文件上限 100MB。该文件对所有客户端可见。",
+        "Members": "成员",
+        "Members inherit these on top of their own allowlist.": "成员在自身白名单之上继承这些设置。",
+        "Memory": "内存",
+        "Menu Timeout (seconds)": "菜单超时（秒）",
+        "Menu Title": "菜单标题",
+        "Minimum 8 characters": "至少 8 个字符",
+        "Mirror URLs and release versions can drift": "镜像站地址与发行版本可能会漂移",
+        "Must end in .iso": "必须以 .iso 结尾",
+        "NO AUTH": "无认证",
+        "Name": "名称",
+        "Name (unique ID)": "名称（唯一 ID）",
+        "Name *": "名称 *",
+        "Name and cron expression are required": "名称和 Cron 表达式为必填",
+        "New Auto-Install File": "新建自动安装文件",
+        "New File": "新建文件",
+        "New Password *": "新密码 *",
+        "New password": "新密码",
+        "Next Boot": "下次启动",
+        "No USB boot images available.": "暂无可用的 U 盘启动镜像。",
+        "No active sessions": "没有活动的会话",
+        "No auto-install files yet. Click": "还没有自动安装文件，点击",
+        "No boot history for this client yet.": "该客户端还没有启动历史。",
+        "No boot logs yet.": "还没有启动日志。",
+        "No bootloaders found.": "未找到引导加载器。",
+        "No clients to export": "没有可导出的客户端",
+        "No clients yet. Add one to get started.": "还没有客户端，添加一个开始使用。",
+        "No clusters yet. Add one to get started.": "还没有集群，添加一个开始使用。",
+        "No endpoints match the filter.": "没有匹配筛选条件的端点。",
+        "No extracted files found. Extract the kernel first to browse files.": "没有已解压的文件，请先解压内核再浏览文件。",
+        "No files for this image yet.": "该镜像还没有文件。",
+        "No files found for this image.": "未找到该镜像的文件。",
+        "No files yet. Upload bootloader files or place them in": "还没有文件，上传引导加载器文件或放到",
+        "No groups found.": "未找到分组。",
+        "No images": "没有镜像",
+        "No images yet. Upload or scan for ISOs.": "还没有镜像，上传或扫描 ISO 即可。",
+        "No inventory history.": "没有硬件清单历史。",
+        "No logs available. Logs will appear here as the server runs.": "暂无日志。服务器运行后日志会显示在这里。",
+        "No matches.": "无匹配结果。",
+        "No node images yet. Add one to get started.": "还没有节点镜像，添加一个开始使用。",
+        "No nodes in this cluster yet. Use Add Node to assign one.": "该集群还没有节点，用「添加节点」分配一个。",
+        "No profiles loaded.": "未加载任何配置。",
+        "No public files found. Upload your first public file to get started.": "还没有公开文件，上传第一个公开文件开始使用。",
+        "No schedules yet.": "还没有计划任务。",
+        "No tools available.": "没有可用的工具。",
+        "No users found": "未找到用户",
+        "Node": "节点",
+        "Node Image": "节点镜像",
+        "Node Images": "节点镜像",
+        "Nodes": "节点",
+        "Nodes assigned to a cluster. Add a node by its MAC address. Reinstall wipes the node and reprovisions it on next PXE boot; Remove from cluster detaches the node.": "已分配到集群的节点。用 MAC 地址添加节点。重装会清空该节点并在下次 PXE 启动时重新部署；从集群移除则会解除关联。",
+        "None": "无",
+        "None (Root Level)": "无（根层级）",
+        "Not set": "未设置",
+        "On": "开",
+        "Operating system images that bootimus hosts and boots nodes with. Add an image for a provider, then download it so the kernel and initrd are cached locally. Clusters pick a node image to determine their OS.": "Bootimus 托管并用于启动节点的操作系统镜像。先为某个提供方添加镜像，再下载它，让内核与 initrd 缓存到本地。集群通过选定节点镜像来决定其操作系统。",
+        "Operations": "操作",
+        "Optional description": "可选描述",
+        "Optional kernel parameters": "可选内核参数",
+        "Optional kernel params. Use {{HTTP_URL}} for server URL.": "可选内核参数。用 {{HTTP_URL}} 表示服务器地址。",
+        "Optional — auto-named if blank": "可选 —— 留空则自动命名",
+        "Order": "顺序",
+        "Organise images into groups and subgroups for the PXE boot menu.": "把镜像组织成分组和子分组，用于 PXE 启动菜单。",
+        "Overlay Allowed Images": "叠加允许的镜像",
+        "Override the global bootloader set for this client.": "为该客户端覆盖全局引导加载器集。",
+        "Override the installation config for this machine specifically. Leave blank to inherit from the client group, or fall back to the image's default.": "为这台机器单独覆盖安装配置。留空则继承客户端分组，再回退到镜像的默认配置。",
+        "POST a JSON payload to a URL when PXE events happen. Fire-and-forget, 10s timeout, no retries.": "PXE 事件发生时向指定 URL POST 一份 JSON。发出即忘，10 秒超时，不重试。",
+        "PUBLIC": "公开",
+        "Parameter": "参数",
+        "Parent": "父级",
+        "Parent Group": "父分组",
+        "Password": "密码",
+        "Password *": "密码 *",
+        "Patch SMB": "应用 SMB 补丁",
+        "Path within extracted archive or filename for binary": "已解压归档内的路径，或二进制文件名",
+        "Paths to try inside the ISO": "在 ISO 内尝试的路径",
+        "Pick an image first": "请先选择镜像",
+        "Platform": "平台",
+        "Please select a file": "请选择文件",
+        "Port": "端口",
+        "Power (Redfish)": "电源（Redfish）",
+        "Power On": "开机",
+        "Power On All": "全部开机",
+        "Power:": "电源：",
+        "Preseed (Debian)": "Preseed（Debian）",
+        "Preseed (Debian/Ubuntu)": "Preseed（Debian/Ubuntu）",
+        "Preset": "预设",
+        "Product": "产品",
+        "Profile ID": "配置 ID",
+        "Provide at least one config document": "请至少提供一份配置文档",
+        "Provider": "提供方",
+        "Provider config patch applied on top of the role config for this node.": "在该节点角色配置之上叠加的提供方配置补丁。",
+        "Public (available to all clients)": "公开（所有客户端可用）",
+        "Public Files": "公开文件",
+        "Querying…": "查询中……",
+        "Quick Actions": "快捷操作",
+        "Reboot": "重启",
+        "Record of all PXE boot attempts by clients.": "所有客户端 PXE 启动尝试的记录。",
+        "Recurring bulk actions against this group. All times are server-local.": "针对该分组的周期性批量操作。时间均为服务器本地时间。",
+        "Redfish Action": "Redfish 动作",
+        "Reinstall": "重装",
+        "Reload file list": "重新加载文件列表",
+        "Remove": "移除",
+        "Remove from cluster": "从集群移除",
+        "Replace": "替换",
+        "Reset Extraction": "重置解压结果",
+        "Reset Password": "重置密码",
+        "Restart": "重启",
+        "Restart All": "全部重启",
+        "Restore is manual: stop bootimus, extract the tarball over the data directory, start bootimus.": "恢复需要手动操作：停止 bootimus，把压缩包解压覆盖到数据目录，再启动 bootimus。",
+        "Restore the original boot.wim and remove the SMB share": "还原原始 boot.wim 并移除 SMB 共享",
+        "Retry": "重试",
+        "Rewrite boot.wim so WinPE auto-mounts the SMB share and launches setup.exe": "改写 boot.wim，让 WinPE 自动挂载 SMB 共享并启动 setup.exe",
+        "Role": "角色",
+        "Run Now": "立即执行",
+        "Run against all enabled members. Save any pending changes to membership first.": "对全部已启用成员执行。请先保存尚未提交的成员变更。",
+        "Run failed:": "执行失败：",
+        "Save": "保存",
+        "Save Changes": "保存更改",
+        "Save Configs": "保存配置",
+        "Save Configuration": "保存配置",
+        "Save Group": "保存分组",
+        "Save URL": "保存地址",
+        "Save as (optional)": "保存为（可选）",
+        "Save failed:": "保存失败：",
+        "Saved ✓": "已保存 ✓",
+        "Schedule created": "计划任务已创建",
+        "Scheduled Tasks": "计划任务",
+        "Script Content": "脚本内容",
+        "Script Type": "脚本类型",
+        "Script will be served at: http://server:port/autoinstall/<filename>": "脚本将通过以下地址提供：http://server:port/autoinstall/<filename>",
+        "Select a cluster first": "请先选择一个集群",
+        "Select a cluster to view its nodes.": "选择一个集群以查看其节点。",
+        "Select a distro…": "选择发行版……",
+        "Select an image to boot on the next PXE boot. This is a one-time action that clears after use.": "选择下次 PXE 启动时要启动的镜像。这是一次性操作，用后自动清除。",
+        "Select one or more iPXE bootloader files (.efi, .kpxe, .usb, etc.).": "选择一个或多个 iPXE 引导加载器文件（.efi、.kpxe、.usb 等）。",
+        "Select the installation script format": "选择安装脚本格式",
+        "Send Wake-on-LAN to selected clients": "向选中的客户端发送 Wake-on-LAN",
+        "Sending…": "发送中……",
+        "Serial": "序列号",
+        "Server Info": "服务器信息",
+        "Set & Wake": "设置并唤醒",
+        "Set Name *": "集名称 *",
+        "Set Next Boot": "设置下次启动",
+        "Set Next Boot Action": "设置下次启动动作",
+        "Set Next Boot Image": "设置下次启动镜像",
+        "Set Next Boot on All": "为全部设置下次启动",
+        "Settings": "设置",
+        "Shared credentials for group members. Individual clients can override. Host is per-client only.": "分组成员的共享凭据。单个客户端可以覆盖。主机地址只能按客户端单独填写。",
+        "Short description": "简短描述",
+        "Show public images": "显示公开镜像",
+        "Single Binary": "单个二进制",
+        "Size": "大小",
+        "Skip TLS verify": "跳过 TLS 校验",
+        "Squashfs Paths (comma-separated)": "Squashfs 路径（逗号分隔）",
+        "Stagger": "错峰",
+        "Stagger Delay (ms)": "错峰间隔（毫秒）",
+        "Start Download": "开始下载",
+        "Starting...": "正在启动……",
+        "State": "状态",
+        "Status": "状态",
+        "Stopped": "已停止",
+        "Substrings to match in ISO filenames": "在 ISO 文件名中匹配的子串",
+        "That file is already being uploaded": "该文件正在上传中",
+        "The OS image nodes in this cluster boot. Manage images in the Node Images section.": "本集群节点启动所用的操作系统镜像。在「节点镜像」中管理镜像。",
+        "The machine join configs nodes boot with. Edit them in the browser or upload files generated outside bootimus. Configs must match the cluster's node image provider. An empty field leaves that config unchanged.": "节点启动时使用的机器加入配置。可以在浏览器里编辑，也可以上传在 Bootimus 之外生成的文件。配置必须与集群的节点镜像提供方匹配。留空的字段不会改动对应配置。",
+        "Theme saved successfully": "主题已保存",
+        "This cluster has no node image assigned yet. Assign a node image first to load templates.": "该集群还没有分配节点镜像。请先分配节点镜像以加载模板。",
+        "Time": "时间",
+        "Time before auto-booting the default entry. Set to 0 to disable (wait forever).": "自动启动默认项之前的等待时间。设为 0 表示不自动启动（一直等待）。",
+        "Toggle dark mode": "切换深色模式",
+        "Toggle failed:": "切换失败：",
+        "Tools": "工具",
+        "Type": "类型",
+        "URL is required": "必须填写 URL",
+        "USB Boot Images": "U 盘启动镜像",
+        "Unassigned": "未分配",
+        "Ungrouped": "未分组",
+        "Unpatch SMB": "移除 SMB 补丁",
+        "Update Client": "更新客户端",
+        "Update Cluster": "更新集群",
+        "Update Group": "更新分组",
+        "Update User": "更新用户",
+        "Upload": "上传",
+        "Upload Auto-Install File": "上传自动安装文件",
+        "Upload File": "上传文件",
+        "Upload Files": "上传文件",
+        "Upload ISO Image": "上传 ISO 镜像",
+        "Upload New File": "上传新文件",
+        "Upload Public File": "上传公开文件",
+        "Upload failed: network error": "上传失败：网络错误",
+        "Upload files": "上传文件",
+        "Uploading": "上传中",
+        "Uploading…": "上传中……",
+        "Used when squashfs is detected. Leave empty to use default params.": "检测到 squashfs 时使用。留空则用默认参数。",
+        "User": "用户",
+        "Username": "用户名",
+        "Username *": "用户名 *",
+        "Users": "用户",
+        "Version": "版本",
+        "View History": "查看历史",
+        "WOL Broadcast": "WOL 广播地址",
+        "WOL Broadcast Override": "覆盖 WOL 广播地址",
+        "Wake": "唤醒",
+        "Wake All (WOL)": "全部唤醒（WOL）",
+        "Wake-on-LAN after assigning": "分配后发送 Wake-on-LAN",
+        "Webhook": "Webhook",
+        "Webhook URL": "Webhook 地址",
+        "Webhook saved": "Webhook 已保存",
+        "Weekdays at 08:00": "工作日 08:00",
+        "Weekdays at 18:00": "工作日 18:00",
+        "Weekly, Sunday midnight": "每周日零点",
+        "When enabled, boot parameters will be automatically injected to use this script": "启用后会自动注入启动参数以使用该脚本",
+        "Where to save on installed system": "在已安装系统中保存的位置",
+        "Worker machine config": "工作节点配置",
+        "Writing to USB:": "正在写入 U 盘：",
+        "ZIP Archive": "ZIP 压缩包",
+        "e.g. /live/filesystem.squashfs": "例如 /live/filesystem.squashfs",
+        "e.g. /live/initrd.img, /boot/initrd": "例如 /live/initrd.img、/boot/initrd",
+        "e.g. /live/vmlinuz, /boot/vmlinuz": "例如 /live/vmlinuz、/boot/vmlinuz",
+        "e.g. My Distro": "例如 My Distro",
+        "e.g. My Tool": "例如 My Tool",
+        "e.g. boot=live fetch={{SQUASHFS}}": "例如 boot=live fetch={{SQUASHFS}}",
+        "e.g. boot=live ip=dhcp": "例如 boot=live ip=dhcp",
+        "e.g. debian, arch, redhat": "例如 debian、arch、redhat",
+        "e.g. initrd.img (optional)": "例如 initrd.img（可选）",
+        "e.g. ipxe-1.21.1": "例如 ipxe-1.21.1",
+        "e.g. kiosk.xml, server.cfg": "例如 kiosk.xml、server.cfg",
+        "e.g. lab1-workstations": "例如 lab1-workstations",
+        "e.g. my-distro": "例如 my-distro",
+        "e.g. my-tool": "例如 my-tool",
+        "e.g. mydistro, my-distro": "例如 mydistro、my-distro",
+        "e.g. prod-cluster": "例如 prod-cluster",
+        "e.g. vmlinuz or tool.efi": "例如 vmlinuz 或 tool.efi",
+        "e.g. weekday-morning-wake": "例如 weekday-morning-wake",
+        "e.g., /root/setup.sh": "例如 /root/setup.sh",
+        "📁 Click to select or drag & drop ISO file": "📁 点击选择或把 ISO 文件拖到这里",
+        "Refresh": "刷新",
+        "Refresh Now": "立即刷新",
+        "Get Images": "获取镜像",
+        "Check for Updates": "检查更新",
+        "Auto-refresh": "自动刷新",
+        "Start Auto-Refresh": "开始自动刷新",
+        "Stop Auto-Refresh": "停止自动刷新",
+        "Export CSV": "导出 CSV",
+        "Import CSV": "导入 CSV",
+        "Upload ISO": "上传 ISO",
+        "Download ISO": "下载 ISO",
+        "Scan for ISOs": "扫描 ISO",
+        "Add Image Group": "添加镜像分组",
+        "Add Custom Profile": "添加自定义配置",
+        "Save Webhook": "保存 Webhook",
+        "Send Test": "发送测试",
+        "Download Backup": "下载备份",
+        "Control Plane Config": "控制平面配置",
+        "Worker Config": "工作节点配置",
+        "Control Plane": "控制平面",
+        "Worker": "工作节点",
+        "Loading clients...": "正在加载客户端……",
+        "Loading client groups...": "正在加载客户端分组……",
+        "Loading node images...": "正在加载节点镜像……",
+        "Loading clusters...": "正在加载集群……",
+        "Loading images...": "正在加载镜像……",
+        "Loading groups...": "正在加载分组……",
+        "Loading users...": "正在加载用户……",
+        "Loading tools...": "正在加载工具……",
+        "Loading profiles...": "正在加载配置……",
+        "Loading bootloaders...": "正在加载引导加载器……",
+        "Loading logs...": "正在加载日志……",
+        "Cluster:": "集群：",
+        "Server:": "服务器：",
+        "Image:": "镜像：",
+        "Client:": "客户端：",
+        "Client Group:": "客户端分组：",
+        "will be moved to the selected group.": "将被移动到选中的分组。",
+        "Action when the timeout fires. Set to": "超时后的动作。设为",
+        "to leave clients PXE-booting and have them fall through to local boot. A pending next-boot image always takes priority.": "，表示让客户端继续 PXE 启动并回落到本地启动。待处理的下次启动镜像始终优先。",
+        "— a client began booting an image": "—— 客户端开始启动某个镜像",
+        "— a new MAC connected for the first time": "—— 新的 MAC 首次连接",
+        "— hardware info refreshed for an existing client": "—— 已有客户端的硬件信息被刷新",
+        "— 5 fields": "—— 5 个字段",
+        "Download a": "下载",
+        "of the bootimus data directory: database, bootloader configuration, custom bootloader sets, and settings. ISOs and downloaded tool binaries are excluded (they're reproducible).": "（bootimus 数据目录）：数据库、引导加载器配置、自定义引导加载器集与各项设置。ISO 与已下载的工具二进制不包含在内（可重新获取）。",
+        "All endpoints require authentication except where marked": "所有端点都需要认证，标记为",
+        ". Responses are JSON of the form": "的除外。响应为如下形式的 JSON：",
+        ". Placeholders are shown as": "。占位符写作",
+        "Creates a directory in": "在",
+        ". Use a descriptive name.": "下创建目录。请使用描述性的名称。",
+        "Placeholders:": "占位符：",
+        "Placeholders substituted per-client at serve time:": "占位符在提供服务时按客户端替换：",
+        "CSV columns:": "CSV 列：",
+        "(required),": "（必填）、",
+        "(pipe-separated),": "（竖线分隔）、",
+        ". A header row is expected. Existing clients (matched by MAC) are updated; unknown MACs are created.": "。需要有表头行。已存在的客户端（按 MAC 匹配）会被更新，未知 MAC 会被创建。",
+        "Download popular Linux distributions directly from official mirrors. Switch the mirror per row, edit the URL freely if you need to point somewhere else, then hit Download.": "直接从官方镜像站下载常用 Linux 发行版。可以逐行切换镜像站，必要时也可以修改 URL 指向别处，然后点下载。",
+        "— please report issues so the catalogue can be kept up to date.": "—— 有问题请反馈，以便持续维护这份清单。",
+        "Files for": "文件：",
+        "Upload Files to": "上传文件到",
+        "Add Node to": "添加节点到",
+        "Auto-Install Script for": "自动安装脚本：",
+        "Download a tool to make it available, then enable it to show in the boot menu.": "下载工具后即可使用，再启用它就会出现在启动菜单中。",
+        "Select a distro or upload your own script, then save it to make it available to clients.": "选择一个发行版或上传自己的脚本，保存后即可供客户端使用。",
+        "No groups found. Click": "未找到分组，点击"
+    }
+};
+
+const _SRC_ATTRS = ['title', 'placeholder', 'aria-label'];
+const _srcTextMemo = new WeakMap();
+const _srcAttrMemo = new WeakMap();
+let _autoObserver = null;
+let _autoTimer = null;
+let _applying = false;
+let _titleSrc = null;
+
+function _srcDict() {
+    return SOURCE_TEXT[_currentLang] || null;
+}
+
+function _normSpace(s) {
+    return String(s).replace(/\s+/g, ' ').trim();
+}
+
+function _translateTextNodes(root) {
+    if (!root) return;
+    const dict = _srcDict();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+            const p = node.parentNode;
+            if (!p) return NodeFilter.FILTER_REJECT;
+            const tag = p.nodeName;
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA' ||
+                tag === 'CODE' || tag === 'PRE') {
+                return NodeFilter.FILTER_REJECT;
+            }
+            return NodeFilter.FILTER_ACCEPT;
+        }
+    });
+    const pending = [];
+    let node;
+    while ((node = walker.nextNode())) {
+        const raw = node.nodeValue;
+        if (!raw || !raw.trim()) continue;
+        const memo = _srcTextMemo.get(node);
+        if (memo && raw === memo.out) {
+            if (!dict) pending.push([node, memo.src]);
+            continue;
+        }
+        if (memo) _srcTextMemo.delete(node);
+        if (!dict) continue;
+        const hit = dict[_normSpace(raw)];
+        if (hit === undefined) continue;
+        const lead = raw.match(/^\s*/)[0];
+        const trail = raw.match(/\s*$/)[0];
+        const out = lead + hit + trail;
+        _srcTextMemo.set(node, { src: raw, out: out });
+        if (raw !== out) pending.push([node, out]);
+    }
+    for (const item of pending) item[0].nodeValue = item[1];
+}
+
+function _translateAttrs(root) {
+    if (!root || !root.querySelectorAll) return;
+    const dict = _srcDict();
+    const writes = [];
+    root.querySelectorAll('[title],[placeholder],[aria-label]').forEach(el => {
+        let memo = _srcAttrMemo.get(el);
+        if (!memo) {
+            memo = {};
+            _srcAttrMemo.set(el, memo);
+        }
+        for (const attr of _SRC_ATTRS) {
+            if (!el.hasAttribute(attr)) continue;
+            const raw = el.getAttribute(attr);
+            if (raw === null) continue;
+            const m = memo[attr];
+            if (m && raw === m.out) {
+                if (!dict) writes.push([el, attr, m.src]);
+                continue;
+            }
+            if (m) delete memo[attr];
+            if (!dict) continue;
+            const hit = dict[_normSpace(raw)];
+            if (hit === undefined) continue;
+            memo[attr] = { src: raw, out: hit };
+            writes.push([el, attr, hit]);
+        }
+    });
+    for (const w of writes) w[0].setAttribute(w[1], w[2]);
+}
+
+function _translateTitle() {
+    if (_titleSrc === null) _titleSrc = document.title;
+    const dict = _srcDict();
+    if (!dict) {
+        if (document.title !== _titleSrc) document.title = _titleSrc;
+        return;
+    }
+    const hit = dict[_normSpace(_titleSrc)];
+    if (hit !== undefined && document.title !== hit) document.title = hit;
+}
+
+function _applyAll() {
+    if (_applying || !document.body) return;
+    _applying = true;
+    try {
+        applyTranslations(document);
+        _translateTextNodes(document.body);
+        _translateAttrs(document);
+        _translateTitle();
+    } finally {
+        _applying = false;
+        if (_autoObserver) _autoObserver.takeRecords();
+    }
+}
+
+function _installAutoTranslate() {
+    if (_autoObserver || typeof MutationObserver === 'undefined' || !document.body) return;
+    _autoObserver = new MutationObserver(() => {
+        if (_applying || _autoTimer) return;
+        _autoTimer = setTimeout(() => {
+            _autoTimer = null;
+            _applyAll();
+        }, 30);
+    });
+    _autoObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: _SRC_ATTRS
+    });
+}
+
 const _COMMON_BUTTON_MAP = {
     'Cancel': 'common.cancel',
     'Save': 'common.save',
@@ -1713,19 +2444,23 @@ function applyTranslations(root) {
             }
         }
         if (lastText) {
-            lastText.nodeValue = lastText.nodeValue.replace(/\S.*\S|\S/, text);
-        } else {
+            const next = lastText.nodeValue.replace(/\S.*\S|\S/, text);
+            if (lastText.nodeValue !== next) lastText.nodeValue = next;
+        } else if (el.textContent !== text) {
             el.textContent = text;
         }
     });
     root.querySelectorAll('[data-i18n-title]').forEach(el => {
-        el.title = t(el.getAttribute('data-i18n-title'));
+        const next = t(el.getAttribute('data-i18n-title'));
+        if (el.title !== next) el.title = next;
     });
     root.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
-        el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
+        const next = t(el.getAttribute('data-i18n-placeholder'));
+        if (el.placeholder !== next) el.placeholder = next;
     });
     root.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
-        el.setAttribute('aria-label', t(el.getAttribute('data-i18n-aria-label')));
+        const next = t(el.getAttribute('data-i18n-aria-label'));
+        if (el.getAttribute('aria-label') !== next) el.setAttribute('aria-label', next);
     });
 }
 
@@ -1738,7 +2473,7 @@ function setLanguage(lang) {
         const s = document.getElementById(id);
         if (s && s.value !== lang) s.value = lang;
     });
-    applyTranslations();
+    _applyAll();
 }
 
 function currentLanguage() {
@@ -1765,7 +2500,8 @@ function _initI18n() {
     _populateLangSelect(document.getElementById('lang-select'));
     _populateLangSelect(document.getElementById('login-lang-select'));
 
-    applyTranslations();
+    _applyAll();
+    _installAutoTranslate();
 }
 
 if (document.readyState === 'loading') {

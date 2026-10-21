@@ -3,6 +3,7 @@
 .github/fork-patches.json
 .github/fork-paths.txt
 .github/scripts/detect-iso-url-no-suffix.sh
+.github/scripts/detect-i18n-zh-full.sh
 .github/scripts/mark_retired.py
 .github/workflows/sync-upstream.yml
 .github/workflows/fork-release.yml
@@ -16,6 +17,8 @@ docs/RELEASING.md
 #   internal/admin/download_test.go   —— 补丁行为的回归测试
 #   web/static/app.js                 —— 提交下载时带上显式文件名
 #   web/static/index.html             —— 新增可选「File name」字段
+# 补丁 i18n-zh-full：
+#   web/static/i18n.js                —— 追加 SOURCE_TEXT 映射表 + 文本/属性自动翻译 + MutationObserver
 # 发布链路：
 #   .github/workflows/release.yml     —— 两个 job 加 `if: github.repository == 'garybowers/bootimus'`
 #                                        守卫（上游 docker job 硬编码推 garybowers/bootimus，fork 里必然失败）
