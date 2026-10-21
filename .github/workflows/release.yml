@@ -51,6 +51,10 @@ jobs:
     permissions:
       contents: write # create/attach GitHub Releases
     runs-on: ubuntu-latest
+    # [bootimus-fork L1] 该 workflow 只在上游仓库运行：fork 里 docker job 会推到
+    # garybowers/bootimus（别人的 Docker Hub 命名空间）且缺 secrets 必然失败。
+    # fork 的发布见 .github/workflows/fork-release.yml（ghcr + 同版本号）。
+    if: github.repository == 'garybowers/bootimus'
     steps:
       - uses: actions/checkout@v4
 
@@ -83,6 +87,10 @@ jobs:
     name: Build & push container image
     needs: [prepare, checks]
     runs-on: ubuntu-latest
+    # [bootimus-fork L1] 该 workflow 只在上游仓库运行：fork 里 docker job 会推到
+    # garybowers/bootimus（别人的 Docker Hub 命名空间）且缺 secrets 必然失败。
+    # fork 的发布见 .github/workflows/fork-release.yml（ghcr + 同版本号）。
+    if: github.repository == 'garybowers/bootimus'
     steps:
       - uses: actions/checkout@v4
 
