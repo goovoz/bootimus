@@ -57,6 +57,30 @@ if: github.repository == 'garybowers/bootimus'
 - 手动发一个版本：`git tag -a v0.1.77 -m "bootimus 0.1.77" && git push origin v0.1.77`
 - 只有 tag 推送才会走 tag 路径；在分支上 dispatch `fork-release.yml` 会用 `VERSION` 文件里的版本号
 
+## Actions 必须固定到完整 SHA（仓库策略）
+
+本仓库启用了「Require actions to be pinned to a full-length commit SHA」策略。
+浮动 tag（`@v4`）会在 **Set up job 阶段**直接失败，报错形如：
+
+```
+The actions actions/checkout@v4 ... are not allowed in goovoz/bootimus
+because all actions must be pinned to a full-length commit SHA.
+```
+
+现状：
+
+- fork 自有 workflow（`sync-upstream.yml`、`fork-release.yml`、`fork-follow-upstream-release.yml`）全部已 pin
+- 上游 `ci.yml` 为兼容该策略做了 L1 改动（**只 pin，不改逻辑**，顶部有 `[bootimus-fork L1]` 说明）
+- 上游 `release.yml` 保持原样未 pin：它的两个 job 被 `if` 守卫跳过，不会解析 action
+
+升级某个 action 时：
+
+```bash
+git ls-remote https://github.com/actions/checkout 'refs/tags/v4^{}'   # 取第一列的 SHA
+```
+
+然后把对应 `uses:` 换成 `<owner>/<repo>@<sha>  # vN`，注释保留版本信息便于将来升级。
+
 ## 与补丁机制的关系
 
 发布流程不改变 `main` 的形态，仍然是「上游 + 带 `Fork-Patch:` trailer 的补丁提交」。
