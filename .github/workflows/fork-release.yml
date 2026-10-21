@@ -78,9 +78,9 @@ jobs:
             SHA256SUMS
           fail_on_unmatched_files: true
 
-      # append_body 只在「更新已有 release」时生效，创建时会被忽略，
-      # 所以改成创建后用 API 追加（幂等）。
-      - name: 追加 fork 构建说明
+      # append_body 只在「更新已有 release」时生效，创建时会被忽略，所以创建后用 API 写正文。
+      # 重跑同一个 tag 时 gh-release 会再加一行 Full Changelog，这里顺手去重 + 幂等追加说明。
+      - name: 写入 fork 构建说明
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -88,14 +88,15 @@ jobs:
           TAG="v${{ steps.version.outputs.version }}"
           RID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .id)
           BODY=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RID}" --jq '.body // ""')
-          if printf '%s' "$BODY" | grep -q '这是 fork 构建'; then
-            echo "说明已存在，跳过"
-            exit 0
+          # 只保留第一条 Full Changelog
+          BODY=$(printf '%s\n' "$BODY" | awk '/^\*\*Full Changelog\*\*/{ if (seen++) next } { print }')
+          NOTE=""
+          if ! printf '%s' "$BODY" | grep -q '这是 fork 构建'; then
+            NOTE=$(printf '\n\n---\n\n**这是 fork 构建**（[goovoz/bootimus](https://github.com/goovoz/bootimus)），基于上游 `%s` 加上本地补丁 `iso-url-no-suffix`（允许下载不带 `.iso` 后缀的链接）。\n需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布。' "$TAG")
           fi
-          NOTE=$(printf '\n\n---\n\n**这是 fork 构建**（[goovoz/bootimus](https://github.com/goovoz/bootimus)），基于上游 `%s` 加上本地补丁 `iso-url-no-suffix`（允许下载不带 `.iso` 后缀的链接）。\n需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布。' "$TAG")
           # 注意：REST 只有 PATCH /releases/{id}，没有 PATCH /releases/tags/{tag}
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RID}" -f body="${BODY}${NOTE}"
-          echo "已追加 fork 说明"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RID}" -f body="${BODY}${NOTE}" >/dev/null
+          echo "正文已规范化（说明${NOTE:+已追加}${NOTE:-已存在}）"
 
   docker:
     name: 构建并推送多架构镜像
