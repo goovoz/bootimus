@@ -1,8 +1,20 @@
 name: Release (fork)
-
 # [bootimus-fork L0] fork 自己的发布流水线。
 # 与上游 release.yml 产物一致（4 个平台二进制 + SHA256SUMS + GitHub Release），
-# 区别：镜像推到 ghcr.io/goovoz/bootimus，且只保留 latest + 精确版本号两个 tag。
+# 区别：镜像推到 ghcr.io/goovoz/bootimus。
+#
+# 版本口径（重要）：
+#   基线版本 = VERSION 文件 / tag / 手动输入，纯 x.y.z，**必须与上游保持一致**，
+#              因为 fork-follow-upstream-release.yml 用它和上游 releases/latest 比大小。
+#   构建修订 = 本次构建所在 commit 的短 SHA（7 位）。
+#   二进制版本字符串 = <基线>+g<修订>   例如 0.1.77+gd5b132e（semver build metadata，比较时被忽略）
+#   镜像 tag         = <基线>-g<修订>   例如 0.1.77-gd5b132e（docker tag 不允许 +）
+#                      + sha-<修订>     + <基线>（该基线上最新构建，会漂移） + latest（会漂移）
+#
+# 为什么不直接把 VERSION 升成 0.1.78：
+#   升上去之后本地版本会一直高于上游，跟随流水线会判定「本地上游已同步」，
+#   上游真发 0.1.78 时反而拉不下来；tag 也会和上游将来的 v0.1.78 撞车。
+#   所以基线跟着上游走，构建之间靠 +g<sha> / -g<sha> 区分。
 #
 # 触发：
 #   · 推送 v* 标签（推荐，watcher 或手动）
@@ -15,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号（留空则取 tag 或 VERSION 文件）"
+        description: "基线版本号 x.y.z（留空则取 tag 或 VERSION 文件）"
         required: false
         default: ""
 
@@ -46,20 +58,35 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          V=""
+          BASE=""
           if [ -n "${{ inputs.version }}" ]; then
-            V="${{ inputs.version }}"
+            BASE="${{ inputs.version }}"
           elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
+            BASE="${GITHUB_REF_NAME#v}"
           else
-            V=$(tr -d '[:space:]' < VERSION)
+            BASE=$(tr -d '[:space:]' < VERSION)
           fi
-          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::版本号不合法: '$V'"; exit 1; }
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "版本号：$V"
+          # 允许直接传 0.1.77+gabc1234 / 0.1.77-gabc1234，统一剥回基线版本
+          BASE="${BASE%%+*}"
+          BASE="${BASE%%-g*}"
+          [[ "$BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::版本号不合法: '$BASE'"; exit 1; }
+
+          REV=$(git rev-parse --short=7 HEAD)
+          {
+            echo "base=$BASE"
+            echo "rev=$REV"
+            echo "build_version=${BASE}+g${REV}"
+            echo "tag_version=${BASE}-g${REV}"
+          } >> "$GITHUB_OUTPUT"
+          echo "基线 ${BASE} / 构建 ${REV} / 版本串 ${BASE}+g${REV}"
 
       - name: 构建 4 个平台的二进制
-        run: make binaries VERSION=${{ steps.version.outputs.version }}
+        # 基线版本写进 profiles（保持 semver 干净），版本串只进 ldflags
+        run: |
+          set -euo pipefail
+          make binaries VERSION="${{ steps.version.outputs.base }}" \
+            LDFLAGS="-w -s -X bootimus/internal/server.Version=${{ steps.version.outputs.build_version }}"
+          ./bootimus-linux-amd64 version
 
       - name: 生成校验和
         run: |
@@ -70,8 +97,8 @@ jobs:
       - name: 创建 Release 并上传资产
         uses: softprops/action-gh-release@v3  # node24
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
+          tag_name: v${{ steps.version.outputs.base }}
+          name: v${{ steps.version.outputs.base }}
           generate_release_notes: true
           files: |
             bootimus-*
@@ -85,18 +112,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="v${{ steps.version.outputs.version }}"
+          TAG="v${{ steps.version.outputs.base }}"
+          BUILD="${{ steps.version.outputs.build_version }}"
+          TAGVER="${{ steps.version.outputs.tag_version }}"
           RID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .id)
           BODY=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RID}" --jq '.body // ""')
-          # 只保留第一条 Full Changelog
+          # 只保留第一条 Full Changelog；清掉上一轮写的 fork 说明块，下面重新生成
           BODY=$(printf '%s\n' "$BODY" | awk '/^\*\*Full Changelog\*\*/{ if (seen++) next } { print }')
-          NOTE=""
-          if ! printf '%s' "$BODY" | grep -q '这是 fork 构建'; then
-            NOTE=$(printf '\n\n---\n\n**这是 fork 构建**（[goovoz/bootimus](https://github.com/goovoz/bootimus)），基于上游 `%s` 加上本地补丁 `iso-url-no-suffix`（允许下载不带 `.iso` 后缀的链接）。\n需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布。' "$TAG")
-          fi
-          # 注意：REST 只有 PATCH /releases/{id}，没有 PATCH /releases/tags/{tag}
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RID}" -f body="${BODY}${NOTE}" >/dev/null
-          echo "正文已规范化（说明${NOTE:+已追加}${NOTE:-已存在}）"
+          BODY=$(printf '%s\n' "$BODY" | sed '/^## fork 构建信息$/,/^---$/d')
+          # 用 printf 拼说明块：heredoc 里以 - 开头的行会把 YAML 块标量顶出缩进
+          NOTE=$(printf '\n## fork 构建信息\n\n- 版本串：`%s`（commit `%s`）\n- 基线上游：`%s`，加本地补丁 `iso-url-no-suffix`（不带 .iso 后缀的链接也能下载）、`i18n-zh-full`（管理台中文全量覆盖）\n- 镜像 tag：`%s:%s`、`%s:sha-%s`\n- 需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布\n\n---\n' \
+            "${BUILD}" "${{ github.sha }}" "${TAG}" \
+            "${IMAGE}" "${TAGVER}" "${IMAGE}" "${{ steps.version.outputs.rev }}")
+          printf '%s%s\n' "$BODY" "$NOTE" > /tmp/release-body.md
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RID}" -F body=@/tmp/release-body.md >/dev/null
+          echo "正文已更新（构建 ${BUILD}）"
 
   docker:
     name: 构建并推送多架构镜像
@@ -108,18 +138,29 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          V=""
+          BASE=""
           if [ -n "${{ inputs.version }}" ]; then
-            V="${{ inputs.version }}"
+            BASE="${{ inputs.version }}"
           elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
+            BASE="${GITHUB_REF_NAME#v}"
           else
-            V=$(tr -d '[:space:]' < VERSION)
+            BASE=$(tr -d '[:space:]' < VERSION)
           fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
+          BASE="${BASE%%+*}"
+          BASE="${BASE%%-g*}"
+          [[ "$BASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::版本号不合法: '$BASE'"; exit 1; }
+
+          REV=$(git rev-parse --short=7 HEAD)
+          {
+            echo "base=$BASE"
+            echo "rev=$REV"
+            echo "build_version=${BASE}+g${REV}"
+            echo "tag_version=${BASE}-g${REV}"
+          } >> "$GITHUB_OUTPUT"
+          echo "基线 ${BASE} / 构建 ${REV} / 镜像 tag ${BASE}-g${REV}"
 
       - name: 同步内嵌 profiles 版本
-        run: make sync-profiles VERSION=${{ steps.version.outputs.version }}
+        run: make sync-profiles VERSION=${{ steps.version.outputs.base }}
 
       - uses: docker/setup-qemu-action@v4  # node24
 
@@ -133,20 +174,23 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7  # node24
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-          # 只要 latest + 精确版本，避免 <major>.<minor> 之类的浮动 tag 泛滥
+            VERSION=${{ steps.version.outputs.build_version }}
+          # 前两个 tag 不可变（每次构建唯一），后两个会漂移，按需取用
           tags: |
-            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE }}:${{ steps.version.outputs.tag_version }}
+            ${{ env.IMAGE }}:sha-${{ steps.version.outputs.rev }}
+            ${{ env.IMAGE }}:${{ steps.version.outputs.base }}
             ${{ env.IMAGE }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.version=${{ steps.version.outputs.build_version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.title=bootimus
           # 关掉 attestation：否则 index 里会多出 unknown/unknown 平台条目
@@ -154,6 +198,28 @@ jobs:
           sbom: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: 把 digest 写进 Release 正文
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.version.outputs.base }}"
+          if ! RID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .id 2>/dev/null); then
+            echo "还没有 ${TAG} 的 Release（binaries 作业未跑），跳过"
+            exit 0
+          fi
+          D="${{ steps.build.outputs.digest }}"
+          [ -n "$D" ] || { echo "digest 为空，跳过"; exit 0; }
+          BODY=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RID}" --jq '.body // ""')
+          BODY=$(printf '%s\n' "$BODY" | sed '/^## 镜像 digest$/,/^$/d')
+          NOTE=$(printf '\n## 镜像 digest\n\n- 本次构建：`%s`\n- 镜像：`%s:%s`\n- 固定引用（最可复现）：`image: %s@%s`\n' \
+            "${{ steps.version.outputs.build_version }}" \
+            "${IMAGE}" "${{ steps.version.outputs.tag_version }}" \
+            "${IMAGE}" "$D")
+          printf '%s%s\n' "$BODY" "$NOTE" > /tmp/digest-body.md
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RID}" -F body=@/tmp/digest-body.md >/dev/null
+          echo "Release 正文已写入 digest $D"
 
       - name: 结果汇总
         if: always()
@@ -163,9 +229,16 @@ jobs:
             echo ""
             echo "| 项 | 值 |"
             echo "|---|---|"
-            echo "| 版本 | v${{ steps.version.outputs.version }} |"
+            echo "| 基线版本 | v${{ steps.version.outputs.base }} |"
+            echo "| 版本串 | \`${{ steps.version.outputs.build_version }}\` |"
             echo "| 二进制 | bootimus-linux-{amd64,arm64}、bootimus-windows-{amd64,arm64} + SHA256SUMS |"
-            echo "| 镜像 | \`${IMAGE}:${{ steps.version.outputs.version }}\` 与 \`${IMAGE}:latest\` |"
+            echo "| 不可变 tag | \`${IMAGE}:${{ steps.version.outputs.tag_version }}\`、\`${IMAGE}:sha-${{ steps.version.outputs.rev }}\` |"
+            echo "| 漂移 tag | \`${IMAGE}:${{ steps.version.outputs.base }}\`、\`${IMAGE}:latest\` |"
+            echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
             echo ""
-            echo "> ghcr 包第一次推送后默认是 **private**，需要在 Package settings 里改成 public 才能匿名拉取。"
+            echo "可复现引用（推荐写进 compose）："
+            echo ""
+            echo '```yaml'
+            echo "image: ${IMAGE}@${{ steps.build.outputs.digest }}"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
