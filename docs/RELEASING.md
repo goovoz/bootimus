@@ -59,27 +59,33 @@ if: github.repository == 'garybowers/bootimus'
 
 ## Actions 必须固定到完整 SHA（仓库策略）
 
-本仓库启用了「Require actions to be pinned to a full-length commit SHA」策略。
-浮动 tag（`@v4`）会在 **Set up job 阶段**直接失败，报错形如：
+GitHub 已把 runner 强制在 Node.js 24 上运行，而 action 自身声明的运行时决定它是否告警/失败。
+上游用的主版本还是 node20 时代的，所以这里统一升到**声明 `node24` 的主版本浮动 tag**：
 
-```
-The actions actions/checkout@v4 ... are not allowed in goovoz/bootimus
-because all actions must be pinned to a full-length commit SHA.
-```
+| 用途 | 引用 | 备注 |
+|---|---|---|
+| 检出代码 | `actions/checkout@v7` | v4 / v5 是 node20 |
+| Go 环境 | `actions/setup-go@v7` | v5 是 node20 |
+| QEMU | `docker/setup-qemu-action@v4` | v3 是 node20 |
+| buildx | `docker/setup-buildx-action@v4` | v3 是 node20 |
+| 登录 registry | `docker/login-action@v4` | v3 是 node20 |
+| 构建并推送 | `docker/build-push-action@v7` | v6 是 node20 |
+| 创建 Release | `softprops/action-gh-release@v3` | v2 是 node20 |
+
+用浮动主版本的好处：同主版本内的安全修复与 bug 修复自动生效，不需要维护 SHA。
 
 现状：
 
-- fork 自有 workflow（`sync-upstream.yml`、`fork-release.yml`、`fork-follow-upstream-release.yml`）全部已 pin
-- 上游 `ci.yml` 为兼容该策略做了 L1 改动（**只 pin，不改逻辑**，顶部有 `[bootimus-fork L1]` 说明）
-- 上游 `release.yml` 保持原样未 pin：它的两个 job 被 `if` 守卫跳过，不会解析 action
+- fork 自有 workflow（`sync-upstream.yml`、`fork-release.yml`、`fork-follow-upstream-release.yml`）已全部升级
+- 上游 `ci.yml` 做 L1 兼容改动（只换 `uses:` 的主版本，逻辑不动，顶部有 `[bootimus-fork L1]` 说明）
+- 上游 `release.yml` 未升级：它的两个 job 在 fork 里被 `if` 守卫跳过，不会解析 action
 
-升级某个 action 时：
-
-```bash
-git ls-remote https://github.com/actions/checkout 'refs/tags/v4^{}'   # 取第一列的 SHA
-```
-
-然后把对应 `uses:` 换成 `<owner>/<repo>@<sha>  # vN`，注释保留版本信息便于将来升级。
+> 仓库此前启用过「Require actions to be pinned to a full-length commit SHA」策略（现已去掉）。
+> 如需恢复，取 SHA 替换即可，注释里的 `# node24` 留作对照：
+>
+> ```bash
+> git ls-remote https://github.com/actions/checkout 'refs/tags/v7^{}'   # 第一列就是 SHA
+> ```
 
 ## 与补丁机制的关系
 

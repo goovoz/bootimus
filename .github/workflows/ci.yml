@@ -1,6 +1,7 @@
-# [bootimus-fork L1] 本仓库启用了「actions 必须固定到完整 commit SHA」策略，
-# 上游的 ci.yml 用的是浮动 tag（@v4/@v5），在 fork 里会在 Set up job 阶段被拒，
-# 因此只把 uses: 固定到 SHA（不改任何逻辑）。升级 SHA 见 docs/RELEASING.md。
+# [bootimus-fork L1] 上游的 action 主版本还是 node20 时代的（@v4/@v5），
+# GitHub 已把 runner 强制在 Node.js 24 上，这里只把 uses: 升到声明 node24 的主版本
+# （actions/checkout@v7、setup-go@v7、buildx@v4、build-push@v7），逻辑不动。
+# 版本对照见 docs/RELEASING.md。
 name: CI
 
 # Runs once per change: pull requests test the result of merging into the
@@ -22,9 +23,9 @@ jobs:
     name: Vet, test & build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/checkout@v7  # node24
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/setup-go@v7  # node24
         with:
           go-version-file: go.mod
           cache: true
@@ -46,16 +47,16 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/checkout@v7  # node24
 
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+      - uses: docker/setup-buildx-action@v4  # node24
 
       - name: Derive snapshot version
         id: version
         run: echo "version=$(cat VERSION)-snapshot.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Build image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        uses: docker/build-push-action@v7  # node24
         with:
           context: .
           push: false

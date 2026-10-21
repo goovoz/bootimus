@@ -19,7 +19,7 @@ docs/RELEASING.md
 # 发布链路：
 #   .github/workflows/release.yml     —— 两个 job 加 `if: github.repository == 'garybowers/bootimus'`
 #                                        守卫（上游 docker job 硬编码推 garybowers/bootimus，fork 里必然失败）
-#   .github/workflows/ci.yml          —— 把 uses: 固定到完整 commit SHA（仓库强制策略，不改逻辑）
+#   .github/workflows/ci.yml          —— 把 uses: 升到声明 node24 的主版本（GitHub 已强制 Node.js 24，逻辑不动）
 #
 # 注意：main 上超出上游的提交必须带 `Fork-Patch: <id>` 或 `Fork-Meta:` trailer，
 # 否则 sync-upstream.yml 会拒绝自动同步（见 docs/FORK-PATCHES.md）。
