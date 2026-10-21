@@ -1,0 +1,17 @@
+# fork 自有路径清单（L0 新增文件）
+# 纪律：新增自有文件必须登记到本文件，否则重建 main 时会丢失。
+.github/fork-patches.json
+.github/fork-paths.txt
+.github/scripts/detect-iso-url-no-suffix.sh
+.github/scripts/mark_retired.py
+.github/workflows/sync-upstream.yml
+docs/FORK-PATCHES.md
+
+# L1 对上游文件的最小改动（补丁 iso-url-no-suffix，均带 [bootimus-fork L1] 锚点注释）：
+#   internal/admin/handlers.go        —— 新增探测/解析能力，并把 DownloadISO 的调用点切到 resolveDownloadFilename
+#   internal/admin/download_test.go   —— 补丁行为的回归测试
+#   web/static/app.js                 —— 提交下载时带上显式文件名
+#   web/static/index.html             —— 新增可选「File name」字段
+#
+# 注意：main 上超出上游的提交必须带 `Fork-Patch: <id>` 或 `Fork-Meta:` trailer，
+# 否则 sync-upstream.yml 会拒绝自动同步（见 docs/FORK-PATCHES.md）。
