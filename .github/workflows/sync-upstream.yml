@@ -1,0 +1,231 @@
+name: Sync Upstream (keep fork patches)
+
+# 每天检查上游 garybowers/bootimus：
+# 有新提交时先判定 fork 补丁是否仍必要 —— 需要就 rebase 重放，上游已实现就自动退役让位。
+# 机制与判定规则见 docs/FORK-PATCHES.md。
+
+on:
+  schedule:
+    - cron: "23 19 * * *" # 每天 19:23 UTC（北京时间次日 03:23）
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "direct = 直接更新 main；pr = 只开 PR 等人工合并"
+        type: choice
+        options:
+          - direct
+          - pr
+        default: direct
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: garybowers/bootimus
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 上游是否有新提交
+        id: gate
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --no-tags upstream "${UPSTREAM_BRANCH}"
+          UP=$(git rev-parse FETCH_HEAD)
+          echo "sha=${UP}" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "${UP}" HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "上游无新提交（${UP}），本次不做任何改动"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "上游有新提交："
+            git log --oneline "HEAD..${UP}" | head -30
+          fi
+
+      - name: Set up Go
+        if: steps.gate.outputs.changed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 校验提交标记并判定补丁是否仍必要
+        id: inspect
+        if: steps.gate.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          UP="${{ steps.gate.outputs.sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 纪律：main 上超出上游的提交必须是「补丁」或「元数据」，否则自动同步不安全
+          bad=0
+          patches=0
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            body=$(git log -1 --format='%B' "$c")
+            if grep -q '^Fork-Patch: ' <<<"$body"; then
+              patches=$((patches + 1))
+            elif grep -q '^Fork-Meta: ' <<<"$body"; then
+              :
+            else
+              echo "::error::提交 ${c:0:8} 既不是上游提交，也没有 Fork-Patch / Fork-Meta 标记：$(git log -1 --format='%s' "$c")"
+              bad=1
+            fi
+          done < <(git rev-list --reverse "${UP}..HEAD")
+          if [ "$bad" -ne 0 ]; then
+            echo "::error::main 上存在未标记的本地提交，自动同步停手，请人工处理（见 docs/FORK-PATCHES.md）"
+            exit 1
+          fi
+          echo "本地补丁提交数：${patches}"
+
+          # 判定跑在【上游代码】上，不跑自己的实现
+          mkdir -p /tmp/upstream-tree
+          git archive "${UP}" | tar -x -C /tmp/upstream-tree
+          bash .github/scripts/detect-iso-url-no-suffix.sh /tmp/upstream-tree | tee /tmp/detect.txt
+
+          RESULT=$(sed -n 's/^RESULT=//p' /tmp/detect.txt | head -1)
+          REASON=$(sed -n 's/^REASON=//p' /tmp/detect.txt | head -1)
+          {
+            echo "result=${RESULT:-UNKNOWN}"
+            echo "reason=${REASON}"
+            echo "patches=${patches}"
+            echo "branch=sync/$(date -u +%Y%m%d-%H%M)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 上游已实现 → 退役补丁
+        id: retire
+        if: steps.inspect.outputs.result == 'IMPLEMENTED'
+        run: |
+          set -euo pipefail
+          UP="${{ steps.gate.outputs.sha }}"
+          echo "上游已自行实现该能力，删除 fork 补丁，让上游实现在位"
+
+          # 先把补丁原样存进归档分支：自动退役判断错了也能一条命令拿回来
+          ARCH="fork-archive/iso-url-no-suffix-$(date -u +%Y%m%d)"
+          git branch -f "${ARCH}" HEAD
+          git push origin "${ARCH}"
+          echo "补丁已归档到 ${ARCH}"
+
+          git reset --hard "${UP}"
+          python3 .github/scripts/mark_retired.py iso-url-no-suffix "${UP}" \
+            "上游在 ${UP:0:8} 自行实现同等能力，补丁自动退役（归档 ${ARCH}）"
+          git add -A
+          git commit -m "chore(fork): retire patch iso-url-no-suffix" \
+            -m "上游 ${UP:0:8} 已自行实现「不带 .iso 后缀的链接也能下载」，按约定让上游实现在位，删除 fork 补丁（含锚点注释与回归测试）。补丁原文归档在 ${ARCH}。" \
+            -m "Fork-Meta: retire-iso-url-no-suffix"
+          git log --oneline -2
+          echo "archive_branch=${ARCH}" >> "$GITHUB_OUTPUT"
+
+      - name: 上游未实现 → 重放补丁
+        id: keep
+        if: steps.inspect.outputs.result != 'IMPLEMENTED'
+        run: |
+          set -uo pipefail
+          UP="${{ steps.gate.outputs.sha }}"
+          if git rebase "${UP}"; then
+            echo "补丁已成功重放到上游 ${UP:0:8}"
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::warning::补丁与上游冲突，转为人工处理"
+          git rebase --abort || true
+          BR="sync-conflict/$(date -u +%Y%m%d-%H%M)"
+          git checkout -B "${BR}"
+          git merge "${UP}" --no-edit || true
+          git add -A
+          git commit -m "wip: 上游 ${UP:0:8} 与 fork 补丁冲突，待人工解决" \
+            -m "冲突标记已原样提交，便于在 PR 里逐块处理。解决后请保留 Fork-Patch trailer。" \
+            -m "Fork-Meta: conflict" || true
+          git push -u origin "${BR}"
+          {
+            echo "conflict=true"
+            echo "conflict_branch=${BR}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 编译与测试
+        if: steps.gate.outputs.changed == 'true' && steps.keep.outputs.conflict != 'true'
+        run: |
+          set -euo pipefail
+          echo "=== go build ./... ==="
+          go build ./...
+          echo "=== go test ./internal/admin/ ==="
+          go test ./internal/admin/ -count=1
+
+      - name: 推送 main
+        if: steps.gate.outputs.changed == 'true' && github.event.inputs.mode != 'pr' && steps.keep.outputs.conflict != 'true'
+        run: |
+          set -euo pipefail
+          # rebase / 退役都会改写补丁提交的 SHA，这里用 force-with-lease 而不是 force
+          git push --force-with-lease origin HEAD:main
+          echo "main 已更新到 $(git rev-parse --short HEAD)"
+
+      - name: 开 PR（pr 模式或冲突）
+        if: steps.gate.outputs.changed == 'true' && (github.event.inputs.mode == 'pr' || steps.keep.outputs.conflict == 'true')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ "${{ steps.keep.outputs.conflict }}" = "true" ]; then
+            BR="${{ steps.keep.outputs.conflict_branch }}"
+            TITLE="[需人工] 上游 ${{ steps.gate.outputs.sha }} 与 fork 补丁冲突"
+            BODY="自动 rebase 失败，冲突标记已原样提交到本分支。解决冲突后合并即可，注意保留 \`Fork-Patch\` trailer 与 \`[bootimus-fork L1]\` 锚点。"
+          else
+            BR="${{ steps.inspect.outputs.branch }}"
+            git checkout -B "$BR"
+            git push -u origin "$BR"
+            TITLE="sync: 上游 ${{ steps.gate.outputs.sha }}（判定 ${{ steps.inspect.outputs.result }}）"
+            BODY="自动同步产生的 PR。判定结果：${{ steps.inspect.outputs.result }} —— ${{ steps.inspect.outputs.reason }}"
+          fi
+          if gh pr create --base main --head "$BR" --title "$TITLE" --body "$BODY"; then
+            echo "PR 已创建"
+          else
+            echo "::warning::PR 创建失败（仓库可能未开启 Actions 创建 PR 的权限）。分支 $BR 已推送，可手动开 PR。"
+          fi
+
+      - name: 冲突时让工作流失败（提醒人工）
+        if: steps.keep.outputs.conflict == 'true'
+        run: |
+          echo "::error::fork 补丁与上游冲突，需要人工解决（见刚推送的 sync-conflict 分支 / PR）"
+          exit 1
+
+      - name: 结果汇总
+        if: always()
+        run: |
+          {
+            echo "## 上游同步"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 上游 HEAD | \`${{ steps.gate.outputs.sha }}\` |"
+            echo "| 是否有新提交 | ${{ steps.gate.outputs.changed }} |"
+            echo "| 本地补丁提交数 | ${{ steps.inspect.outputs.patches }} |"
+            echo "| 补丁判定 | **${{ steps.inspect.outputs.result }}** |"
+            echo "| 判定依据 | ${{ steps.inspect.outputs.reason }} |"
+            if [ "${{ steps.inspect.outputs.result }}" = "IMPLEMENTED" ]; then
+              echo "| 采取动作 | 上游已实现，补丁已退役 |"
+            elif [ "${{ steps.keep.outputs.conflict }}" = "true" ]; then
+              echo "| 采取动作 | **冲突待人工**（分支 \`${{ steps.keep.outputs.conflict_branch }}\`） |"
+            elif [ "${{ steps.gate.outputs.changed }}" = "true" ]; then
+              echo "| 采取动作 | 补丁已重放到新上游 |"
+            else
+              echo "| 采取动作 | 无（已是最新） |"
+            fi
+            echo ""
+            echo "机制说明见 [docs/FORK-PATCHES.md](../blob/main/docs/FORK-PATCHES.md)。"
+          } >> "$GITHUB_STEP_SUMMARY"

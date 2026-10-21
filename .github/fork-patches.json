@@ -1,0 +1,26 @@
+{
+  "$comment": "fork 补丁清单。约定：main 上超出上游的提交必须带 `Fork-Patch: <id>`（补丁）或 `Fork-Meta:`（元数据）trailer；sync-upstream.yml 按本清单判定上游是否已接管某个补丁。",
+  "upstream": {
+    "repo": "garybowers/bootimus",
+    "branch": "main"
+  },
+  "patches": [
+    {
+      "id": "iso-url-no-suffix",
+      "status": "active",
+      "summary": "允许从 Web UI 下载不带 .iso 后缀的 ISO 链接：先用 2 字节 Range 探测 Content-Type，再从 Content-Disposition 或最终路径取文件名，并可显式指定文件名",
+      "rationale": "上游 isoDownloadFilename 只接受以 .iso 结尾的 URL，网盘/签名链接因此完全无法导入；本补丁不改上游严格函数的契约，只在其前面加一层解析",
+      "trailer": "Fork-Patch: iso-url-no-suffix",
+      "detector": ".github/scripts/detect-iso-url-no-suffix.sh",
+      "touches": [
+        "internal/admin/handlers.go",
+        "internal/admin/download_test.go",
+        "web/static/app.js",
+        "web/static/index.html"
+      ],
+      "retire_policy": "检测到 IMPLEMENTED（上游已放宽 URL 后缀校验 / 调用点换掉严格函数）→ 自动 reset 到上游并记录退役；SUSPECT → 保留补丁并告警，等人工确认",
+      "retired_at": null,
+      "retired_upstream_commit": null
+    }
+  ]
+}
