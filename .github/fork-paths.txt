@@ -5,13 +5,20 @@
 .github/scripts/detect-iso-url-no-suffix.sh
 .github/scripts/mark_retired.py
 .github/workflows/sync-upstream.yml
+.github/workflows/fork-release.yml
+.github/workflows/fork-follow-upstream-release.yml
 docs/FORK-PATCHES.md
+docs/RELEASING.md
 
-# L1 对上游文件的最小改动（补丁 iso-url-no-suffix，均带 [bootimus-fork L1] 锚点注释）：
+# L1 对上游文件的最小改动（均带 [bootimus-fork L1] 锚点注释）：
+# 补丁 iso-url-no-suffix：
 #   internal/admin/handlers.go        —— 新增探测/解析能力，并把 DownloadISO 的调用点切到 resolveDownloadFilename
 #   internal/admin/download_test.go   —— 补丁行为的回归测试
 #   web/static/app.js                 —— 提交下载时带上显式文件名
 #   web/static/index.html             —— 新增可选「File name」字段
+# 发布链路：
+#   .github/workflows/release.yml     —— 两个 job 加 `if: github.repository == 'garybowers/bootimus'`
+#                                        守卫（上游 docker job 硬编码推 garybowers/bootimus，fork 里必然失败）
 #
 # 注意：main 上超出上游的提交必须带 `Fork-Patch: <id>` 或 `Fork-Meta:` trailer，
 # 否则 sync-upstream.yml 会拒绝自动同步（见 docs/FORK-PATCHES.md）。
