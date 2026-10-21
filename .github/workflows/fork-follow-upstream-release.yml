@@ -1,0 +1,158 @@
+name: Follow Upstream Release
+
+# [bootimus-fork L0] 跟随上游发布：上游出了比本地 VERSION 更新的正式版时，
+# 自动 bump 版本、打 tag、并派发 fork-release.yml 去构建发布。
+#
+# 注意：用 GITHUB_TOKEN 推的 tag **不会**触发 tag-push 类 workflow（GitHub 的限制），
+# 所以这里必须显式 workflow_dispatch，并且令牌需要 actions: write。
+
+on:
+  schedule:
+    - cron: "17 20 * * *" # 每天 20:17 UTC（北京 04:17）
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = 只报告不提交"
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
+        required: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: follow-upstream-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: garybowers/bootimus
+  RELEASE_WORKFLOW: fork-release.yml
+
+jobs:
+  follow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 取上游最新正式版
+        id: up
+        run: |
+          set -euo pipefail
+          TAG=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name')
+          UP="${TAG#v}"
+          [[ "$UP" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::上游 tag 解析失败: '$TAG'"; exit 1; }
+          echo "version=$UP" >> "$GITHUB_OUTPUT"
+          echo "上游最新: v$UP"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 与本地 VERSION 比较
+        id: cmp
+        run: |
+          set -euo pipefail
+          LOCAL=$(tr -d '[:space:]' < VERSION)
+          UP="${{ steps.up.outputs.version }}"
+          echo "本地: v$LOCAL / 上游: v$UP"
+          if [ "$UP" = "$LOCAL" ]; then
+            echo "newer=false" >> "$GITHUB_OUTPUT"
+            echo "已同步，无需动作"
+          else
+            HIGHEST=$(printf '%s\n%s\n' "$LOCAL" "$UP" | sort -V | tail -1)
+            if [ "$HIGHEST" = "$UP" ]; then
+              echo "newer=true" >> "$GITHUB_OUTPUT"
+              echo "上游更新，需要跟随"
+            else
+              echo "newer=false" >> "$GITHUB_OUTPUT"
+              echo "本地版本已高于上游（$LOCAL > $UP），不降级"
+            fi
+          fi
+
+      - name: bump 版本并打标签
+        id: bump
+        if: steps.cmp.outputs.newer == 'true' && inputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          UP="${{ steps.up.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 同步 VERSION + 两份 profiles 与内嵌副本
+          make bump NEW_VERSION="$UP"
+          git add -A
+          git diff --cached --quiet && { echo "::error::make bump 没有产生改动，版本同步可能已失效"; exit 1; }
+          git commit -m "chore(release): follow upstream v${UP}" \
+            -m "上游发布 v${UP}，fork 同步版本号与内嵌 profiles，随后由 fork-release.yml 构建发布。" \
+            -m "Fork-Meta: follow-upstream-release"
+          git tag -a "v${UP}" -m "bootimus v${UP} (fork build)"
+          git push origin HEAD:main
+          git push origin "refs/tags/v${UP}"
+          echo "已推送 v${UP}"
+
+      - name: 派发发布流水线
+        id: dispatch
+        if: steps.cmp.outputs.newer == 'true' && inputs.dry_run != 'true'
+        run: |
+          set -uo pipefail
+          TAG="v${{ steps.up.outputs.version }}"
+          URL="$GITHUB_API_URL/repos/${{ github.repository }}/actions/workflows/${RELEASE_WORKFLOW}/dispatches"
+          CODE=""
+          for ref in "$TAG" "refs/tags/$TAG"; do
+            for attempt in 1 2 3; do
+              CODE=$(curl -sS -o /tmp/body -w '%{http_code}' -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "$URL" -d "{\"ref\":\"${ref}\"}") || CODE="000"
+              [ "$CODE" = "204" ] && break
+              [ "$CODE" = "422" ] && break   # ref 形式不对，换下一种
+              echo "ref=${ref} 第 ${attempt} 次失败（HTTP ${CODE}）：$(cat /tmp/body 2>/dev/null)"
+              sleep 8
+            done
+            [ "$CODE" = "204" ] && { echo "已派发 ${RELEASE_WORKFLOW} @ ${ref}"; break; }
+          done
+          if [ "$CODE" != "204" ]; then
+            echo "::error::派发发布流水线失败（HTTP ${CODE}）。403 通常表示 permissions 缺 actions: write"
+            exit 1
+          fi
+
+          # 二次确认：204 只代表接口收下
+          sleep 8
+          RUNS=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/${{ github.repository }}/actions/workflows/${RELEASE_WORKFLOW}/runs?per_page=20")
+          COUNT=$(printf '%s' "$RUNS" | jq --arg tag "$TAG" '[.workflow_runs[] | select(.head_branch == $tag)] | length')
+          if [ "${COUNT:-0}" -lt 1 ]; then
+            echo "::error::派发返回 204，但查不到 ${TAG} 的 release 运行记录"
+            exit 1
+          fi
+          echo "已确认 ${TAG} 的 release 运行记录存在（${COUNT} 条）"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 结果汇总
+        if: always()
+        run: |
+          {
+            echo "## 跟随上游发布"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 上游最新 | v${{ steps.up.outputs.version }} |"
+            echo "| 本地 VERSION | $(tr -d '[:space:]' < VERSION) |"
+            echo "| 需要跟随 | ${{ steps.cmp.outputs.newer }} |"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "| 动作 | dry-run，未做任何改动 |"
+            elif [ "${{ steps.cmp.outputs.newer }}" = "true" ]; then
+              echo "| 动作 | 已 bump → 打标签 → 派发 fork-release.yml |"
+            else
+              echo "| 动作 | 无 |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

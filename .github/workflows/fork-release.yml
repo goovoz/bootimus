@@ -1,0 +1,158 @@
+name: Release (fork)
+
+# [bootimus-fork L0] fork 自己的发布流水线。
+# 与上游 release.yml 产物一致（4 个平台二进制 + SHA256SUMS + GitHub Release），
+# 区别：镜像推到 ghcr.io/goovoz/bootimus，且只保留 latest + 精确版本号两个 tag。
+#
+# 触发：
+#   · 推送 v* 标签（推荐，watcher 或手动）
+#   · workflow_dispatch（可手填版本号做冷启动）
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（留空则取 tag 或 VERSION 文件）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write # 创建 Release、上传资产
+  packages: write # 推 ghcr 镜像
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/goovoz/bootimus
+
+jobs:
+  binaries:
+    name: 构建二进制并发布 Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 解析版本号
+        id: version
+        run: |
+          set -euo pipefail
+          V=""
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V=$(tr -d '[:space:]' < VERSION)
+          fi
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::版本号不合法: '$V'"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "版本号：$V"
+
+      - name: 构建 4 个平台的二进制
+        run: make binaries VERSION=${{ steps.version.outputs.version }}
+
+      - name: 生成校验和
+        run: |
+          set -euo pipefail
+          sha256sum bootimus-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: 创建 Release 并上传资产
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          append_body: |
+            ---
+
+            **这是 fork 构建**（[goovoz/bootimus](https://github.com/goovoz/bootimus)），
+            基于上游 `v${{ steps.version.outputs.version }}` 加上本地补丁
+            `iso-url-no-suffix`（允许下载不带 `.iso` 后缀的链接）。
+            需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布。
+          files: |
+            bootimus-*
+            SHA256SUMS
+          fail_on_unmatched_files: true
+
+  docker:
+    name: 构建并推送多架构镜像
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析版本号
+        id: version
+        run: |
+          set -euo pipefail
+          V=""
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V=$(tr -d '[:space:]' < VERSION)
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: 同步内嵌 profiles 版本
+        run: make sync-profiles VERSION=${{ steps.version.outputs.version }}
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          # 只要 latest + 精确版本，避免 <major>.<minor> 之类的浮动 tag 泛滥
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=bootimus
+          # 关掉 attestation：否则 index 里会多出 unknown/unknown 平台条目
+          provenance: false
+          sbom: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 结果汇总
+        if: always()
+        run: |
+          {
+            echo "## fork release"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 版本 | v${{ steps.version.outputs.version }} |"
+            echo "| 二进制 | bootimus-linux-{amd64,arm64}、bootimus-windows-{amd64,arm64} + SHA256SUMS |"
+            echo "| 镜像 | \`${IMAGE}:${{ steps.version.outputs.version }}\` 与 \`${IMAGE}:latest\` |"
+            echo ""
+            echo "> ghcr 包第一次推送后默认是 **private**，需要在 Package settings 里改成 public 才能匿名拉取。"
+          } >> "$GITHUB_STEP_SUMMARY"
