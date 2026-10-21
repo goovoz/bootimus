@@ -35,9 +35,9 @@ jobs:
     name: 构建二进制并发布 Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
@@ -68,28 +68,40 @@ jobs:
           cat SHA256SUMS
 
       - name: 创建 Release 并上传资产
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
-          append_body: |
-            ---
-
-            **这是 fork 构建**（[goovoz/bootimus](https://github.com/goovoz/bootimus)），
-            基于上游 `v${{ steps.version.outputs.version }}` 加上本地补丁
-            `iso-url-no-suffix`（允许下载不带 `.iso` 后缀的链接）。
-            需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布。
           files: |
             bootimus-*
             SHA256SUMS
           fail_on_unmatched_files: true
 
+      # append_body 只在「更新已有 release」时生效，创建时会被忽略，
+      # 所以改成创建后用 API 追加（幂等）。
+      - name: 追加 fork 构建说明
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.version.outputs.version }}"
+          RID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .id)
+          BODY=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RID}" --jq '.body // ""')
+          if printf '%s' "$BODY" | grep -q '这是 fork 构建'; then
+            echo "说明已存在，跳过"
+            exit 0
+          fi
+          NOTE=$(printf '\n\n---\n\n**这是 fork 构建**（[goovoz/bootimus](https://github.com/goovoz/bootimus)），基于上游 `%s` 加上本地补丁 `iso-url-no-suffix`（允许下载不带 `.iso` 后缀的链接）。\n需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布。' "$TAG")
+          # 注意：REST 只有 PATCH /releases/{id}，没有 PATCH /releases/tags/{tag}
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RID}" -f body="${BODY}${NOTE}"
+          echo "已追加 fork 说明"
+
   docker:
     name: 构建并推送多架构镜像
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/checkout@v4
 
       - name: 解析版本号
         id: version
@@ -108,19 +120,19 @@ jobs:
       - name: 同步内嵌 profiles 版本
         run: make sync-profiles VERSION=${{ steps.version.outputs.version }}
 
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3
+      - uses: docker/setup-qemu-action@v3
 
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: 登录 ghcr.io
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
