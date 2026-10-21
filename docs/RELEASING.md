@@ -8,9 +8,47 @@
 |---|---|---|
 | 4 个平台二进制 | GitHub Release 资产 | `bootimus-linux-{amd64,arm64}`、`bootimus-windows-{amd64,arm64}`，与上游命名一致 |
 | 校验和 | Release 资产 `SHA256SUMS` | `sha256sum bootimus-*` |
-| 容器镜像 | `ghcr.io/goovoz/bootimus:<版本>` + `:latest` | 多架构 `linux/amd64,linux/arm64` |
+| 容器镜像 | `ghcr.io/goovoz/bootimus` | 多架构 `linux/amd64,linux/arm64` |
 
-镜像只保留 `latest` 和精确版本号两个 tag，不产 `<major>.<minor>` 之类的浮动 tag。
+## 版本口径与 tag 方案（2026-10 起）
+
+上游版本和 fork 的构建次数是两回事，所以版本拆成两段：
+
+| 概念 | 取值 | 例子 |
+|---|---|---|
+| **基线版本** | `VERSION` 文件 / tag / 手动输入，纯 `x.y.z`，**永远与上游一致** | `0.1.77` |
+| **构建修订** | 本次构建所在 commit 的 7 位短 SHA | `d5b132e` |
+| 二进制版本串 | `<基线>+g<修订>`（semver build metadata，比大小时被忽略） | `0.1.77+gd5b132e` |
+| 镜像不可变 tag | `<基线>-g<修订>`、`sha-<修订>` | `0.1.77-gd5b132e`、`sha-d5b132e` |
+| 镜像漂移 tag | `<基线>`、`latest` | `0.1.77`、`latest` |
+
+```bash
+docker run --rm --entrypoint /bootimus ghcr.io/goovoz/bootimus:0.1.77-gd5b132e version
+# bootimus      0.1.77+gd5b132e
+```
+
+**为什么不直接把 `VERSION` 升成 `0.1.78`**：`fork-follow-upstream-release.yml` 是拿
+`VERSION` 和上游 `releases/latest` 比大小的。本地一旦变成 `0.1.78`，上游真发 `0.1.78` 时
+会被判成「已同步」而**永远拉不下来**；`v0.1.78` 这个 tag 也会和上游将来的发布撞车。
+所以基线跟着上游走，构建之间靠 `+g<sha>` / `-g<sha>` 区分。
+
+### 部署时该用哪个引用
+
+| 场景 | 写法 |
+|---|---|
+| 想完全可复现（推荐） | `image: ghcr.io/goovoz/bootimus@sha256:<digest>` |
+| 想按构建锁定但仍可读 | `image: ghcr.io/goovoz/bootimus:0.1.77-gd5b132e` |
+| 想跟着最新走（会漂移） | `image: ghcr.io/goovoz/bootimus:latest` |
+
+digest 每次构建都会写进两处：**Actions 运行摘要**的最下方（附可直接粘贴的 `image:` 行），
+以及 **Release 正文**的「镜像 digest」小节。
+
+回滚就是换回上一份 digest 或上一个 `-g<sha>` tag：
+
+```bash
+docker pull ghcr.io/goovoz/bootimus@sha256:<旧 digest>
+docker compose up -d
+```
 
 ## 两条流水线
 
@@ -19,13 +57,14 @@
 触发：
 
 - **推送 `v*` 标签**（正常路径）
-- **手动 dispatch**：可填 `version` 做冷启动（留空则取 tag 或 `VERSION` 文件）
+- **手动 dispatch**：可填 `version` 做冷启动（留空则取 tag 或 `VERSION` 文件；
+  传 `0.1.77+gabc1234` 这类带后缀的值也能用，会被剥回基线 `0.1.77`）
 
 两个 job：
 
-- `binaries`：`make binaries VERSION=<v>` → `sha256sum` → 创建 Release（自动生成变更说明，
-  并在正文追加一段「这是 fork 构建，含补丁 `iso-url-no-suffix`」）
-- `docker`：`make sync-profiles` → buildx 多架构 → 推 ghcr，tag 为 `<版本>` 与 `latest`
+- `binaries`：`make binaries VERSION=<基线>`（版本串只进 ldflags）→ `sha256sum` → 创建 Release
+  （自动生成变更说明，并在正文追加「fork 构建信息」块：版本串、commit、两个补丁、镜像 tag）
+- `docker`：`make sync-profiles` → buildx 多架构 → 推 ghcr，tag 见上表，并把 digest 写回 Release 正文
 
 ### 2. `fork-follow-upstream-release.yml` —— 自动跟随上游
 
