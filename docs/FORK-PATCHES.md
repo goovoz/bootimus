@@ -41,6 +41,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | id | 状态 | 做什么 | 触碰的上游文件 |
 |---|---|---|---|
 | `iso-url-no-suffix` | active | 允许下载不带 `.iso` 后缀的链接：2 字节 Range 探测 Content-Type，从 Content-Disposition / 最终路径取名，UI 可显式指定文件名 | `internal/admin/handlers.go`、`internal/admin/download_test.go`、`web/static/app.js`、`web/static/index.html` |
+| `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加 595 条「英文原文 → 中文」映射，并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 
@@ -81,6 +82,35 @@ git checkout -b restore-iso-url-no-suffix fork-archive/iso-url-no-suffix-YYYYMMD
 ```
 
 同时 `docs/FORK-PATCHES.md` 的退役记录会写清「哪天、上游哪个 commit、为什么退役」。
+
+## 中文覆盖补丁（`i18n-zh-full`）为什么这么做
+
+上游的 i18n 是「静态骨架级」的：`i18n.js` 里 8 种语言各 151 个 key，HTML 上用
+`data-i18n` 标记的元素由 `applyTranslations()` 渲染；而管理台真正的文案大头在
+`app.js` —— 表格列名、按钮、提示语都是渲染时拼出来的英文字面量，共有 400 多条，
+且 `applyTranslations()` 只在 `DOMContentLoaded` 跑一次，动态渲染的内容永远不会被翻译。
+所以在中文界面下会中英混杂。
+
+补丁的取舍：**不改 `app.js`**（7290 行、几百处字面量，改完上游一动就冲突），
+而是在 `i18n.js` 里加一层「英文原文 → 译文」的映射，并接管渲染后的翻译：
+
+- `SOURCE_TEXT`：595 条原文到中文的映射（专有名词与示例值除外）
+- `_translateTextNodes()`：逐文本节点精确匹配，跳过 `script/style/code/pre/textarea`
+- `_translateAttrs()`：`title` / `placeholder` / `aria-label` 同样翻译
+- `_installAutoTranslate()`：`MutationObserver` + 30ms 防抖，动态渲染后自动补译
+- 原文记在 `WeakMap` 里，切回英文能完整还原，不会把英文吃掉
+
+判定「上游是否已自行补齐」用 `.github/scripts/detect-i18n-zh-full.sh`：
+
+| 上游状态 | 结果 | 处置 |
+|---|---|---|
+| zh-CN 字典 >= 300 条，或已出现 `SOURCE_TEXT` / `MutationObserver` | **IMPLEMENTED** | 仅告警，人工确认后再删补丁 |
+| 字典 200~300 条 | **SUSPECT** | 告警，补丁保留 |
+| 字典 <= 200 条（当前上游 151） | **NEEDED** | 补丁继续生效 |
+| 找不到 `web/static/i18n.js` | **UNKNOWN** | 停手转人工 |
+
+**为什么不自动退役**：这个补丁一删就是 595 条译文；上游只要「部分实现」就会让判定变绿，
+自动删除的代价远大于人工确认的成本。
 
 ## 新增一个补丁的步骤
 

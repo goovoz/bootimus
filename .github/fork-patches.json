@@ -21,6 +21,20 @@
       "retire_policy": "检测到 IMPLEMENTED（上游已放宽 URL 后缀校验 / 调用点换掉严格函数）→ 自动 reset 到上游并记录退役；SUSPECT → 保留补丁并告警，等人工确认",
       "retired_at": null,
       "retired_upstream_commit": null
+    },
+    {
+      "id": "i18n-zh-full",
+      "status": "active",
+      "summary": "把管理台剩余文案补成中文：在 i18n.js 增加「英文原文 → 中文」映射表（595 条），并用 MutationObserver 在每次 DOM 变更后自动翻译，可覆盖 app.js 动态渲染的内容",
+      "rationale": "上游 i18n 只覆盖静态 HTML 骨架（151 个 key + data-i18n），管理台大半文案是 app.js 渲染时写死的英文，切到中文会中英混杂；本补丁不改 app.js，只补覆盖面",
+      "trailer": "Fork-Patch: i18n-zh-full",
+      "detector": ".github/scripts/detect-i18n-zh-full.sh",
+      "touches": [
+        "web/static/i18n.js"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游 zh-CN 字典 >= 300 条，或上游已具备原文→译文的自动翻译机制）→ 只告警、不自动退役：自动删除会一次丢掉 595 条译文，需人工确认后再移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
     }
   ]
 }
