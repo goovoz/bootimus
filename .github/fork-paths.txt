@@ -11,13 +11,13 @@
 docs/FORK-PATCHES.md
 docs/RELEASING.md
 # 运维脚本（不进镜像，只在本机装）：
-ops/bootimus-watchdog/README.md
-ops/bootimus-watchdog/install.sh
-ops/bootimus-watchdog/watchdog.sh
-ops/bootimus-watchdog/replace_image.py
-ops/bootimus-watchdog/bootimus-watchdog.service
-ops/bootimus-watchdog/bootimus-watchdog.timer
-ops/bootimus-watchdog/default.env
+ops/watchdog/README.md
+ops/watchdog/install.sh
+ops/watchdog/watchdog.sh
+ops/watchdog/replace_image.py
+ops/watchdog/bootimus-watchdog.service
+ops/watchdog/bootimus-watchdog.timer
+ops/watchdog/default.env
 
 # L1 对上游文件的最小改动（均带 [bootimus-fork L1] 锚点注释）：
 # 补丁 iso-url-no-suffix：
