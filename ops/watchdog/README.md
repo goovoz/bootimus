@@ -70,6 +70,21 @@ curl -X POST "https://sctapi.ftqq.com/SCT....send" \
      -d "title=bootimus 测试" -d "desp=收到即表示 sendkey 可用"
 ```
 
+## 时区（重要）
+
+bootimus 的定时任务、日志时间戳都按**进程本地时区**解释。容器默认是 UTC，所以 compose 里必须给：
+
+```yaml
+    environment:
+      TZ: Asia/Shanghai
+```
+
+否则「每天 03:00」会在北京时间 11:00 触发。镜像自带 `zoneinfo`，设 `TZ` 即可，不用重建镜像。
+宿主机本身仍可以是 UTC——容器内 `TZ` 一设，`docker logs` 与界面里的时间就是北京时间。
+
+watchdog 自己的日志与推送也统一按 Asia/Shanghai（脚本里 `export TZ=${TZ:-Asia/Shanghai}`），
+所以日志里是 `+08:00`，不会再出现 UTC 与本地时间混排。
+
 ## 常用操作
 
 ```bash
