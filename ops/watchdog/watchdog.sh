@@ -39,6 +39,9 @@ CHECK_ONLY=${CHECK_ONLY:-0}
 SC_SENDKEY=${SC_SENDKEY:-}
 SC_API=${SC_API:-https://sctapi.ftqq.com}
 
+# 统一按北京时间记日志与推送（宿主机是 UTC，不设的话日志里全是 UTC）
+export TZ=${TZ:-Asia/Shanghai}
+
 # systemd 通过 EnvironmentFile 注入；手动执行时从同一个文件里补一次，
 # 只取 SC_SENDKEY，避免把命令行传入的其他参数覆盖掉
 if [ -z "${SC_SENDKEY:-}" ] && [ -r /etc/default/bootimus-watchdog ]; then
