@@ -2037,7 +2037,7 @@ const SOURCE_TEXT = {
         "None": "无",
         "None (Root Level)": "无（根层级）",
         "Not set": "未设置",
-        "On": "开",
+        "On": "启用",
         "Operating system images that bootimus hosts and boots nodes with. Add an image for a provider, then download it so the kernel and initrd are cached locally. Clusters pick a node image to determine their OS.": "Bootimus 托管并用于启动节点的操作系统镜像。先为某个提供方添加镜像，再下载它，让内核与 initrd 缓存到本地。集群通过选定节点镜像来决定其操作系统。",
         "Operations": "操作",
         "Optional description": "可选描述",
@@ -2351,7 +2351,22 @@ const SOURCE_TEXT = {
         "Requested but unavailable (install samba and ensure smbd is in PATH)": "已请求但不可用（请安装 samba 并确保 smbd 在 PATH 中）",
         "Unavailable (install wimtools / wimlib-imagex to enable boot.wim patching)": "不可用（需安装 wimtools / wimlib-imagex 才能修补 boot.wim）",
         "Available": "可用",
-        "with your USB device. The USB boots iPXE which uses DHCP to find bootimus automatically.": "：请把它改成你的 U 盘设备。该 U 盘会启动 iPXE，并通过 DHCP 自动找到 bootimus。"
+        "with your USB device. The USB boots iPXE which uses DHCP to find bootimus automatically.": "：请把它改成你的 U 盘设备。该 U 盘会启动 iPXE，并通过 DHCP 自动找到 bootimus。",
+        "Pub": "公开",
+        "Distro": "发行版",
+        "Ready": "就绪",
+        "Uploaded": "已上传",
+        "Extracted": "已解压",
+        "(None — use inline script below)": "（无 —— 使用下方的内联脚本）",
+        "No uploaded files — use the form above to upload.": "还没有上传文件 —— 用上面的表单上传。",
+        "Extracted but no files found.": "已解压，但没有文件。",
+        "Not extracted — use the Extract button below to enable kernel boot.": "尚未解压 —— 点下方的「解压」按钮才能启用内核引导。",
+        "→ Kernel": "→ 内核",
+        "Kernel boot needs extraction": "内核引导需要先解压",
+        "SAN Boot": "SAN 引导",
+        "NBD Mount": "NBD 挂载",
+        "NFS Mount": "NFS 挂载",
+        "内核 / Initrd": "内核 / initrd"
     }
 };
 
@@ -2417,10 +2432,19 @@ function _translateTextNodes(root) {
         }
         if (memo) _srcTextMemo.delete(node);
         if (!dict) continue;
-        const base = _normSpace(raw);
+        let base = _normSpace(raw);
+        // 可排序表头的文本是「Name ↕」这种：箭头由 sortIcon 直接拼在文本节点里，
+        // 先把箭头剥掉再查表，命中后把箭头补回去
+        let arrow = '';
+        const am = base.match(/^(.+?)\s*([\u2195\u2191\u2193\u21c5\u25b2\u25bc])$/);
+        if (am && dict[am[1].trim()] !== undefined) {
+            base = am[1].trim();
+            arrow = ' ' + am[2];
+        }
         let hit = dict[base];
         if (hit === undefined) hit = _patternTranslate(base);
         if (hit === undefined || hit === null) continue;
+        hit += arrow;
         let lead = raw.match(/^\s*/)[0];
         const trail = raw.match(/\s*$/)[0];
         // 译文以中文标点开头时丢掉原文的前导空格，免得出现「 ，」
