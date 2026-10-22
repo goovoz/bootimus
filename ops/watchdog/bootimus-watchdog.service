@@ -1,0 +1,14 @@
+[Unit]
+Description=bootimus 自动更新 watchdog（拉最新构建，健康检查失败自动回滚）
+Documentation=file:/opt/bootimus/watchdog.sh
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/bootimus-watchdog
+ExecStart=/opt/bootimus/watchdog.sh
+# 失败不重试：脚本内部自己处理回滚，失败等下一轮
+Nice=10
+TimeoutStartSec=300
