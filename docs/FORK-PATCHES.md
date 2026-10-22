@@ -112,6 +112,38 @@ git checkout -b restore-iso-url-no-suffix fork-archive/iso-url-no-suffix-YYYYMMD
 **为什么不自动退役**：这个补丁一删就是 595 条译文；上游只要「部分实现」就会让判定变绿，
 自动删除的代价远大于人工确认的成本。
 
+### 三类容易漏掉的文案
+
+| 来源 | 例子 | 处理方式 |
+|---|---|---|
+| HTML / app.js 字面量 | `Disk cloning and imaging tool`（工具说明） | 精确映射 |
+| 运行时数据（`tools-profiles.json`、`distro-profiles.json` 的 `description` / `region` / `label`） | `24.04 LTS Desktop (amd64)` | 精确映射；扫源码扫不到，要看数据文件 |
+| Go 后端拼出来的状态串（`handlers.go`、`kubernetes/flatcar|talos.go`） | `Enabled (1 share(s) active, port 445)` | 带变量的用 **模式规则**（见下） |
+
+### 模式规则（`SOURCE_PATTERNS`）
+
+数字/端口插在文案中间时，精确匹配永远对不上，所以补了一层正则：
+
+```js
+const SOURCE_PATTERNS = {
+    'zh-CN': [
+        [/^Enabled \((\d+) share\(s\) active, port (\d+)\)$/, '已启用（$1 个共享，端口 $2）'],
+        [/^(\d[\d,]*)\s+files?$/, '$1 个文件'],
+        [/^(\d[\d,]*)\s+images?$/, '$1 个镜像']
+    ]
+};
+```
+
+规则是**整串锚定**的，所以孤立的 `Files`、`No files yet...` 不会被误伤；`files` 只在「数字 + files」这种计数形态下才翻。
+
+### 标识符不硬翻
+
+`current`、`stable`、`default`、`secureboot-official` 这些是**接口取值或目录名**，直接换成中文会让用户填错值、
+或让路径对不上。做法是保留原文再补中文注释：`current` → `current（当前版本）`、
+`secureboot-official` → `secureboot-official（官方安全启动）`。它们大多出现在输入框 placeholder 上，
+翻译只改显示、不改 `value`，提交给后端的内容不受影响。
+
+
 ## 新增一个补丁的步骤
 
 1. 在 `main` 上正常写代码，**一个补丁尽量压成一个提交**，message 末尾加 `Fork-Patch: <id>`
