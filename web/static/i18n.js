@@ -2358,7 +2358,15 @@ const SOURCE_TEXT = {
         "SAN Boot": "SAN 引导",
         "NBD Mount": "NBD 挂载",
         "NFS Mount": "NFS 挂载",
-        "内核 / Initrd": "内核 / initrd"
+        "内核 / Initrd": "内核 / initrd",
+        "or": "或",
+        "and": "和",
+        "to add one.": "来添加一个。",
+        "none": "无",
+        "(not extracted)": "（未解压）",
+        "Click \"Refresh\" to load logs...": "点击「刷新」加载日志…",
+        "No groups found. Click \"+ Add Group\" to create one.": "还没有分组。点击「+ 添加分组」创建一个。",
+        "No client groups yet. Click \"+ Add Client Group\" to create one.": "还没有客户端分组。点击「+ 添加客户端分组」创建一个。"
     }
 };
 
