@@ -2329,8 +2329,40 @@ const SOURCE_TEXT = {
         "Leap 16.1 Offline Install (64-bit)": "Leap 16.1 离线安装（64 位）",
         "Leap 16.1 Online Install (64-bit)": "Leap 16.1 在线安装（64 位）",
         "Tumbleweed DVD (64-bit)": "Tumbleweed DVD（64 位）",
-        "Tumbleweed NET (64-bit)": "Tumbleweed 网络安装（64 位）"
+        "Tumbleweed NET (64-bit)": "Tumbleweed 网络安装（64 位）",
+        "Architecture": "架构",
+        "Last Seen": "最近检测",
+        "Discovered": "自动发现",
+        "Static": "静态",
+        "Flatcar version": "Flatcar 版本",
+        "Talos version": "Talos 版本",
+        "Release channel": "发布通道",
+        "Schematic ID": "Schematic ID（镜像配置 ID）",
+        "Flatcar release channel (stable, beta, or alpha). Use version 'current' for the channel's latest release.": "Flatcar 的发布通道（stable、beta、alpha）。版本填 current 表示该通道的最新版本。",
+        "Image Factory schematic ID from factory.talos.dev (default is the vanilla, no-extensions schematic).": "来自 factory.talos.dev 的 Image Factory schematic ID（默认是无扩展的原版 schematic）。",
+        "current": "current（当前版本）",
+        "stable": "stable（稳定通道）",
+        "beta": "beta（测试通道）",
+        "alpha": "alpha（内测通道）",
+        "default": "default（默认）",
+        "secureboot-official": "secureboot-official（官方安全启动）",
+        "Enabled (standalone — no external DHCP PXE config needed)": "已启用（独立模式，无需外部 DHCP 的 PXE 配置）",
+        "Disabled (external DHCP must set next-server/bootfile)": "未启用（需外部 DHCP 设置 next-server/bootfile）",
+        "Requested but unavailable (install samba and ensure smbd is in PATH)": "已请求但不可用（请安装 samba 并确保 smbd 在 PATH 中）",
+        "Unavailable (install wimtools / wimlib-imagex to enable boot.wim patching)": "不可用（需安装 wimtools / wimlib-imagex 才能修补 boot.wim）",
+        "Available": "可用",
+        "with your USB device. The USB boots iPXE which uses DHCP to find bootimus automatically.": "：请把它改成你的 U 盘设备。该 U 盘会启动 iPXE，并通过 DHCP 自动找到 bootimus。"
     }
+};
+
+// 带变量的文案（数字、端口）没法精确匹配，用正则兜住。
+// 只在整串完全符合这个形态时才替换，避免误伤 "files" 这类普通单词。
+const SOURCE_PATTERNS = {
+    'zh-CN': [
+        [/^Enabled \((\d+) share\(s\) active, port (\d+)\)$/, '已启用（$1 个共享，端口 $2）'],
+        [/^(\d[\d,]*)\s+files?$/, '$1 个文件'],
+        [/^(\d[\d,]*)\s+images?$/, '$1 个镜像']
+    ]
 };
 
 const _SRC_ATTRS = ['title', 'placeholder', 'aria-label'];
@@ -2347,6 +2379,15 @@ function _srcDict() {
 
 function _normSpace(s) {
     return String(s).replace(/\s+/g, ' ').trim();
+}
+
+function _patternTranslate(base) {
+    const list = SOURCE_PATTERNS[_currentLang];
+    if (!list) return null;
+    for (let i = 0; i < list.length; i++) {
+        if (list[i][0].test(base)) return base.replace(list[i][0], list[i][1]);
+    }
+    return null;
 }
 
 function _translateTextNodes(root) {
@@ -2376,10 +2417,14 @@ function _translateTextNodes(root) {
         }
         if (memo) _srcTextMemo.delete(node);
         if (!dict) continue;
-        const hit = dict[_normSpace(raw)];
-        if (hit === undefined) continue;
-        const lead = raw.match(/^\s*/)[0];
+        const base = _normSpace(raw);
+        let hit = dict[base];
+        if (hit === undefined) hit = _patternTranslate(base);
+        if (hit === undefined || hit === null) continue;
+        let lead = raw.match(/^\s*/)[0];
         const trail = raw.match(/\s*$/)[0];
+        // 译文以中文标点开头时丢掉原文的前导空格，免得出现「 ，」
+        if (/^[，。：；、！？）】」》]/.test(hit)) lead = '';
         const out = lead + hit + trail;
         _srcTextMemo.set(node, { src: raw, out: out });
         if (raw !== out) pending.push([node, out]);
