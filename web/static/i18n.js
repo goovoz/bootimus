@@ -2138,7 +2138,9 @@ const SOURCE_TEXT = {
         "CN (Alibaba Cloud)": "中国（阿里云）",
         "CN (Huawei Cloud)": "中国（华为云）",
         "CN (USTC)": "中国（中科大）",
-        "CN (Tsinghua TUNA)": "中国（清华 TUNA）"
+        "CN (Tsinghua TUNA)": "中国（清华 TUNA）",
+        "CN (NetEase)": "中国（网易）",
+        "CN (HUST)": "中国（华中科大）"
     }
 };
 

@@ -150,36 +150,53 @@ const SOURCE_PATTERNS = {
 翻译只改显示、不改 `value`，提交给后端的内容不受影响。
 
 
-## 国内镜像站补丁（`cn-mirrors`）为什么这么做
+## 国内镜像站补丁（`cn-mirrors`）
 
-「管理 → 镜像 → 获取镜像」的镜像站下拉原来只有 Global / UK / DE，国内拉 6 GB 的 ISO 很慢。
-补丁在 `distro-profiles.json` 的 `mirrors` 里加了四家：阿里云、华为云、中科大（USTC）、清华（TUNA）。
+「管理 → 镜像 → 获取镜像」的镜像站下拉原来只有 Global / UK / DE。补丁在 `distro-profiles.json` 的
+`mirrors` 里加国内镜像，**插入位置是每个发行版第一个镜像之后**（`mirrors[1:1]`）——前端用
+`mirrors[0].base` 当默认 URL（`app.js` 的 `defaultBase`），这样默认行为不变、国内镜像排第二项。
 
-**插入位置是每个发行版第一个镜像之后**（`mirrors[1:1]`）。因为前端用 `mirrors[0].base` 当默认 URL
-（`app.js` 里的 `defaultBase`），这样默认行为不变，国内镜像在下拉里排第二项，一眼就能选到。
+### 教训：站存在 ≠ 能下载
 
-### 只加实测存在的组合
+第一版凭「目录存在」就登记了 33 条（阿里云 / 华为云 / 中科大 / 清华），结果在管理台点下载全部 403。
+逐条查下来，是四家站在**服务端程序化访问**上的拦截，不是版本或路径问题：
 
-四家站的目录布局并不统一，因此逐条实测后再登记，而不是照着直觉写：
-
-| 镜像站 | 覆盖 | 实测结论 |
+| 站 | 真实返回 | 结论 |
 |---|---|---|
-| 阿里云 | 10 个发行版 | 全量，含 Linux Mint（`/linuxmint/stable/` 只有阿里云有） |
-| 华为云 | 9 个 | `/linuxmint/stable/` 返回 404（只有软件源，无 ISO） |
-| 中科大 | 8 个 | `/almalinux/`、`/rockylinux/` 都是 404 |
-| 清华 TUNA | 8 个 | 同上；`/linuxmint/` 只有 db/dists/pool，无 ISO |
+| 阿里云 | 302 → `iso-osm.mirrors.aliyuncs.com`，该域名在部署机 80/443 全部 connection refused | 跳转目标不可达，用不了 |
+| 华为云 | 418 + 3KB 拦截页（浏览器 UA 也一样） | WAF 挑战，用不了 |
+| 中科大 | 200 但正文是 `Verifying - USTC Mirrors` | JS 人机验证页，用不了 |
+| 清华 TUNA | 403「您访问使用的软件带有非常用软件的特征」 | 客户端指纹拦截，用不了 |
 
-合计 33 条。地区名写成 `CN (Alibaba Cloud)` 这类英文串，中文由 `i18n-zh-full` 的映射表提供
-（`中国（阿里云）` 等 4 条）——**不把中文写进数据文件**，数据与展示分开，将来上游同步也不会冲突。
+关键点：**浏览器能打开这些页面，不代表 bootimus 能下载**。判断标准只有一个——在部署机上真的取到
+ISO 字节（`Range: bytes=0-1023`，且首字节不是 `<`、Content-Type 不是 HTML）。
 
-### 已知边界
+### 现在的登记范围（逐条实测）
 
-上游 profile 里有一部分版本号本身已经过期（例如 Debian `13.5.0`、Kali `2024.4`），
-在官方站和国内镜像都会 404。这不是本补丁引入的问题，镜像站只负责镜像上游目录结构；
-遇到下载 404 时先切回 `Global` 对照，若同样 404 就是上游版本数据过期。
+在部署机（`172.20.0.205`）上按「官方能提供的版本，候选必须全覆盖」筛，最后只有两家通过，且只覆盖
+两个发行版：
 
-探测器：`bash .github/scripts/detect-cn-mirrors.sh --selftest`（NEEDED / SUSPECT / IMPLEMENTED / 文件缺失）。
-上游一旦自己加了 4 个以上中国大陆镜像站，每日同步会告警但**不自动退役**——镜像地址需要人工核对。
+| 发行版 | 镜像 | 结果 |
+|---|---|---|
+| ubuntu | `CN (NetEase)` = `mirrors.163.com/ubuntu-releases` | 4/4 版本可下 |
+| ubuntu | `CN (HUST)` = `mirrors.hust.edu.cn/ubuntu-releases` | 4/4 版本可下 |
+| arch | `CN (NetEase)` = `mirrors.163.com/archlinux/iso/latest` | 1/1 可下 |
+| arch | `CN (HUST)` = `mirrors.hust.edu.cn/archlinux/iso/latest` | 1/1 可下 |
+
+两家在 **Go 默认 UA**（`Go-http-client/1.1`，也就是 bootimus 实际用的）下同样返回 206，因此不需要
+改客户端代码。像腾讯云、北外、南大、上交大等站也测过，分别是不支持该路径 / 403 / JS 验证页。
+
+其余 8 个发行版目前没有可用的国内镜像，下拉里就只有官方与欧洲镜像——**宁可不显示，也不显示一个必然失败的选项**。
+
+### 如果以后要加回来
+
+1. 先确认那家站放行了程序化下载（换网络、加白名单、或它调整了 WAF），不能只看浏览器能打开
+2. 用 `Range: bytes=0-1023` 在**部署机**上跑一遍，首字节不能是 `<`
+3. 该镜像必须覆盖官方能提供的**全部**版本，否则那一行仍然会 404
+4. 地区名写英文 `CN (NetEase)`，中文放 `i18n-zh-full` 的映射表（`中国（网易）`），不把中文写进数据文件
+
+探测器：`bash .github/scripts/detect-cn-mirrors.sh --selftest`。上游一旦自己加了 4 个以上中国大陆
+镜像站，每日同步会告警但不自动退役——镜像可用性必须在部署机上人工复测。
 
 ## 新增一个补丁的步骤
 
