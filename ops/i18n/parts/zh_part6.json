@@ -1,0 +1,19 @@
+{
+  "Pub": "公开",
+  "Distro": "发行版",
+  "Ready": "就绪",
+  "Uploaded": "已上传",
+  "Extracted": "已解压",
+  "(None — use inline script below)": "（无 —— 使用下方的内联脚本）",
+  "No uploaded files — use the form above to upload.": "还没有上传文件 —— 用上面的表单上传。",
+  "Extracted but no files found.": "已解压，但没有文件。",
+  "Not extracted — use the Extract button below to enable kernel boot.": "尚未解压 —— 点下方的「解压」按钮才能启用内核引导。",
+
+  "→ Kernel": "→ 内核",
+  "Kernel boot needs extraction": "内核引导需要先解压",
+  "SAN Boot": "SAN 引导",
+  "NBD Mount": "NBD 挂载",
+  "NFS Mount": "NFS 挂载",
+
+  "内核 / Initrd": "内核 / initrd"
+}

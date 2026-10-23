@@ -11,6 +11,18 @@
 .github/workflows/fork-release.yml
 .github/workflows/fork-follow-upstream-release.yml
 docs/FORK-PATCHES.md
+ops/i18n/rebuild.sh
+ops/i18n/build_i18n_patch.py
+ops/i18n/apply_engine_extras.py
+ops/i18n/parts/zh_part1.json
+ops/i18n/parts/zh_part2.json
+ops/i18n/parts/zh_part3.json
+ops/i18n/parts/zh_part4.json
+ops/i18n/parts/zh_part5.json
+ops/i18n/parts/zh_part6.json
+ops/i18n/parts/zh_part7.json
+ops/i18n/parts/zh_part9.json
+ops/i18n/parts/zh_part10.json
 docs/RELEASING.md
 # 运维脚本（不进镜像，只在本机装）：
 ops/watchdog/README.md
