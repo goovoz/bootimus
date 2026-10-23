@@ -1318,9 +1318,10 @@
                     <textarea name="description" placeholder="Optional description" rows="3"></textarea>
                 </div>
                 <!-- [bootimus-fork L1] fork-patch: download-proxy -->
-                <div class="form-group checkbox-group">
-                    <input type="checkbox" id="download-use-proxy" name="use_proxy">
-                    <label for="download-use-proxy">Use proxy for download</label>
+                <div class="form-group checkbox-group" style="gap: 4px;">
+                    <input type="checkbox" id="download-use-proxy" name="use_proxy"
+                           style="margin: 0; padding: 0; width: auto; height: auto; flex: 0 0 auto;">
+                    <label for="download-use-proxy" style="margin: 0; line-height: 1;">Use proxy for download</label>
                 </div>
                 <small style="color: var(--text-secondary); display: block; margin-top: -8px;">
                     Route this download through the proxy configured in Settings.
@@ -1748,8 +1749,9 @@
                 Download popular Linux distributions directly from official mirrors. Switch the mirror per row, edit the URL freely if you need to point somewhere else, then hit Download. <strong>Mirror URLs and release versions can drift</strong> — please report issues so the catalogue can be kept up to date.
             </p>
             <!-- [bootimus-fork L1] fork-patch: download-proxy -->
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 0 0 10px; color: var(--text-secondary);">
-                <input type="checkbox" id="get-iso-use-proxy" style="margin: 0;">
+            <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; line-height: 1; margin: 0 0 10px; color: var(--text-secondary);">
+                <input type="checkbox" id="get-iso-use-proxy"
+                       style="margin: 0; padding: 0; width: auto; height: auto; flex: 0 0 auto;">
                 Use proxy for download
             </label>
             <input type="search" class="toolbar-filter" id="get-iso-filter" placeholder="Filter…" oninput="renderGetImagesList(this.value)" style="margin-bottom: 12px;">
