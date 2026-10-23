@@ -515,7 +515,7 @@ function setupTabs() {
             if (item.dataset.tab === 'autoinstall') loadAutoInstallFiles();
             if (item.dataset.tab === 'clusters') loadClustersTab();
             if (item.dataset.tab === 'boot-menu') { loadTheme(); populateMenuPreviewMACs(); }
-            if (item.dataset.tab === 'settings') { loadUSBImages(); loadWebhookConfig(); loadRestoreStatus(); loadHousekeeping(); }
+            if (item.dataset.tab === 'settings') { loadUSBImages(); loadWebhookConfig(); loadRestoreStatus(); loadHousekeeping(); loadProxyConfig(); }
             if (item.dataset.tab === 'api-reference') showAPIReference();
             if (item.dataset.tab === 'audit') loadAuditLog();
             if (item.dataset.tab === 'pxe-debug') loadPXEDebug();
@@ -974,6 +974,53 @@ async function saveWebhookConfig(e) {
         else showAlert(data.error || 'Save failed', 'error');
     } catch (err) {
         showAlert('Save failed: ' + err.message, 'error');
+    }
+}
+
+// [bootimus-fork L1] fork-patch: download-proxy
+async function loadProxyConfig() {
+    try {
+        const res = await authFetch(`${API_BASE}/proxy-config`);
+        const data = await res.json();
+        if (!data.success || !data.data) return;
+        const addr = document.getElementById('proxy-address');
+        const user = document.getElementById('proxy-username');
+        const pass = document.getElementById('proxy-password');
+        if (addr) addr.value = data.data.address || '';
+        if (user) user.value = data.data.username || '';
+        if (pass) pass.value = data.data.password || '';
+    } catch (e) {
+        console.error('Failed to load proxy settings:', e);
+    }
+}
+
+async function saveProxyConfig(e) {
+    e.preventDefault();
+    const addrEl = document.getElementById('proxy-address');
+    const userEl = document.getElementById('proxy-username');
+    const passEl = document.getElementById('proxy-password');
+    const hint = document.getElementById('proxy-result');
+    const body = {
+        address: (addrEl ? addrEl.value : '').trim(),
+        username: (userEl ? userEl.value : '').trim(),
+        password: passEl ? passEl.value : '',
+    };
+    try {
+        const res = await authFetch(`${API_BASE}/proxy-config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (hint) hint.textContent = 'Saved';
+            showAlert('Proxy settings saved', 'success');
+        } else {
+            if (hint) hint.textContent = '';
+            showAlert(data.error || 'Failed to save proxy settings', 'error');
+        }
+    } catch (err) {
+        showAlert('Failed to save proxy settings', 'error');
     }
 }
 
@@ -3220,6 +3267,9 @@ function setupForms() {
     if (wf) wf.addEventListener('submit', saveWebhookConfig);
     const hf = document.getElementById('housekeeping-form');
     if (hf) hf.addEventListener('submit', saveHousekeeping);
+    // [bootimus-fork L1] fork-patch: download-proxy
+    const pf = document.getElementById('proxy-form');
+    if (pf) pf.addEventListener('submit', saveProxyConfig);
 }
 
 let apiReferenceSpec = null;
@@ -4906,6 +4956,9 @@ async function downloadFromGetISO(rowKey, distroName, releaseLabel, catalogueId,
         return;
     }
     renderGetISOProgress(rowKey, 'Starting…');
+    // [bootimus-fork L1] fork-patch: download-proxy
+    const useProxyEl = document.getElementById('get-iso-use-proxy');
+    const useProxy = !!(useProxyEl && useProxyEl.checked);
     try {
         const body = { url, description: `${distroName} ${releaseLabel}` };
         if (!catalogueId) catalogueId = (rowKey || '').replace(/-\d+$/, '');
@@ -4913,6 +4966,8 @@ async function downloadFromGetISO(rowKey, distroName, releaseLabel, catalogueId,
         body.catalogue_release = releaseLabel;
         if (sha256) body.sha256 = sha256;
         if (checksumPath) body.checksum_url = checksumPath;
+        // [bootimus-fork L1] fork-patch: download-proxy
+        body.use_proxy = useProxy;
         const res = await authFetch(`${API_BASE}/images/download`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -5035,7 +5090,9 @@ document.getElementById('download-form').addEventListener('submit', function(e) 
 
     const downloadData = {
         url: formData.get('url'),
-        description: formData.get('description')
+        description: formData.get('description'),
+        // [bootimus-fork L1] fork-patch: download-proxy
+        use_proxy: formData.get('use_proxy') === 'on'
     };
 
     // [bootimus-fork L1] fork-patch: iso-url-no-suffix

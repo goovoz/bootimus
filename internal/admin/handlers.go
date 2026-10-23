@@ -15,6 +15,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -3356,6 +3357,8 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 		ChecksumURL      string `json:"checksum_url"`
 		CatalogueID      string `json:"catalogue_id"`
 		CatalogueRelease string `json:"catalogue_release"`
+		// [bootimus-fork L1] fork-patch: download-proxy
+		UseProxy bool `json:"use_proxy"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -3406,7 +3409,7 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go h.downloadISO(req.URL, filename, destPath, opts)
+	go h.downloadISO(req.URL, filename, destPath, opts, req.UseProxy)
 
 	h.sendJSON(w, http.StatusAccepted, Response{
 		Success: true,
@@ -3443,7 +3446,57 @@ func (h *Handler) resolveExpectedChecksum(url, filename string, opts downloadOpt
 	return sum, source
 }
 
-func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptions) {
+// [bootimus-fork L1] fork-patch: download-proxy
+// normalizeProxyURL accepts "host:port" or a full proxy URL and attaches credentials.
+func normalizeProxyURL(addr, user, pass string) (*url.URL, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil, fmt.Errorf("proxy address is empty")
+	}
+	if !strings.Contains(addr, "://") {
+		addr = "http://" + addr
+	}
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy address: %w", err)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("invalid proxy address: missing host")
+	}
+	if user != "" {
+		if pass != "" {
+			u.User = url.UserPassword(user, pass)
+		} else {
+			u.User = url.User(user)
+		}
+	}
+	return u, nil
+}
+
+// downloadClient returns the HTTP client used for ISO downloads. When useProxy is
+// set and a proxy is configured, the request is routed through it; otherwise the
+// download goes direct (and the returned note explains why, if it was requested).
+func (h *Handler) downloadClient(useProxy bool) (*http.Client, string) {
+	direct := &http.Client{Timeout: 0}
+	if !useProxy {
+		return direct, ""
+	}
+	if h.storage == nil {
+		return direct, "proxy requested but storage is unavailable; downloading directly"
+	}
+	cfg, err := h.storage.GetProxyConfig()
+	if err != nil || cfg == nil || strings.TrimSpace(cfg.Address) == "" {
+		return direct, "proxy requested but not configured in Settings; downloading directly"
+	}
+	pu, err := normalizeProxyURL(cfg.Address, cfg.Username, cfg.Password)
+	if err != nil {
+		return direct, fmt.Sprintf("proxy config unusable (%v); downloading directly", err)
+	}
+	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
+	return &http.Client{Timeout: 0, Transport: tr}, "using proxy " + pu.Redacted()
+}
+
+func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptions, useProxy bool) {
 	log.Printf("Starting ISO download: %s from %s", filename, url)
 
 	downloadMgr.Add(url, filename, 0)
@@ -3456,9 +3509,12 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 	}
 	downloadMgr.SetVerification(filename, verification, expected)
 
-	client := &http.Client{
-		Timeout: 0,
+	// [bootimus-fork L1] fork-patch: download-proxy
+	client, proxyNote := h.downloadClient(useProxy)
+	if proxyNote != "" {
+		log.Printf("ISO download %s: %s", filename, proxyNote)
 	}
+	defer client.CloseIdleConnections()
 
 	resp, err := client.Get(url)
 	if err != nil {
@@ -4980,6 +5036,37 @@ func (h *Handler) RunScheduledTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Task dispatched"})
+}
+
+// [bootimus-fork L1] fork-patch: download-proxy
+func (h *Handler) GetProxyConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := h.storage.GetProxyConfig()
+	if err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Data: cfg})
+}
+
+func (h *Handler) UpdateProxyConfig(w http.ResponseWriter, r *http.Request) {
+	var cfg models.ProxyConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid request"})
+		return
+	}
+	cfg.Address = strings.TrimSpace(cfg.Address)
+	cfg.Username = strings.TrimSpace(cfg.Username)
+	if cfg.Address != "" {
+		if _, err := normalizeProxyURL(cfg.Address, cfg.Username, cfg.Password); err != nil {
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+			return
+		}
+	}
+	if err := h.storage.UpdateProxyConfig(&cfg); err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Proxy settings saved", Data: cfg})
 }
 
 func (h *Handler) GetWebhookConfig(w http.ResponseWriter, r *http.Request) {

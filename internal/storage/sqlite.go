@@ -34,7 +34,8 @@ func NewSQLiteStore(dataDir string) (*SQLiteStore, error) {
 }
 
 func (s *SQLiteStore) AutoMigrate() error {
-	if err := s.db.AutoMigrate(&models.User{}, &models.ClientGroup{}, &models.NodeImage{}, &models.Cluster{}, &models.Client{}, &models.ImageGroup{}, &models.Image{}, &models.BootLog{}, &models.CustomFile{}, &models.DriverPack{}, &models.MenuTheme{}, &models.BootTool{}, &models.HardwareInventory{}, &models.DistroProfile{}, &models.WebhookConfig{}, &models.ScheduledTask{}, &models.AuditLog{}, &models.HousekeepingSettings{}, &models.SANTarget{}, &models.DiskImage{}, &models.DiskJob{}, &models.APIToken{}, &models.InstallRecord{}, &models.ReplicaState{}); err != nil {
+	// [bootimus-fork L1] fork-patch: download-proxy（列表里多出 &models.ProxyConfig{}）
+	if err := s.db.AutoMigrate(&models.User{}, &models.ClientGroup{}, &models.NodeImage{}, &models.Cluster{}, &models.Client{}, &models.ImageGroup{}, &models.Image{}, &models.BootLog{}, &models.CustomFile{}, &models.DriverPack{}, &models.MenuTheme{}, &models.BootTool{}, &models.HardwareInventory{}, &models.DistroProfile{}, &models.WebhookConfig{}, &models.ProxyConfig{}, &models.ScheduledTask{}, &models.AuditLog{}, &models.HousekeepingSettings{}, &models.SANTarget{}, &models.DiskImage{}, &models.DiskJob{}, &models.APIToken{}, &models.InstallRecord{}, &models.ReplicaState{}); err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
@@ -849,6 +850,20 @@ func (s *SQLiteStore) GetWebhookConfig() (*models.WebhookConfig, error) {
 }
 
 func (s *SQLiteStore) UpdateWebhookConfig(cfg *models.WebhookConfig) error {
+	cfg.ID = 1
+	return s.db.Save(cfg).Error
+}
+
+// [bootimus-fork L1] fork-patch: download-proxy
+func (s *SQLiteStore) GetProxyConfig() (*models.ProxyConfig, error) {
+	var cfg models.ProxyConfig
+	if err := s.db.First(&cfg, 1).Error; err != nil {
+		return &models.ProxyConfig{ID: 1}, nil
+	}
+	return &cfg, nil
+}
+
+func (s *SQLiteStore) UpdateProxyConfig(cfg *models.ProxyConfig) error {
 	cfg.ID = 1
 	return s.db.Save(cfg).Error
 }
