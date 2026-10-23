@@ -35,21 +35,6 @@
       "retire_policy": "探测到 IMPLEMENTED（上游 zh-CN 字典 >= 300 条，或上游已具备原文→译文的自动翻译机制）→ 只告警、不自动退役：自动删除会一次丢掉 688 条译文，需人工确认后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
-    },
-    {
-      "id": "cn-mirrors",
-      "status": "active",
-      "summary": "在「管理 → 镜像 → 获取镜像」里加入国内镜像站：目前只保留实测能从部署机真正下载到 ISO 字节的两家（网易、华中科大），覆盖 ubuntu 与 arch；其余站点因 WAF/JS 验证/跳转目标不可达被排除",
-      "rationale": "上游 distro-profiles.json 只有 Global / UK / DE 三地镜像，国内拉 6GB 的 ISO 很慢。但「镜像站存在」不等于「能下载」——四家常用国内站在部署机上分别返回 302 跳转不可达、418 WAF、JS 验证页、403 客户端指纹拦截，因此只登记逐条实测通过的组合",
-      "trailer": "Fork-Patch: cn-mirrors",
-      "detector": ".github/scripts/detect-cn-mirrors.sh",
-      "touches": [
-        "distro-profiles.json",
-        "internal/profiles/distro-profiles.json"
-      ],
-      "retire_policy": "探测到 IMPLEMENTED（上游已加入 >= 4 个中国大陆镜像站地区）→ 只告警不自动退役：镜像地址需要人工在部署机上复测可用性",
-      "retired_at": null,
-      "retired_upstream_commit": null
     }
   ]
 }

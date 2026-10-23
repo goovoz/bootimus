@@ -14,8 +14,6 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Canonical)", "base": "https://releases.ubuntu.com"},
-        {"region": "CN (NetEase)", "base": "https://mirrors.163.com/ubuntu-releases"},
-        {"region": "CN (HUST)", "base": "https://mirrors.hust.edu.cn/ubuntu-releases"},
         {"region": "UK (Bytemark)", "base": "https://mirror.bytemark.co.uk/ubuntu-releases"},
         {"region": "DE (Uni Erlangen)", "base": "https://ftp.uni-erlangen.de/mirrors/ubuntu-releases"}
       ],
@@ -142,8 +140,6 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Rackspace)", "base": "https://mirror.rackspace.com/archlinux/iso/latest"},
-        {"region": "CN (NetEase)", "base": "https://mirrors.163.com/archlinux/iso/latest"},
-        {"region": "CN (HUST)", "base": "https://mirrors.hust.edu.cn/archlinux/iso/latest"},
         {"region": "DE (Hetzner)", "base": "https://mirror.hetzner.com/archlinux/iso/latest"},
         {"region": "UK (Bytemark)", "base": "https://mirror.bytemark.co.uk/archlinux/iso/latest"}
       ],

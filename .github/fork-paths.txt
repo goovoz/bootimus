@@ -4,7 +4,6 @@
 .github/fork-paths.txt
 .github/scripts/detect-iso-url-no-suffix.sh
 .github/scripts/detect-i18n-zh-full.sh
-.github/scripts/detect-cn-mirrors.sh
 .github/scripts/mark_retired.py
 .github/workflows/sync-upstream.yml
 .github/workflows/fork-release.yml
@@ -26,15 +25,3 @@ ops/watchdog/default.env
 #   internal/admin/download_test.go   —— 补丁行为的回归测试
 #   web/static/app.js                 —— 提交下载时带上显式文件名
 #   web/static/index.html             —— 新增可选「File name」字段
-# 补丁 cn-mirrors：
-#   distro-profiles.json               —— 每个发行版的 mirrors 数组里插入 4 家国内镜像
-#   internal/profiles/distro-profiles.json —— 同上（go:embed 用的副本，make sync-profiles 会同步）
-# 补丁 i18n-zh-full：
-#   web/static/i18n.js                —— 追加 SOURCE_TEXT 映射表 + 文本/属性自动翻译 + MutationObserver
-# 发布链路：
-#   .github/workflows/release.yml     —— 两个 job 加 `if: github.repository == 'garybowers/bootimus'`
-#                                        守卫（上游 docker job 硬编码推 garybowers/bootimus，fork 里必然失败）
-#   .github/workflows/ci.yml          —— 把 uses: 升到声明 node24 的主版本（GitHub 已强制 Node.js 24，逻辑不动）
-#
-# 注意：main 上超出上游的提交必须带 `Fork-Patch: <id>` 或 `Fork-Meta:` trailer，
-# 否则 sync-upstream.yml 会拒绝自动同步（见 docs/FORK-PATCHES.md）。

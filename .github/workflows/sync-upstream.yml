@@ -101,8 +101,6 @@ jobs:
           # [bootimus-fork] 第二个补丁：中文覆盖。只做判定与告警，不参与自动退役逻辑
           bash .github/scripts/detect-i18n-zh-full.sh /tmp/upstream-tree | tee /tmp/detect-i18n.txt
 
-          # [bootimus-fork] 第三个补丁：国内镜像站。只判定与告警，不参与自动退役
-          bash .github/scripts/detect-cn-mirrors.sh /tmp/upstream-tree | tee /tmp/detect-cn.txt
 
           RESULT=$(sed -n 's/^RESULT=//p' /tmp/detect.txt | head -1)
           REASON=$(sed -n 's/^REASON=//p' /tmp/detect.txt | head -1)
@@ -112,8 +110,6 @@ jobs:
             echo "patches=${patches}"
             echo "i18n_result=$(sed -n 's/^RESULT=//p' /tmp/detect-i18n.txt | head -1)"
             echo "i18n_reason=$(sed -n 's/^REASON=//p' /tmp/detect-i18n.txt | head -1)"
-            echo "cn_result=$(sed -n 's/^RESULT=//p' /tmp/detect-cn.txt | head -1)"
-            echo "cn_reason=$(sed -n 's/^REASON=//p' /tmp/detect-cn.txt | head -1)"
             echo "branch=sync/$(date -u +%Y%m%d-%H%M)"
           } >> "$GITHUB_OUTPUT"
 
@@ -123,11 +119,6 @@ jobs:
           echo "::warning::上游可能已自行补齐中文覆盖：${{ steps.inspect.outputs.i18n_reason }}"
           echo "补丁 i18n-zh-full 未自动退役（自动删除会一次丢掉 688 条译文），请人工确认后再移除。"
 
-      - name: 国内镜像站补丁是否该让位（仅告警）
-        if: steps.inspect.outputs.cn_result == 'IMPLEMENTED'
-        run: |
-          echo "::warning::上游可能已自行加入中国大陆镜像站：${{ steps.inspect.outputs.cn_reason }}"
-          echo "补丁 cn-mirrors 未自动退役（涉及 10 个发行版的镜像地址，需人工核对可用性后再移除）。"
 
       - name: 上游已实现 → 退役补丁
         id: retire
