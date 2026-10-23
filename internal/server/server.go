@@ -1568,6 +1568,9 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	adminHandler.AdminTLSStatus = s.AdminTLSStatus
 	adminHandler.BootAuthReady = s.AdminTLSEnabled
 	mux.HandleFunc("/boot-auth", s.handleBootAuthentication)
+	// [bootimus-fork L1] fork-patch: download-resume
+	// Drop leftover .part files nothing is writing to any more.
+	adminHandler.CleanupStaleDownloads()
 	if s.scheduler != nil {
 		adminHandler.SchedulerReload = s.scheduler.Reload
 		adminHandler.SchedulerRunNow = s.scheduler.RunNow

@@ -1080,7 +1080,7 @@
             <div class="card" style="margin-top: 20px;">
                 <h2>Network Proxy</h2>
                 <p style="color: var(--text-secondary); margin: 0 12px 16px; font-size: 13px;">
-                    Optional HTTP proxy for ISO downloads. Save it here, then tick "Use proxy" in the download dialog or the Get Images dialog. Leave the credentials empty if the proxy needs no authentication.
+                    Optional HTTP proxy for ISO downloads. Save it here, then tick "Use proxy for download" in the download dialog or the Get Images dialog. Leave the credentials empty if the proxy needs no authentication.
                 </p>
                 <form id="proxy-form" style="padding: 0 12px 12px;">
                     <div class="form-group">
@@ -2124,7 +2124,7 @@
                 <!-- [bootimus-fork L1] fork-patch: download-proxy -->
                 <div class="form-group checkbox-group">
                     <input type="checkbox" id="download-use-proxy" name="use_proxy">
-                    <label for="download-use-proxy">Use proxy for this download</label>
+                    <label for="download-use-proxy">Use proxy for download</label>
                 </div>
                 <small style="color: var(--text-secondary); display: block; margin-top: -8px;">
                     Route this download through the proxy configured in Settings.
@@ -2591,7 +2591,7 @@
             <!-- [bootimus-fork L1] fork-patch: download-proxy -->
             <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 0 0 10px; color: var(--text-secondary);">
                 <input type="checkbox" id="get-iso-use-proxy" style="margin: 0;">
-                Use proxy for these downloads
+                Use proxy for download
             </label>
             <input type="search" class="toolbar-filter" id="get-iso-filter" placeholder="Filter…" oninput="renderGetImagesList(this.value)" style="margin-bottom: 12px;">
             <div id="get-images-list" style="max-height: 65vh; overflow-y: auto; padding-right: 4px;"></div>
