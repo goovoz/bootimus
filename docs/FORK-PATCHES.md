@@ -41,7 +41,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | id | 状态 | 做什么 | 触碰的上游文件 |
 |---|---|---|---|
 | `iso-url-no-suffix` | active | 允许下载不带 `.iso` 后缀的链接：2 字节 Range 探测 Content-Type，从 Content-Disposition / 最终路径取名，UI 可显式指定文件名 | `internal/admin/handlers.go`、`internal/admin/download_test.go`、`web/static/app.js`、`web/static/index.html` |
-| `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加「英文原文 → 中文」映射（当前 696 条），并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
+| `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加「英文原文 → 中文」映射（当前 770 条），并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
 | `download-proxy` | active | ISO 下载可走网络代理：设置页存代理地址与可选凭据，「从 URL 下载」与「获取镜像」各有一个「使用代理下载」开关 | `internal/admin/handlers.go`、`internal/models/models.go`、`internal/storage/*.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
 | `download-resume` | active | ISO 下载断点续传 + 残留清理：数据先写 `.part`（带 ETag 的 meta），再下用 `Range` 续传、`If-Range` 防串版本，完成才 rename；启动清理 7 天前的残留 | `internal/admin/handlers.go`、`internal/admin/download_resume_test.go`、`internal/server/server.go` |
 
@@ -96,7 +96,7 @@ git checkout -b restore-iso-url-no-suffix fork-archive/iso-url-no-suffix-YYYYMMD
 补丁的取舍：**不改 `app.js`**（7290 行、几百处字面量，改完上游一动就冲突），
 而是在 `i18n.js` 里加一层「英文原文 → 译文」的映射，并接管渲染后的翻译：
 
-- `SOURCE_TEXT`：696 条原文到中文的映射（专有名词与示例值除外）
+- `SOURCE_TEXT`：770 条原文到中文的映射（专有名词与示例值除外）
 - `_translateTextNodes()`：逐文本节点精确匹配，跳过 `script/style/code/pre/textarea`
 - `_translateAttrs()`：`title` / `placeholder` / `aria-label` 同样翻译
 - `_installAutoTranslate()`：`MutationObserver` + 30ms 防抖，动态渲染后自动补译
@@ -150,6 +150,32 @@ const SOURCE_PATTERNS = {
 `secureboot-official` → `secureboot-official（官方安全启动）`。它们大多出现在输入框 placeholder 上，
 翻译只改显示、不改 `value`，提交给后端的内容不受影响。
 
+
+### 译文与生成器放在仓库里（`ops/i18n/`）
+
+`i18n.js` 是生成物：上游 `i18n.js` + `ops/i18n/parts/*.json` 的映射 + `apply_engine_extras.py`
+追加的引擎能力。重新生成只需一条命令（默认以上游 `cb5efed` 为底，可传别的 ref）：
+
+```bash
+bash ops/i18n/rebuild.sh            # 或 bash ops/i18n/rebuild.sh <upstream-ref>
+```
+
+> 早先这两步的脚本只存在于临时目录，`/tmp` 被清空后 770 条译文就无法重建了，
+> 所以源文件与生成器一并入库。
+
+### 三类新增的渲染规则
+
+| 形态 | 例子 | 处理 |
+|---|---|---|
+| 前缀图标 + 文案（同一文本节点） | `⚠ Kernel boot needs extraction`、`✓ Ready` | 先剥掉 `⚠ ✓ →` 等前缀，查表命中后再补回 |
+| 固定前缀 + 具体错误 | `Download failed: timeout` | 映射表里以 `:` 结尾的键当前缀，最长优先匹配，剩余部分原样接上 |
+| 整句带变量 | `ubuntu prefers kernel boot, currently sanboot`、`Deleted foo.iso` | 走 `SOURCE_PATTERNS` 正则 + 函数式替换 |
+
+### 原生 `confirm()` 也要翻译
+
+浏览器自己绘制的对话框不在 DOM 里，`TreeWalker` 覆盖不到。`i18n.js` 在加载时包一层
+`window.confirm` / `window.alert`：命中 `NATIVE_TEXT_PATTERNS`（解压、删除镜像/客户端/组/
+集群等 24 条模板）就先翻译再交给原生弹窗，**不改 `app.js`**；未覆盖的调用原样透传。
 
 ## 下载代理补丁（`download-proxy`）
 
