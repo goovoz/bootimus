@@ -35,6 +35,28 @@
       "retire_policy": "探测到 IMPLEMENTED（上游 zh-CN 字典 >= 300 条，或上游已具备原文→译文的自动翻译机制）→ 只告警、不自动退役：自动删除会一次丢掉 688 条译文，需人工确认后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
+    },
+    {
+      "id": "download-proxy",
+      "status": "active",
+      "summary": "ISO 下载支持走网络代理：设置页可填代理地址（host:port）与可选的用户名/密码；「从 URL 下载」与「获取镜像」两个弹窗各有「使用代理」开关，按次决定是否走代理",
+      "rationale": "国内镜像站普遍拦截服务端程序化访问，直连下载受限；让用户自备代理比内置镜像列表更可靠，也不依赖某个站的策略",
+      "trailer": "Fork-Patch: download-proxy",
+      "detector": ".github/scripts/detect-download-proxy.sh",
+      "touches": [
+        "internal/models/models.go",
+        "internal/storage/sqlite.go",
+        "internal/storage/postgres.go",
+        "internal/storage/interface.go",
+        "internal/admin/handlers.go",
+        "internal/server/server.go",
+        "web/static/index.html",
+        "web/static/app.js",
+        "web/static/i18n.js"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游下载链路出现 http.ProxyURL / ProxyConfig）→ 只告警不自动退役，需人工核对 UI 与配置存储后再移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
     }
   ]
 }

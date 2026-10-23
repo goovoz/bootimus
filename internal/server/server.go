@@ -1462,6 +1462,18 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	}))
 	mux.HandleFunc("/api/webhook/test", adminWrap(adminHandler.TestWebhook))
 
+	// [bootimus-fork L1] fork-patch: download-proxy
+	mux.HandleFunc("/api/proxy-config", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			adminHandler.GetProxyConfig(w, r)
+		case http.MethodPut, http.MethodPost:
+			adminHandler.UpdateProxyConfig(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+
 	mux.HandleFunc("/api/client-groups", adminWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

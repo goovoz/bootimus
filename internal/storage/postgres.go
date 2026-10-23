@@ -95,7 +95,7 @@ func (s *PostgresStore) AutoMigrate() error {
 		&models.BootTool{},
 		&models.HardwareInventory{},
 		&models.DistroProfile{},
-		&models.WebhookConfig{},
+		&models.WebhookConfig{}, &models.ProxyConfig{},
 		&models.ScheduledTask{},
 	); err != nil {
 		return err
@@ -911,6 +911,20 @@ func (s *PostgresStore) GetWebhookConfig() (*models.WebhookConfig, error) {
 }
 
 func (s *PostgresStore) UpdateWebhookConfig(cfg *models.WebhookConfig) error {
+	cfg.ID = 1
+	return s.db.Save(cfg).Error
+}
+
+// [bootimus-fork L1] fork-patch: download-proxy
+func (s *PostgresStore) GetProxyConfig() (*models.ProxyConfig, error) {
+	var cfg models.ProxyConfig
+	if err := s.db.First(&cfg, 1).Error; err != nil {
+		return &models.ProxyConfig{ID: 1}, nil
+	}
+	return &cfg, nil
+}
+
+func (s *PostgresStore) UpdateProxyConfig(cfg *models.ProxyConfig) error {
 	cfg.ID = 1
 	return s.db.Save(cfg).Error
 }

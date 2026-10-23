@@ -380,7 +380,7 @@ function setupTabs() {
             if (item.dataset.tab === 'autoinstall') loadAutoInstallFiles();
             if (item.dataset.tab === 'clusters') loadClustersTab();
             if (item.dataset.tab === 'boot-menu') loadTheme();
-            if (item.dataset.tab === 'settings') { loadUSBImages(); loadWebhookConfig(); }
+            if (item.dataset.tab === 'settings') { loadUSBImages(); loadWebhookConfig(); loadProxyConfig(); }
             if (item.dataset.tab === 'api-reference') showAPIReference();
         });
     });
@@ -725,6 +725,53 @@ async function saveWebhookConfig(e) {
         else showAlert(data.error || 'Save failed', 'error');
     } catch (err) {
         showAlert('Save failed: ' + err.message, 'error');
+    }
+}
+
+// [bootimus-fork L1] fork-patch: download-proxy
+async function loadProxyConfig() {
+    try {
+        const res = await authFetch(`${API_BASE}/proxy-config`);
+        const data = await res.json();
+        if (!data.success || !data.data) return;
+        const addr = document.getElementById('proxy-address');
+        const user = document.getElementById('proxy-username');
+        const pass = document.getElementById('proxy-password');
+        if (addr) addr.value = data.data.address || '';
+        if (user) user.value = data.data.username || '';
+        if (pass) pass.value = data.data.password || '';
+    } catch (e) {
+        console.error('Failed to load proxy settings:', e);
+    }
+}
+
+async function saveProxyConfig(e) {
+    e.preventDefault();
+    const addrEl = document.getElementById('proxy-address');
+    const userEl = document.getElementById('proxy-username');
+    const passEl = document.getElementById('proxy-password');
+    const hint = document.getElementById('proxy-result');
+    const body = {
+        address: (addrEl ? addrEl.value : '').trim(),
+        username: (userEl ? userEl.value : '').trim(),
+        password: passEl ? passEl.value : '',
+    };
+    try {
+        const res = await authFetch(`${API_BASE}/proxy-config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (hint) hint.textContent = 'Saved';
+            showAlert('Proxy settings saved', 'success');
+        } else {
+            if (hint) hint.textContent = '';
+            showAlert(data.error || 'Failed to save proxy settings', 'error');
+        }
+    } catch (err) {
+        showAlert('Failed to save proxy settings', 'error');
     }
 }
 
@@ -2730,6 +2777,8 @@ function setupForms() {
     document.getElementById('add-profile-form').addEventListener('submit', createProfile);
     const wf = document.getElementById('webhook-form');
     if (wf) wf.addEventListener('submit', saveWebhookConfig);
+    const pf = document.getElementById('proxy-form');
+    if (pf) pf.addEventListener('submit', saveProxyConfig);
 }
 
 const API_REFERENCE = [
@@ -4351,11 +4400,14 @@ async function downloadFromGetISO(rowKey, distroName, releaseLabel) {
         return;
     }
     renderGetISOProgress(rowKey, 'Starting…');
+    // [bootimus-fork L1] fork-patch: download-proxy
+    const useProxyEl = document.getElementById('get-iso-use-proxy');
+    const useProxy = !!(useProxyEl && useProxyEl.checked);
     try {
         const res = await authFetch(`${API_BASE}/images/download`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, description: `${distroName} ${releaseLabel}` }),
+            body: JSON.stringify({ url, description: `${distroName} ${releaseLabel}`, use_proxy: useProxy }),
         });
         const data = await res.json();
         if (res.status === 409 && data.data && data.data.filename) {
@@ -4474,7 +4526,9 @@ document.getElementById('download-form').addEventListener('submit', function(e) 
 
     const downloadData = {
         url: formData.get('url'),
-        description: formData.get('description')
+        description: formData.get('description'),
+        // [bootimus-fork L1] fork-patch: download-proxy
+        use_proxy: formData.get('use_proxy') === 'on'
     };
 
     // [bootimus-fork L1] fork-patch: iso-url-no-suffix

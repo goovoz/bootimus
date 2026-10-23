@@ -179,6 +179,17 @@ type WebhookConfig struct {
 	OnEnrollment       bool      `gorm:"default:true" json:"on_enrollment"`
 }
 
+// [bootimus-fork L1] fork-patch: download-proxy
+// ProxyConfig holds the optional outbound HTTP proxy used for ISO downloads.
+// Address is "host:port" (a full URL also works). Username/Password may be empty.
+type ProxyConfig struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Address   string    `json:"address"`
+	Username  string    `json:"username"`
+	Password  string    `json:"password"`
+}
+
 type ClientGroup struct {
 	ID                 uint           `gorm:"primarykey" json:"id"`
 	CreatedAt          time.Time      `json:"created_at"`
