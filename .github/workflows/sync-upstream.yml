@@ -104,6 +104,9 @@ jobs:
           # [bootimus-fork] 下载代理补丁：只判定与告警
           bash .github/scripts/detect-download-proxy.sh /tmp/upstream-tree | tee /tmp/detect-dlproxy.txt
 
+          # [bootimus-fork] 断点续传补丁：只判定与告警
+          bash .github/scripts/detect-download-resume.sh /tmp/upstream-tree | tee /tmp/detect-resume.txt
+
 
           RESULT=$(sed -n 's/^RESULT=//p' /tmp/detect.txt | head -1)
           REASON=$(sed -n 's/^REASON=//p' /tmp/detect.txt | head -1)
@@ -115,6 +118,8 @@ jobs:
             echo "i18n_reason=$(sed -n 's/^REASON=//p' /tmp/detect-i18n.txt | head -1)"
             echo "dlproxy_result=$(sed -n 's/^RESULT=//p' /tmp/detect-dlproxy.txt | head -1)"
             echo "dlproxy_reason=$(sed -n 's/^REASON=//p' /tmp/detect-dlproxy.txt | head -1)"
+            echo "resume_result=$(sed -n 's/^RESULT=//p' /tmp/detect-resume.txt | head -1)"
+            echo "resume_reason=$(sed -n 's/^REASON=//p' /tmp/detect-resume.txt | head -1)"
             echo "branch=sync/$(date -u +%Y%m%d-%H%M)"
           } >> "$GITHUB_OUTPUT"
 
@@ -129,6 +134,12 @@ jobs:
         run: |
           echo "::warning::上游可能已自行支持下载代理：${{ steps.inspect.outputs.dlproxy_reason }}"
           echo "补丁 download-proxy 未自动退役，请人工核对设置页与配置存储后再移除。"
+
+      - name: 断点续传补丁是否该让位（仅告警）
+        if: steps.inspect.outputs.resume_result == 'IMPLEMENTED'
+        run: |
+          echo "::warning::上游可能已自行支持断点续传：${{ steps.inspect.outputs.resume_reason }}"
+          echo "补丁 download-resume 未自动退役，请人工确认上游续传等价（If-Range / 半成品命名）后再移除。"
 
 
       - name: 上游已实现 → 退役补丁
