@@ -4,6 +4,7 @@
 .github/fork-paths.txt
 .github/scripts/detect-iso-url-no-suffix.sh
 .github/scripts/detect-i18n-zh-full.sh
+.github/scripts/detect-download-proxy.sh
 .github/scripts/mark_retired.py
 .github/workflows/sync-upstream.yml
 .github/workflows/fork-release.yml
