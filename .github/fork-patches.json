@@ -39,22 +39,38 @@
     {
       "id": "download-proxy",
       "status": "active",
-      "summary": "ISO 下载支持走网络代理：设置页可填代理地址（host:port）与可选的用户名/密码；「从 URL 下载」与「获取镜像」两个弹窗各有「使用代理」开关，按次决定是否走代理",
+      "summary": "ISO 下载支持走网络代理：设置页可填代理地址（host:port）与可选的用户名/密码；「从 URL 下载」与「获取镜像」两个弹窗各有「使用代理下载」开关，按次决定是否走代理",
       "rationale": "国内镜像站普遍拦截服务端程序化访问，直连下载受限；让用户自备代理比内置镜像列表更可靠，也不依赖某个站的策略",
       "trailer": "Fork-Patch: download-proxy",
       "detector": ".github/scripts/detect-download-proxy.sh",
       "touches": [
-        "internal/models/models.go",
-        "internal/storage/sqlite.go",
-        "internal/storage/postgres.go",
-        "internal/storage/interface.go",
         "internal/admin/handlers.go",
+        "internal/models/models.go",
         "internal/server/server.go",
-        "web/static/index.html",
+        "internal/storage/interface.go",
+        "internal/storage/postgres.go",
+        "internal/storage/sqlite.go",
         "web/static/app.js",
-        "web/static/i18n.js"
+        "web/static/i18n.js",
+        "web/static/index.html"
       ],
       "retire_policy": "探测到 IMPLEMENTED（上游下载链路出现 http.ProxyURL / ProxyConfig）→ 只告警不自动退役，需人工核对 UI 与配置存储后再移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
+    },
+    {
+      "id": "download-resume",
+      "status": "active",
+      "summary": "ISO 下载支持断点续传与残留清理：数据先写 <name>.iso.part（带 ETag/总长的 meta），中断后再下用 Range 续传、If-Range 防串版本，完成后才 rename 成 .iso；启动时清掉 7 天没动静的 .part",
+      "rationale": "上游是「GET 全量 + os.Create 截断」，中断后既不能续传也不能重下（半成品占名会 409），启动扫描还会把半成品登记成镜像；下载 3GB+ 的 ISO 时这个代价太大",
+      "trailer": "Fork-Patch: download-resume",
+      "detector": ".github/scripts/detect-download-resume.sh",
+      "touches": [
+        "internal/admin/handlers.go",
+        "internal/admin/download_resume_test.go",
+        "internal/server/server.go"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游出现 Range 续传）→ 只告警不自动退役：续传涉及数据正确性，需人工确认上游实现等价（尤其 If-Range）后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
     }

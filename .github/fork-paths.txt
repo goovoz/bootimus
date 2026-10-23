@@ -5,6 +5,7 @@
 .github/scripts/detect-iso-url-no-suffix.sh
 .github/scripts/detect-i18n-zh-full.sh
 .github/scripts/detect-download-proxy.sh
+.github/scripts/detect-download-resume.sh
 .github/scripts/mark_retired.py
 .github/workflows/sync-upstream.yml
 .github/workflows/fork-release.yml
@@ -26,3 +27,7 @@ ops/watchdog/default.env
 #   internal/admin/download_test.go   —— 补丁行为的回归测试
 #   web/static/app.js                 —— 提交下载时带上显式文件名
 #   web/static/index.html             —— 新增可选「File name」字段
+# 补丁 download-resume：
+#   internal/admin/handlers.go             —— downloadISO 改为 .part + Range 续传，新增 CleanupStaleDownloads
+#   internal/admin/download_resume_test.go —— 续传/回退/清理的回归测试
+#   internal/server/server.go              —— 启动时清理残留 .part
