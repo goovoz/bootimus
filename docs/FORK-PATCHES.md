@@ -41,8 +41,9 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | id | 状态 | 做什么 | 触碰的上游文件 |
 |---|---|---|---|
 | `iso-url-no-suffix` | active | 允许下载不带 `.iso` 后缀的链接：2 字节 Range 探测 Content-Type，从 Content-Disposition / 最终路径取名，UI 可显式指定文件名 | `internal/admin/handlers.go`、`internal/admin/download_test.go`、`web/static/app.js`、`web/static/index.html` |
-| `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加「英文原文 → 中文」映射（当前 684 条），并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
-| `download-proxy` | active | ISO 下载可走网络代理：设置页存代理地址与可选凭据，「从 URL 下载」与「获取镜像」各有一个「使用代理」开关 | `internal/admin/handlers.go`、`internal/models/models.go`、`internal/storage/*.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
+| `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加「英文原文 → 中文」映射（当前 696 条），并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
+| `download-proxy` | active | ISO 下载可走网络代理：设置页存代理地址与可选凭据，「从 URL 下载」与「获取镜像」各有一个「使用代理下载」开关 | `internal/admin/handlers.go`、`internal/models/models.go`、`internal/storage/*.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
+| `download-resume` | active | ISO 下载断点续传 + 残留清理：数据先写 `.part`（带 ETag 的 meta），再下用 `Range` 续传、`If-Range` 防串版本，完成才 rename；启动清理 7 天前的残留 | `internal/admin/handlers.go`、`internal/admin/download_resume_test.go`、`internal/server/server.go` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 
@@ -95,7 +96,7 @@ git checkout -b restore-iso-url-no-suffix fork-archive/iso-url-no-suffix-YYYYMMD
 补丁的取舍：**不改 `app.js`**（7290 行、几百处字面量，改完上游一动就冲突），
 而是在 `i18n.js` 里加一层「英文原文 → 译文」的映射，并接管渲染后的翻译：
 
-- `SOURCE_TEXT`：684 条原文到中文的映射（专有名词与示例值除外）
+- `SOURCE_TEXT`：696 条原文到中文的映射（专有名词与示例值除外）
 - `_translateTextNodes()`：逐文本节点精确匹配，跳过 `script/style/code/pre/textarea`
 - `_translateAttrs()`：`title` / `placeholder` / `aria-label` 同样翻译
 - `_installAutoTranslate()`：`MutationObserver` + 30ms 防抖，动态渲染后自动补译
@@ -174,6 +175,34 @@ const SOURCE_PATTERNS = {
   所以别把管理台暴露到公网。
 
 探测器：`bash .github/scripts/detect-download-proxy.sh --selftest`。
+
+## 断点续传与残留清理补丁（`download-resume`）
+
+上游下载是「`client.Get` 拉全量 + `os.Create` 截断」，中断后既不能续传，也不能直接重下：
+半成品就落在 `<name>.iso` 上，下次被 `File already exists` 挡回去，只能手动删；
+更糟的是启动时 `scanISOs` + `SyncImages` 会把这个半成品登记成一张「镜像」，界面上看不出它是坏的。
+
+### 做法
+
+- 数据先写 `<name>.iso.part`，全部到齐才 `rename` 成 `<name>.iso` —— 半成品不再冒充镜像
+- 再次发起同一 URL 时，若已有 `.part`，用 `Range: bytes=<已有>-` 接着下
+- 同时写 `<name>.iso.part.json`（URL / ETag / Last-Modified / 总长），续传带 `If-Range`：
+  远端文件换了就退化成 200 整下，避免把两个版本拼在一起
+- 远端忽略 `Range`（回 200）、`Content-Range` 起点不符、或 `416` 但长度不对 → 截断重下（最多回退一次）
+- `416` 且 `offset == total` → 认为已经下完，直接收尾入库
+- 网络中断**不再删除**半成品（留给下次续传）；HTTP 状态错误才放弃
+- 启动时 `CleanupStaleDownloads()` 删除 7 天没动的 `.part` 与孤儿 meta，新的保留待续传
+
+### 行为变化
+
+| 场景 | 之前 | 现在 |
+|---|---|---|
+| 下载中断（容器重启） | 半成品占着 `<name>.iso`，再下 409 | `.part` 保留，再下自动续传 |
+| 半成品出现在镜像列表 | 会（启动扫描会登记） | 不会（`.part` 不被扫描） |
+| 网络中断 | 删掉半成品，只能重下 | 保留半成品，进度从断点继续 |
+
+探测器：`bash .github/scripts/detect-download-resume.sh --selftest`。只告警不自动退役 ——
+续传涉及数据正确性，必须人工确认上游实现等价（尤其 `If-Range`）后再让位。
 
 ## 新增一个补丁的步骤
 
