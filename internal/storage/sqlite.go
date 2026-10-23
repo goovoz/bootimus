@@ -38,6 +38,12 @@ func (s *SQLiteStore) AutoMigrate() error {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// [bootimus-fork L1] fork-patch: download-proxy
+	// fork 自有的表单独迁移，不插进上面那个上游参数列表——理由见 fork_migrations.go。
+	if err := forkMigrate(s.db); err != nil {
+		return fmt.Errorf("failed to run fork migrations: %w", err)
+	}
+
 	if err := s.cleanupSoftDeletedFiles(); err != nil {
 		return fmt.Errorf("failed to cleanup soft-deleted files: %w", err)
 	}
@@ -863,6 +869,20 @@ func (s *SQLiteStore) GetWebhookConfig() (*models.WebhookConfig, error) {
 func (s *SQLiteStore) UpdateWebhookConfig(cfg *models.WebhookConfig) error {
 	cfg.ID = 1
 	return saveKeepingZeroValues(s.db, cfg, "OnBootStarted", "OnClientDiscovered", "OnEnrollment", "OnDiskImaging", "OnInstall", "OnAutoEnrol")
+}
+
+// [bootimus-fork L1] fork-patch: download-proxy
+func (s *SQLiteStore) GetProxyConfig() (*models.ProxyConfig, error) {
+	var cfg models.ProxyConfig
+	if err := s.db.First(&cfg, 1).Error; err != nil {
+		return &models.ProxyConfig{ID: 1}, nil
+	}
+	return &cfg, nil
+}
+
+func (s *SQLiteStore) UpdateProxyConfig(cfg *models.ProxyConfig) error {
+	cfg.ID = 1
+	return s.db.Save(cfg).Error
 }
 
 func (s *SQLiteStore) ListClientGroups() ([]*models.ClientGroup, error) {
