@@ -42,6 +42,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 |---|---|---|---|
 | `iso-url-no-suffix` | active | 允许下载不带 `.iso` 后缀的链接：2 字节 Range 探测 Content-Type，从 Content-Disposition / 最终路径取名，UI 可显式指定文件名 | `internal/admin/handlers.go`、`internal/admin/download_test.go`、`web/static/app.js`、`web/static/index.html` |
 | `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加「英文原文 → 中文」映射（当前 684 条），并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
+| `download-proxy` | active | ISO 下载可走网络代理：设置页存代理地址与可选凭据，「从 URL 下载」与「获取镜像」各有一个「使用代理」开关 | `internal/admin/handlers.go`、`internal/models/models.go`、`internal/storage/*.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 
@@ -148,6 +149,31 @@ const SOURCE_PATTERNS = {
 `secureboot-official` → `secureboot-official（官方安全启动）`。它们大多出现在输入框 placeholder 上，
 翻译只改显示、不改 `value`，提交给后端的内容不受影响。
 
+
+## 下载代理补丁（`download-proxy`）
+
+国内镜像站对服务端程序化下载普遍有拦截（四家常用站实测：跳转目标不可达 / 418 WAF / JS 验证页 /
+客户端指纹拦截），内置镜像列表这条路收益太低，改成让用户自备代理。
+
+### 用法
+
+1. 「设置 → 网络代理」填代理地址（`host:port`，也接受带 scheme 的完整 URL），用户名/密码可留空；
+2. 「从 URL 下载」弹窗勾选 **Use proxy for this download**，或在「获取镜像」弹窗勾选
+   **Use proxy for these downloads**（对该弹窗内所有下载生效）；
+3. 勾了但设置里没配代理时，会在日志里记一条 `proxy requested but not configured`，然后**直连**下载，
+   不会凭空失败。
+
+### 实现要点
+
+- `DownloadISO` 请求体新增 `use_proxy`；`downloadISO` 按需构建 `http.Transport{Proxy: http.ProxyURL(...)}`，
+  未勾选时仍是原来的直连 client（行为不变）；
+- 代理地址为空 = 不启用；用户名有、密码空时用 `url.User`；
+- 配置存在 `proxy_configs` 表（id 固定为 1），与 webhook 配置同一套 GORM 写法，sqlite 与 postgres 各一份实现；
+- `/api/proxy-config` GET 读取、POST/PUT 保存，保存前会用 `normalizeProxyURL` 校验地址格式；
+- **凭据以明文存于本地 SQLite**（与该库其它配置一致），接口仅管理员可访问；返回值也是明文，
+  所以别把管理台暴露到公网。
+
+探测器：`bash .github/scripts/detect-download-proxy.sh --selftest`。
 
 ## 新增一个补丁的步骤
 
