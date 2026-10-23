@@ -42,6 +42,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 |---|---|---|---|
 | `iso-url-no-suffix` | active | 允许下载不带 `.iso` 后缀的链接：2 字节 Range 探测 Content-Type，从 Content-Disposition / 最终路径取名，UI 可显式指定文件名 | `internal/admin/handlers.go`、`internal/admin/download_test.go`、`web/static/app.js`、`web/static/index.html` |
 | `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加「英文原文 → 中文」映射（当前 684 条），并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
+| `cn-mirrors` | active | 在「获取镜像」的镜像站下拉里加入阿里云 / 华为云 / 中科大 / 清华 TUNA，按实测可用性登记 33 条 | `distro-profiles.json`、`internal/profiles/distro-profiles.json` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 
@@ -148,6 +149,37 @@ const SOURCE_PATTERNS = {
 `secureboot-official` → `secureboot-official（官方安全启动）`。它们大多出现在输入框 placeholder 上，
 翻译只改显示、不改 `value`，提交给后端的内容不受影响。
 
+
+## 国内镜像站补丁（`cn-mirrors`）为什么这么做
+
+「管理 → 镜像 → 获取镜像」的镜像站下拉原来只有 Global / UK / DE，国内拉 6 GB 的 ISO 很慢。
+补丁在 `distro-profiles.json` 的 `mirrors` 里加了四家：阿里云、华为云、中科大（USTC）、清华（TUNA）。
+
+**插入位置是每个发行版第一个镜像之后**（`mirrors[1:1]`）。因为前端用 `mirrors[0].base` 当默认 URL
+（`app.js` 里的 `defaultBase`），这样默认行为不变，国内镜像在下拉里排第二项，一眼就能选到。
+
+### 只加实测存在的组合
+
+四家站的目录布局并不统一，因此逐条实测后再登记，而不是照着直觉写：
+
+| 镜像站 | 覆盖 | 实测结论 |
+|---|---|---|
+| 阿里云 | 10 个发行版 | 全量，含 Linux Mint（`/linuxmint/stable/` 只有阿里云有） |
+| 华为云 | 9 个 | `/linuxmint/stable/` 返回 404（只有软件源，无 ISO） |
+| 中科大 | 8 个 | `/almalinux/`、`/rockylinux/` 都是 404 |
+| 清华 TUNA | 8 个 | 同上；`/linuxmint/` 只有 db/dists/pool，无 ISO |
+
+合计 33 条。地区名写成 `CN (Alibaba Cloud)` 这类英文串，中文由 `i18n-zh-full` 的映射表提供
+（`中国（阿里云）` 等 4 条）——**不把中文写进数据文件**，数据与展示分开，将来上游同步也不会冲突。
+
+### 已知边界
+
+上游 profile 里有一部分版本号本身已经过期（例如 Debian `13.5.0`、Kali `2024.4`），
+在官方站和国内镜像都会 404。这不是本补丁引入的问题，镜像站只负责镜像上游目录结构；
+遇到下载 404 时先切回 `Global` 对照，若同样 404 就是上游版本数据过期。
+
+探测器：`bash .github/scripts/detect-cn-mirrors.sh --selftest`（NEEDED / SUSPECT / IMPLEMENTED / 文件缺失）。
+上游一旦自己加了 4 个以上中国大陆镜像站，每日同步会告警但**不自动退役**——镜像地址需要人工核对。
 
 ## 新增一个补丁的步骤
 
