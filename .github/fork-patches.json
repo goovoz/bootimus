@@ -25,7 +25,7 @@
     {
       "id": "i18n-zh-full",
       "status": "active",
-      "summary": "把管理台剩余文案补成中文：在 i18n.js 增加「英文原文 → 中文」映射表（688 条），并用 MutationObserver 在每次 DOM 变更后自动翻译，可覆盖 app.js 动态渲染的内容",
+      "summary": "把管理台剩余文案补成中文：在 i18n.js 增加「英文原文 → 中文」映射表（770 条），并用 MutationObserver 在每次 DOM 变更后自动翻译，可覆盖 app.js 动态渲染的内容",
       "rationale": "上游 i18n 只覆盖静态 HTML 骨架（151 个 key + data-i18n），管理台大半文案是 app.js 渲染时写死的英文，切到中文会中英混杂；本补丁不改 app.js，只补覆盖面",
       "trailer": "Fork-Patch: i18n-zh-full",
       "detector": ".github/scripts/detect-i18n-zh-full.sh",
