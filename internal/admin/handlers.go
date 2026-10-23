@@ -3516,7 +3516,37 @@ func (h *Handler) downloadClient(useProxy bool) (*http.Client, string) {
 func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptions, useProxy bool) {
 	log.Printf("Starting ISO download: %s from %s", filename, url)
 
-	downloadMgr.Add(url, filename, 0)
+	// [bootimus-fork L1] fork-patch: download-resume
+	// Bytes land in <name>.iso.part and the file is only renamed into place once
+	// it is complete. That keeps a half-finished download from being mistaken for
+	// a usable image, and lets an interrupted one be continued, not restarted.
+	partPath := downloadPartialPath(destPath)
+	meta := readDownloadMeta(destPath)
+	var offset int64
+	if fi, statErr := os.Stat(partPath); statErr == nil && fi.Mode().IsRegular() {
+		offset = fi.Size()
+	}
+	if meta == nil || meta.URL != url {
+		if offset > 0 {
+			if meta != nil {
+				log.Printf("Discarding partial %s: it was started from %s", filename, meta.URL)
+			} else {
+				log.Printf("Discarding partial %s: no resume metadata", filename)
+			}
+		}
+		os.Remove(partPath)
+		os.Remove(downloadMetaPath(destPath))
+		offset = 0
+		meta = &downloadPartMeta{URL: url}
+	}
+	if offset > 0 {
+		log.Printf("Resuming %s at byte %d (%d known total)", filename, offset, meta.Total)
+	}
+
+	downloadMgr.Add(url, filename, meta.Total)
+	if offset > 0 {
+		downloadMgr.Update(filename, offset)
+	}
 
 	expected, checksumSource := h.resolveExpectedChecksum(url, filename, opts)
 	verification := "unverified"
@@ -3533,76 +3563,197 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 	}
 	defer client.CloseIdleConnections()
 
-	resp, err := client.Get(url)
-	if err != nil {
-		log.Printf("Failed to download ISO %s: %v", filename, err)
-		downloadMgr.Error(filename, err.Error())
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status)
-		log.Printf("Failed to download ISO %s: %s", filename, errMsg)
-		downloadMgr.Error(filename, errMsg)
-		return
-	}
-
-	// [bootimus-fork L1] fork-patch: iso-url-no-suffix
-	// A link that quietly resolves to an HTML page (expired token, login wall,
-	// "file not found") must not be stored as an ISO.
-	if ct := strings.ToLower(resp.Header.Get("Content-Type")); strings.HasPrefix(ct, "text/html") {
-		errMsg := fmt.Sprintf("URL returned %s instead of a disc image (expired link or login page?)", ct)
-		log.Printf("Failed to download ISO %s: %s", filename, errMsg)
-		downloadMgr.Error(filename, errMsg)
-		return
-	}
-
-	downloadMgr.Add(url, filename, resp.ContentLength)
-	downloadMgr.SetVerification(filename, verification, expected)
-
-	out, err := os.Create(destPath)
-	if err != nil {
-		log.Printf("Failed to create file %s: %v", destPath, err)
-		downloadMgr.Error(filename, err.Error())
-		return
-	}
-	defer out.Close()
-
-	buffer := make([]byte, 32*1024)
-	var downloaded int64
-	hasher := sha256.New()
-
-	for {
-		n, err := resp.Body.Read(buffer)
-		if n > 0 {
-			hasher.Write(buffer[:n])
-			_, writeErr := out.Write(buffer[:n])
-			if writeErr != nil {
-				log.Printf("Failed to write to file %s: %v", destPath, writeErr)
-				downloadMgr.Error(filename, writeErr.Error())
-				os.Remove(destPath)
-				return
-			}
-			downloaded += int64(n)
-			downloadMgr.Update(filename, downloaded)
-		}
-
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Printf("Failed to download ISO %s: %v", filename, err)
-			downloadMgr.Error(filename, err.Error())
-			os.Remove(destPath)
+	var resp *http.Response
+	alreadyComplete := false
+	// Two attempts at most: the second one always starts from byte 0.
+	for attempt := 0; attempt < 2; attempt++ {
+		req, reqErr := http.NewRequest(http.MethodGet, url, nil)
+		if reqErr != nil {
+			log.Printf("Failed to download ISO %s: %v", filename, reqErr)
+			downloadMgr.Error(filename, reqErr.Error())
 			return
 		}
+		if offset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+			// If-Range makes the mirror answer 200 instead of 206 when the file
+			// it serves has changed since our partial was written.
+			if meta.ETag != "" {
+				req.Header.Set("If-Range", meta.ETag)
+			} else if meta.LastModified != "" {
+				req.Header.Set("If-Range", meta.LastModified)
+			}
+		}
+
+		resp, reqErr = client.Do(req)
+		if reqErr != nil {
+			log.Printf("Failed to download ISO %s: %v", filename, reqErr)
+			downloadMgr.Error(filename, reqErr.Error())
+			return
+		}
+
+		switch resp.StatusCode {
+		case http.StatusOK:
+			if offset > 0 {
+				log.Printf("Source ignored the resume request for %s (HTTP 200); starting over", filename)
+			}
+			offset = 0
+		case http.StatusPartialContent:
+			start, _, total, ok := parseContentRange(resp.Header.Get("Content-Range"))
+			if !ok || start != offset {
+				resp.Body.Close()
+				log.Printf("Unusable resume response for %s (%q); starting over", filename, resp.Header.Get("Content-Range"))
+				offset = 0
+				continue
+			}
+			if total > 0 {
+				meta.Total = total
+			}
+		case http.StatusRequestedRangeNotSatisfiable:
+			_, _, total, ok := parseContentRange(resp.Header.Get("Content-Range"))
+			if ok && total > 0 && offset == total {
+				log.Printf("Partial %s already holds the whole file (%d bytes)", filename, total)
+				alreadyComplete = true
+			} else {
+				resp.Body.Close()
+				log.Printf("Source rejected the resume range for %s (%q); starting over", filename, resp.Header.Get("Content-Range"))
+				offset = 0
+				continue
+			}
+		default:
+			errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status)
+			resp.Body.Close()
+			log.Printf("Failed to download ISO %s: %s", filename, errMsg)
+			downloadMgr.Error(filename, errMsg)
+			return
+		}
+		break
 	}
 
+	// 校验值必须在整份文件上算：续传时先把手上的 .part 读进哈希，再接着哈希新字节，
+	// 否则算出来的只是「这次下载的部分」。
+	hasher := sha256.New()
+	var written int64
+	hashPartial := func() error {
+		f, err := os.Open(partPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(hasher, f)
+		return err
+	}
+
+	if alreadyComplete {
+		if err := hashPartial(); err != nil {
+			log.Printf("Failed to hash existing partial %s: %v", filename, err)
+			downloadMgr.Error(filename, err.Error())
+			return
+		}
+		written = offset
+		resp.Body.Close()
+	} else {
+		// [bootimus-fork L1] fork-patch: iso-url-no-suffix
+		// A link that quietly resolves to an HTML page (expired token, login wall,
+		// "file not found") must not be stored as an ISO.
+		if ct := strings.ToLower(resp.Header.Get("Content-Type")); strings.HasPrefix(ct, "text/html") {
+			errMsg := fmt.Sprintf("URL returned %s instead of a disc image (expired link or login page?)", ct)
+			resp.Body.Close()
+			log.Printf("Failed to download ISO %s: %s", filename, errMsg)
+			downloadMgr.Error(filename, errMsg)
+			return
+		}
+
+		if offset == 0 {
+			meta.Total = resp.ContentLength
+		} else if resp.ContentLength > 0 {
+			meta.Total = offset + resp.ContentLength
+		}
+		meta.ETag = resp.Header.Get("ETag")
+		meta.LastModified = resp.Header.Get("Last-Modified")
+		meta.Updated = time.Now()
+		writeDownloadMeta(destPath, meta)
+
+		// Add 会重建进度条目，校验状态必须再设一次，否则界面上看不到「校验中/已校验」
+		downloadMgr.Add(url, filename, meta.Total)
+		downloadMgr.SetVerification(filename, verification, expected)
+		if offset > 0 {
+			downloadMgr.Update(filename, offset)
+		}
+
+		out, openErr := os.OpenFile(partPath, os.O_CREATE|os.O_WRONLY, 0o644)
+		if openErr != nil {
+			resp.Body.Close()
+			log.Printf("Failed to open %s: %v", partPath, openErr)
+			downloadMgr.Error(filename, openErr.Error())
+			return
+		}
+		if err := out.Truncate(offset); err != nil {
+			out.Close()
+			resp.Body.Close()
+			log.Printf("Failed to truncate %s: %v", partPath, err)
+			downloadMgr.Error(filename, err.Error())
+			return
+		}
+		if _, err := out.Seek(offset, io.SeekStart); err != nil {
+			out.Close()
+			resp.Body.Close()
+			log.Printf("Failed to seek %s: %v", partPath, err)
+			downloadMgr.Error(filename, err.Error())
+			return
+		}
+
+		buffer := make([]byte, 32*1024)
+		downloaded := offset
+
+		// 续传：已经落盘的那部分先过一遍哈希（文件刚被 truncate 到 offset，正好是全部旧字节）
+		if offset > 0 {
+			if err := hashPartial(); err != nil {
+				out.Close()
+				resp.Body.Close()
+				log.Printf("Failed to hash existing partial %s: %v", filename, err)
+				downloadMgr.Error(filename, err.Error())
+				return
+			}
+		}
+
+		for {
+			n, readErr := resp.Body.Read(buffer)
+			if n > 0 {
+				hasher.Write(buffer[:n])
+				if _, writeErr := out.Write(buffer[:n]); writeErr != nil {
+					out.Close()
+					resp.Body.Close()
+					log.Printf("Failed to write to file %s: %v", partPath, writeErr)
+					downloadMgr.Error(filename, writeErr.Error())
+					// The bytes already on disk stay there: the next attempt resumes.
+					return
+				}
+				downloaded += int64(n)
+				downloadMgr.Update(filename, downloaded)
+			}
+
+			if readErr == io.EOF {
+				break
+			}
+			if readErr != nil {
+				out.Close()
+				resp.Body.Close()
+				log.Printf("Failed to download ISO %s: %v (partial kept for resume)", filename, readErr)
+				downloadMgr.Error(filename, readErr.Error())
+				return
+			}
+		}
+
+		out.Close()
+		resp.Body.Close()
+		written = downloaded
+	}
+
+	// 校验值在 .part 上比对：不一致就丢掉半成品，别让它被 rename 成可用镜像
 	actual := hex.EncodeToString(hasher.Sum(nil))
 	if expected != "" && actual != expected {
-		out.Close()
-		os.Remove(destPath)
+		os.Remove(partPath)
+		os.Remove(downloadMetaPath(destPath))
 		log.Printf("Checksum mismatch for %s: expected %s, got %s", filename, expected, actual)
 		downloadMgr.SetVerification(filename, "mismatch", expected)
 		downloadMgr.Error(filename, fmt.Sprintf("SHA-256 mismatch: expected %s but the download hashed to %s; the file has been removed", expected, actual))
@@ -3612,7 +3763,19 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 		downloadMgr.SetVerification(filename, "verified", actual)
 	}
 
-	syncFile := models.SyncFile{Name: strings.TrimSuffix(filename, filepath.Ext(filename)), Filename: filename, Size: downloaded}
+	if err := os.Rename(partPath, destPath); err != nil {
+		log.Printf("Failed to finalise %s: %v", filename, err)
+		downloadMgr.Error(filename, err.Error())
+		return
+	}
+	os.Remove(downloadMetaPath(destPath))
+
+	var size int64
+	if fi, statErr := os.Stat(destPath); statErr == nil {
+		size = fi.Size()
+	}
+
+	syncFile := models.SyncFile{Name: strings.TrimSuffix(filename, filepath.Ext(filename)), Filename: filename, Size: written}
 	if strings.EqualFold(filepath.Ext(filename), ".efi") {
 		img, err := uki.Inspect(destPath)
 		if err != nil {
@@ -3626,7 +3789,7 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 	}
 
 	downloadMgr.Complete(filename)
-	log.Printf("Completed ISO download: %s (%d bytes)", filename, downloaded)
+	log.Printf("Completed ISO download: %s (%d bytes)", filename, size)
 
 	if h.storage != nil {
 		isoFiles := []models.SyncFile{syncFile}
@@ -3662,6 +3825,152 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 				}
 			}
 		}
+	}
+}
+
+// [bootimus-fork L1] fork-patch: download-resume
+const downloadStaleAfter = 7 * 24 * time.Hour
+
+func downloadPartialPath(destPath string) string {
+	return destPath + ".part"
+}
+
+func downloadMetaPath(destPath string) string {
+	return destPath + ".part.json"
+}
+
+// downloadPartMeta remembers enough about the origin entity to make a resume
+// safe: if the file behind the URL changed, If-Range turns the response into a
+// plain 200 and the download restarts instead of splicing two versions.
+type downloadPartMeta struct {
+	URL          string    `json:"url"`
+	ETag         string    `json:"etag,omitempty"`
+	LastModified string    `json:"last_modified,omitempty"`
+	Total        int64     `json:"total,omitempty"`
+	Updated      time.Time `json:"updated"`
+}
+
+func readDownloadMeta(destPath string) *downloadPartMeta {
+	data, err := os.ReadFile(downloadMetaPath(destPath))
+	if err != nil {
+		return nil
+	}
+	var m downloadPartMeta
+	if err := json.Unmarshal(data, &m); err != nil || strings.TrimSpace(m.URL) == "" {
+		return nil
+	}
+	return &m
+}
+
+func writeDownloadMeta(destPath string, m *downloadPartMeta) {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(downloadMetaPath(destPath), data, 0o644); err != nil {
+		log.Printf("Failed to persist resume metadata for %s: %v", filepath.Base(destPath), err)
+	}
+}
+
+// parseContentRange understands "bytes 100-199/1000" as well as the "bytes */1000"
+// form a 416 carries.
+func parseContentRange(value string) (start, end, total int64, ok bool) {
+	value = strings.TrimSpace(value)
+	if len(value) < 7 || !strings.EqualFold(value[:6], "bytes ") {
+		return 0, 0, 0, false
+	}
+	value = strings.TrimSpace(value[6:])
+	slash := strings.Index(value, "/")
+	if slash < 0 {
+		return 0, 0, 0, false
+	}
+	span, totalStr := strings.TrimSpace(value[:slash]), strings.TrimSpace(value[slash+1:])
+	if totalStr != "*" {
+		n, err := strconv.ParseInt(totalStr, 10, 64)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		total = n
+	}
+	if span == "*" {
+		return 0, 0, total, true
+	}
+	dash := strings.Index(span, "-")
+	if dash < 0 {
+		return 0, 0, 0, false
+	}
+	s, err1 := strconv.ParseInt(strings.TrimSpace(span[:dash]), 10, 64)
+	e, err2 := strconv.ParseInt(strings.TrimSpace(span[dash+1:]), 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0, 0, 0, false
+	}
+	return s, e, total, true
+}
+
+// CleanupStaleDownloads drops partial downloads nothing is writing to any more,
+// so leftovers cannot pile up. Recent ones are kept on purpose: they are what the
+// next attempt resumes from.
+func (h *Handler) CleanupStaleDownloads() {
+	h.cleanupStaleDownloads(downloadStaleAfter)
+}
+
+func (h *Handler) cleanupStaleDownloads(maxAge time.Duration) {
+	entries, err := os.ReadDir(h.isoDir)
+	if err != nil {
+		log.Printf("Cannot inspect %s for partial downloads: %v", h.isoDir, err)
+		return
+	}
+
+	knownMeta := make(map[string]bool, len(entries))
+	removed := 0
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".iso.part") {
+			continue
+		}
+		knownMeta[name+".json"] = true
+
+		target := strings.TrimSuffix(name, ".part")
+		if p := downloadMgr.Get(target); p != nil && p.Status == "downloading" {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		if time.Since(info.ModTime()) < maxAge {
+			log.Printf("Keeping partial download %s (%d bytes) for resume", name, info.Size())
+			continue
+		}
+
+		partFile := filepath.Join(h.isoDir, name)
+		if err := os.Remove(partFile); err != nil {
+			log.Printf("Failed to remove stale partial %s: %v", name, err)
+			continue
+		}
+		os.Remove(partFile + ".json")
+		removed++
+		log.Printf("Removed stale partial download %s (%d bytes)", name, info.Size())
+	}
+
+	// Metadata whose data file is already gone.
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".iso.part.json") || knownMeta[name] {
+			continue
+		}
+		os.Remove(filepath.Join(h.isoDir, name))
+	}
+
+	if removed > 0 {
+		log.Printf("Cleaned up %d stale partial download(s) in %s", removed, h.isoDir)
 	}
 }
 
