@@ -1,0 +1,12 @@
+[Unit]
+Description=ghcr 标签巡检（只读，不删除任何镜像版本）
+Documentation=https://github.com/goovoz/bootimus/blob/main/ops/watchdog/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/bootimus-ghcr-audit
+ExecStart=/opt/bootimus/ghcr-audit.sh
+# 巡检只读，允许失败（发现回归时退出码为 1，属于正常汇报）
+SuccessExitStatus=1

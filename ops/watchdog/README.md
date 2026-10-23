@@ -34,6 +34,9 @@ Watchtower 只认 tag，对 digest 引用不会动。所以这里自己写了个
 | `/etc/default/bootimus-watchdog` | 可调参数 |
 | `/var/log/bootimus-watchdog.log` | 运行日志（>5MB 自动轮转成 `.1`） |
 | `/var/lib/bootimus-watchdog/` | 锁、`rollback.yml`、历史 compose 备份、`failed-digests` |
+| `ghcr-audit.sh` | 只读巡检：核对 ghcr 上的 tag 是否还在（不删除任何东西） |
+| `bootimus-ghcr-audit.service` / `.timer` | 每天 07:30 CST 跑一次巡检 |
+| `install-ghcr-audit.sh` | 巡检的安装脚本，复用 watchdog 的 Server酱 sendkey |
 
 ## 安装
 
@@ -145,6 +148,43 @@ rm -f /var/lib/bootimus-watchdog/failed-digests
 - 只跟随 `latest` 这个 tag 的 digest 变化；如果哪天发布流程不再更新 `latest`，watchdog 就看不到新构建
 - 健康检查只看管理台是否 200，不校验 PXE/TFTP 服务
 - 重启会让正在进行的 PXE 会话中断，所以才有 `SKIP_IF_BUSY`；UDP 的 TFTP 传输没法从 `ss` 的 established 状态看出来
+
+## ghcr 标签巡检（只读）
+
+**它解决的是「看着像丢了」这类困惑。** GitHub 的 Packages 页面偶尔会渲染失败：包页里那段版本列表是懒加载的，
+接口一抖就显示空白或 "Sorry, something went wrong"，`/users/<user>/packages/container/<pkg>` 这个地址也曾
+连续返回 500。镜像其实还在，但页面上看不到，很容易以为镜像被清空了。
+
+巡检干的事很简单：每天直接问 registry「现在有哪些 tag、各自指向哪个 digest」，存成快照，跟昨天比：
+
+| 情况 | 动作 |
+|---|---|
+| tag 集合没变 | 只写日志，不打扰 |
+| 有 tag 消失 / 某 tag 拿不到 digest | 推送告警（Server酱） |
+| compose 里钉住的 digest 返回 404 | 推送告警 |
+| 拿不到 token、tags 列表为空 | 只记日志、退出码 2，**不告警**（区分「API 抖动」和「真被删」） |
+
+因为包是 public，巡检用匿名 token，**不需要 PAT**，也不碰 docker，权限只有读。
+
+### 一个必须知道的坑：并发的假告警
+
+第一次上线时，systemd 刚 `enable --now` 就立刻跑了一次，我同时又手动跑了一次。两个进程抢同一个临时文件，
+后启动的把文件清空，前一个的比对就拿到空集，于是把**全部 tag 都判成「消失」**，发了一条误报推送。
+
+现在脚本里有两道防：
+- `flock` 单实例（`/var/lib/bootimus-watchdog/ghcr-audit.lock`），撞车时后来者直接退出
+- 每次用 `mktemp` 建独立临时文件，比对前 `sort -u` 去重，且结果为空时**不做判定**
+
+### 安装与验证
+
+```bash
+SRC_DIR=/tmp/wd bash install-ghcr-audit.sh     # 装脚本 + 两个 unit，生成 /etc/default/bootimus-ghcr-audit
+bash /opt/bootimus/ghcr-audit.sh               # 首次：建快照
+bash /opt/bootimus/ghcr-audit.sh               # 再来一次：应输出「无变化」，退出码 0
+systemctl list-timers bootimus-ghcr-audit.timer
+```
+
+日志 `/var/log/ghcr-audit.log`；快照与变更历史在 `/var/lib/bootimus-watchdog/ghcr-tags.txt` 和 `ghcr-changes.log`。
 
 ## 维护提示（本仓库特有）
 

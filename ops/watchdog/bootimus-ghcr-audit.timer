@@ -1,0 +1,10 @@
+[Unit]
+Description=每天巡检一次 ghcr 标签（只读）
+
+[Timer]
+OnBootSec=8min
+OnCalendar=*-*-* 07:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
