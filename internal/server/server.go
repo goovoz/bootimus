@@ -1894,6 +1894,18 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	}))
+
+	// [bootimus-fork L1] fork-patch: download-proxy
+	mux.HandleFunc("/api/proxy-config", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			adminHandler.GetProxyConfig(w, r)
+		case http.MethodPut, http.MethodPost:
+			adminHandler.UpdateProxyConfig(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 	mux.HandleFunc("/api/housekeeping/run", adminWrap(adminHandler.RunHousekeeping))
 	mux.HandleFunc("/api/catalogue/check", adminWrap(adminHandler.CheckCatalogue))
 

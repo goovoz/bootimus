@@ -132,6 +132,10 @@ type Storage interface {
 	ListAuditLogs(filter AuditLogFilter) ([]models.AuditLog, int64, error)
 	DeleteAuditLogsBefore(cutoff time.Time) (int64, error)
 
+	// [bootimus-fork L1] fork-patch: download-proxy
+	GetProxyConfig() (*models.ProxyConfig, error)
+	UpdateProxyConfig(cfg *models.ProxyConfig) error
+
 	ListScheduledTasks() ([]*models.ScheduledTask, error)
 	ListScheduledTasksByGroup(groupID uint) ([]*models.ScheduledTask, error)
 	GetScheduledTask(id uint) (*models.ScheduledTask, error)
