@@ -2134,7 +2134,11 @@ const SOURCE_TEXT = {
         "(not extracted)": "（未解压）",
         "Click \"Refresh\" to load logs...": "点击「刷新」加载日志…",
         "No groups found. Click \"+ Add Group\" to create one.": "还没有分组。点击「+ 添加分组」创建一个。",
-        "No client groups yet. Click \"+ Add Client Group\" to create one.": "还没有客户端分组。点击「+ 添加客户端分组」创建一个。"
+        "No client groups yet. Click \"+ Add Client Group\" to create one.": "还没有客户端分组。点击「+ 添加客户端分组」创建一个。",
+        "CN (Alibaba Cloud)": "中国（阿里云）",
+        "CN (Huawei Cloud)": "中国（华为云）",
+        "CN (USTC)": "中国（中科大）",
+        "CN (Tsinghua TUNA)": "中国（清华 TUNA）"
     }
 };
 
