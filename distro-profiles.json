@@ -14,10 +14,8 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Canonical)", "base": "https://releases.ubuntu.com"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/ubuntu-releases"},
-        {"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/ubuntu-releases"},
-        {"region": "CN (USTC)", "base": "https://mirrors.ustc.edu.cn/ubuntu-releases"},
-        {"region": "CN (Tsinghua TUNA)", "base": "https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases"},
+        {"region": "CN (NetEase)", "base": "https://mirrors.163.com/ubuntu-releases"},
+        {"region": "CN (HUST)", "base": "https://mirrors.hust.edu.cn/ubuntu-releases"},
         {"region": "UK (Bytemark)", "base": "https://mirror.bytemark.co.uk/ubuntu-releases"},
         {"region": "DE (Uni Erlangen)", "base": "https://ftp.uni-erlangen.de/mirrors/ubuntu-releases"}
       ],
@@ -41,7 +39,6 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "UK (Universiry of Kent Mirrorservice)", "base": "https://mirrorservice.org/sites/www.linuxmint.com/pub/linuxmint.com"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/linuxmint"},
 	{"region": "DE (GWDG)", "base": "https://ftp5.gwdg.de/pub/linux/debian/mint"}
       ],
       "releases": [
@@ -112,10 +109,6 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Official)", "base": "https://cdimage.debian.org/debian-cd/current/amd64"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/debian-cd/current/amd64"},
-        {"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/debian-cd/current/amd64"},
-        {"region": "CN (USTC)", "base": "https://mirrors.ustc.edu.cn/debian-cd/current/amd64"},
-        {"region": "CN (Tsinghua TUNA)", "base": "https://mirrors.tuna.tsinghua.edu.cn/debian-cd/current/amd64"},
         {"region": "UK (Bytemark)", "base": "https://mirror.bytemark.co.uk/debian-cd/current/amd64"},
         {"region": "DE (GWDG)", "base": "https://ftp.gwdg.de/debian-cd/current/amd64"}
       ],
@@ -149,10 +142,8 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Rackspace)", "base": "https://mirror.rackspace.com/archlinux/iso/latest"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/archlinux/iso/latest"},
-        {"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/archlinux/iso/latest"},
-        {"region": "CN (USTC)", "base": "https://mirrors.ustc.edu.cn/archlinux/iso/latest"},
-        {"region": "CN (Tsinghua TUNA)", "base": "https://mirrors.tuna.tsinghua.edu.cn/archlinux/iso/latest"},
+        {"region": "CN (NetEase)", "base": "https://mirrors.163.com/archlinux/iso/latest"},
+        {"region": "CN (HUST)", "base": "https://mirrors.hust.edu.cn/archlinux/iso/latest"},
         {"region": "DE (Hetzner)", "base": "https://mirror.hetzner.com/archlinux/iso/latest"},
         {"region": "UK (Bytemark)", "base": "https://mirror.bytemark.co.uk/archlinux/iso/latest"}
       ],
@@ -209,10 +200,6 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Auto-redirect)", "base": "https://download.fedoraproject.org/pub/fedora/linux/releases"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/fedora/releases"},
-        {"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/fedora/releases"},
-        {"region": "CN (USTC)", "base": "https://mirrors.ustc.edu.cn/fedora/releases"},
-        {"region": "CN (Tsinghua TUNA)", "base": "https://mirrors.tuna.tsinghua.edu.cn/fedora/releases"},
         {"region": "UK (Mythic Beasts)", "base": "https://mirrors.mythic-beasts.com/fedora-pub/fedora/linux/releases"},
         {"region": "DE (FAU)", "base": "https://ftp.fau.de/fedora/linux/releases"}
       ],
@@ -234,8 +221,6 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Official)", "base": "https://repo.almalinux.org/almalinux"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/almalinux"},
-        {"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/almalinux"},
         {"region": "DE (Hetzner)", "base": "https://mirror.hetzner.com/almalinux"}
       ],
       "releases": [
@@ -256,8 +241,6 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Official)", "base": "https://download.rockylinux.org/pub/rocky"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/rockylinux"},
-        {"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/rockylinux"},
         {"region": "DE (Hetzner)", "base": "https://mirror.hetzner.com/rocky"}
       ],
       "releases": [
@@ -302,11 +285,7 @@
       "auto_install_type": "",
       "boot_method": "kernel",
       "mirrors": [
-	{"region": "DE (RTWH Aachen)", "base": "https://ftp.halifax.rwth-aachen.de/opensuse"},
-	{"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/opensuse"},
-	{"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/opensuse"},
-	{"region": "CN (USTC)", "base": "https://mirrors.ustc.edu.cn/opensuse"},
-	{"region": "CN (Tsinghua TUNA)", "base": "https://mirrors.tuna.tsinghua.edu.cn/opensuse"}
+	{"region": "DE (RTWH Aachen)", "base": "https://ftp.halifax.rwth-aachen.de/opensuse"}
       ],
       "releases": [
         {"label": "Tumbleweed DVD (64-bit)", "path": "/tumbleweed/iso/openSUSE-Tumbleweed-DVD-x86_64-Current.iso"},
@@ -327,11 +306,7 @@
       "auto_install_type": "",
       "boot_method": "kernel",
       "mirrors": [
-        {"region": "Global (CDN)", "base": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/alpine/v3.20/releases/x86_64"},
-        {"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/alpine/v3.20/releases/x86_64"},
-        {"region": "CN (USTC)", "base": "https://mirrors.ustc.edu.cn/alpine/v3.20/releases/x86_64"},
-        {"region": "CN (Tsinghua TUNA)", "base": "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.20/releases/x86_64"}
+        {"region": "Global (CDN)", "base": "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64"}
       ],
       "releases": [
         {"label": "3.20 Standard (x86_64)", "path": "/alpine-standard-3.20.3-x86_64.iso"},
@@ -461,10 +436,6 @@
       "boot_method": "kernel",
       "mirrors": [
         {"region": "Global (Official)", "base": "https://cdimage.kali.org/current"},
-        {"region": "CN (Alibaba Cloud)", "base": "https://mirrors.aliyun.com/kali-images/current"},
-        {"region": "CN (Huawei Cloud)", "base": "https://mirrors.huaweicloud.com/kali-images/current"},
-        {"region": "CN (USTC)", "base": "https://mirrors.ustc.edu.cn/kali-images/current"},
-        {"region": "CN (Tsinghua TUNA)", "base": "https://mirrors.tuna.tsinghua.edu.cn/kali-images/current"},
         {"region": "DE (Kumi)", "base": "https://mirror.kumi.systems/kali-images/current"}
       ],
       "releases": [
