@@ -84,6 +84,10 @@ type Storage interface {
 	GetWebhookConfig() (*models.WebhookConfig, error)
 	UpdateWebhookConfig(cfg *models.WebhookConfig) error
 
+	// [bootimus-fork L1] fork-patch: download-proxy
+	GetProxyConfig() (*models.ProxyConfig, error)
+	UpdateProxyConfig(cfg *models.ProxyConfig) error
+
 	ListScheduledTasks() ([]*models.ScheduledTask, error)
 	ListScheduledTasksByGroup(groupID uint) ([]*models.ScheduledTask, error)
 	GetScheduledTask(id uint) (*models.ScheduledTask, error)

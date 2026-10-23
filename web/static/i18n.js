@@ -2134,7 +2134,20 @@ const SOURCE_TEXT = {
         "(not extracted)": "（未解压）",
         "Click \"Refresh\" to load logs...": "点击「刷新」加载日志…",
         "No groups found. Click \"+ Add Group\" to create one.": "还没有分组。点击「+ 添加分组」创建一个。",
-        "No client groups yet. Click \"+ Add Client Group\" to create one.": "还没有客户端分组。点击「+ 添加客户端分组」创建一个。"
+        "No client groups yet. Click \"+ Add Client Group\" to create one.": "还没有客户端分组。点击「+ 添加客户端分组」创建一个。",
+        "Network Proxy": "网络代理",
+        "Optional HTTP proxy for ISO downloads. Save it here, then tick \"Use proxy\" in the download dialog or the Get Images dialog. Leave the credentials empty if the proxy needs no authentication.": "为 ISO 下载配置可选的 HTTP 代理。在这里保存后，在「下载」或「获取镜像」弹窗里勾选「使用代理」即可生效。代理不需要认证时，用户名和密码留空。",
+        "Proxy address (host:port)": "代理地址（主机:端口）",
+        "Username (optional)": "用户名（可留空）",
+        "Password (optional)": "密码（可留空）",
+        "Leave empty if not required": "不需要认证时留空",
+        "Save Proxy": "保存代理",
+        "Use proxy for this download": "本次下载使用代理",
+        "Use proxy for these downloads": "这些下载使用代理",
+        "Route this download through the proxy configured in Settings.": "通过「设置」里配置的代理下载。",
+        "Proxy settings saved": "代理设置已保存",
+        "Failed to save proxy settings": "保存代理设置失败",
+        "Saved": "已保存"
     }
 };
 

@@ -101,6 +101,9 @@ jobs:
           # [bootimus-fork] 第二个补丁：中文覆盖。只做判定与告警，不参与自动退役逻辑
           bash .github/scripts/detect-i18n-zh-full.sh /tmp/upstream-tree | tee /tmp/detect-i18n.txt
 
+          # [bootimus-fork] 下载代理补丁：只判定与告警
+          bash .github/scripts/detect-download-proxy.sh /tmp/upstream-tree | tee /tmp/detect-dlproxy.txt
+
 
           RESULT=$(sed -n 's/^RESULT=//p' /tmp/detect.txt | head -1)
           REASON=$(sed -n 's/^REASON=//p' /tmp/detect.txt | head -1)
@@ -110,6 +113,8 @@ jobs:
             echo "patches=${patches}"
             echo "i18n_result=$(sed -n 's/^RESULT=//p' /tmp/detect-i18n.txt | head -1)"
             echo "i18n_reason=$(sed -n 's/^REASON=//p' /tmp/detect-i18n.txt | head -1)"
+            echo "dlproxy_result=$(sed -n 's/^RESULT=//p' /tmp/detect-dlproxy.txt | head -1)"
+            echo "dlproxy_reason=$(sed -n 's/^REASON=//p' /tmp/detect-dlproxy.txt | head -1)"
             echo "branch=sync/$(date -u +%Y%m%d-%H%M)"
           } >> "$GITHUB_OUTPUT"
 
@@ -118,6 +123,12 @@ jobs:
         run: |
           echo "::warning::上游可能已自行补齐中文覆盖：${{ steps.inspect.outputs.i18n_reason }}"
           echo "补丁 i18n-zh-full 未自动退役（自动删除会一次丢掉 688 条译文），请人工确认后再移除。"
+
+      - name: 下载代理补丁是否该让位（仅告警）
+        if: steps.inspect.outputs.dlproxy_result == 'IMPLEMENTED'
+        run: |
+          echo "::warning::上游可能已自行支持下载代理：${{ steps.inspect.outputs.dlproxy_reason }}"
+          echo "补丁 download-proxy 未自动退役，请人工核对设置页与配置存储后再移除。"
 
 
       - name: 上游已实现 → 退役补丁
