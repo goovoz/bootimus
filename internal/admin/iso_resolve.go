@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -22,9 +23,10 @@ import (
 )
 
 const (
-	isoResolveTTL        = 15 * time.Minute
-	isoResolveMaxBodyLen = 1 << 20
-	isoResolveTimeout    = 25 * time.Second
+	isoResolveTTL     = 15 * time.Minute
+	isoResolveFailTTL = 2 * time.Minute
+	isoResolveMaxBody = 1 << 20
+	isoResolveTimeout = 25 * time.Second
 	// 部分镜像站会拦 Go 默认 UA（和 ISO 下载那次的坑一样）
 	isoResolveUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
@@ -33,12 +35,15 @@ const (
 var (
 	isoResolveCache sync.Map // raw url -> isoResolveEntry
 	digitRun        = regexp.MustCompile(`\d+`)
-	hrefISO         = regexp.MustCompile(`href="([^"?]+\.iso)"`)
+	// 目录页的引号风格不统一（nginx 用双引号、Apache 常见单引号），
+	// 也允许 href 里带 query；取出来的值统一再交给 url.Parse 处理。
+	hrefISO = regexp.MustCompile(`href=["']([^"']*\.iso[^"']*)["']`)
 )
 
 type isoResolveEntry struct {
-	url string
-	at  time.Time
+	url    string
+	at     time.Time
+	errMsg string // 非空 = 这次解析失败；短时间内不必再用三个请求重试
 }
 
 func isoResolveClient() *http.Client {
@@ -60,21 +65,37 @@ func headStatus(client *http.Client, raw string) (int, error) {
 	return resp.StatusCode, nil
 }
 
-func splitURL(raw string) (dir, name string, err error) {
+// splitURL keeps the parsed URL (query string included — signed links break if it
+// is dropped) instead of rebuilding the directory by string concatenation.
+func splitURL(raw string) (dir *url.URL, name string, err error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", "", errors.New("only http(s) URLs can be resolved")
+		return nil, "", errors.New("only http(s) URLs can be resolved")
 	}
-	path := u.Path
-	idx := strings.LastIndex(path, "/")
+	idx := strings.LastIndex(u.Path, "/")
 	if idx < 0 {
-		return "", "", errors.New("URL has no directory part")
+		return nil, "", errors.New("URL has no directory part")
 	}
-	u.Path = path[:idx]
-	return u.String(), path[idx+1:], nil
+	d := *u
+	d.Path = u.Path[:idx]
+	d.RawPath = ""
+	return &d, u.Path[idx+1:], nil
+}
+
+// siblingURL builds "<dir>/<name>" while keeping scheme, host and query.
+func siblingURL(dir *url.URL, name string) string {
+	u := *dir
+	base := strings.TrimSuffix(dir.Path, "/")
+	if name == "" {
+		u.Path = base + "/"
+	} else {
+		u.Path = base + "/" + name
+	}
+	u.RawPath = ""
+	return u.String()
 }
 
 // versionPattern turns "debian-13.5.0-amd64-netinst.iso" into
@@ -119,8 +140,9 @@ func pickNewestISO(names []string, pattern *regexp.Regexp) string {
 	return best
 }
 
-func listDirectoryISO(client *http.Client, dir string) ([]string, error) {
-	req, err := http.NewRequest(http.MethodGet, dir+"/", nil)
+func listDirectoryISO(client *http.Client, dir *url.URL) ([]string, error) {
+	listing := siblingURL(dir, "")
+	req, err := http.NewRequest(http.MethodGet, listing, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -133,16 +155,21 @@ func listDirectoryISO(client *http.Client, dir string) ([]string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("directory listing returned HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, isoResolveMaxBodyLen))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, isoResolveMaxBody))
 	if err != nil {
 		return nil, err
 	}
-	html := string(body)
+
 	seen := map[string]bool{}
 	var names []string
-	for _, m := range hrefISO.FindAllStringSubmatch(html, -1) {
-		name := m[1]
-		if strings.Contains(name, "/") || seen[name] {
+	for _, m := range hrefISO.FindAllStringSubmatch(string(body), -1) {
+		ref := m[1]
+		// 目录可能给出绝对地址或带 query 的地址，先取路径再取最后一段
+		if u, perr := url.Parse(ref); perr == nil && u.Path != "" {
+			ref = u.Path
+		}
+		name := path.Base(ref)
+		if name == "" || name == "." || name == "/" || name == ".." || seen[name] {
 			continue
 		}
 		seen[name] = true
@@ -157,33 +184,52 @@ func listDirectoryISO(client *http.Client, dir string) ([]string, error) {
 func resolveLatestISOURL(raw string) (resolved string, changed bool, err error) {
 	if e, ok := isoResolveCache.Load(raw); ok {
 		entry := e.(isoResolveEntry)
-		if time.Since(entry.at) < isoResolveTTL {
+		ttl := isoResolveTTL
+		if entry.errMsg != "" {
+			ttl = isoResolveFailTTL
+		}
+		if time.Since(entry.at) < ttl {
+			if entry.errMsg != "" {
+				return raw, false, errors.New(entry.errMsg)
+			}
 			return entry.url, entry.url != raw, nil
 		}
 		isoResolveCache.Delete(raw)
 	}
 
+	fail := func(err error) (string, bool, error) {
+		isoResolveCache.Store(raw, isoResolveEntry{url: raw, at: time.Now(), errMsg: err.Error()})
+		return raw, false, err
+	}
+
 	client := isoResolveClient()
-	if code, headErr := headStatus(client, raw); headErr == nil && code == http.StatusOK {
-		isoResolveCache.Store(raw, isoResolveEntry{url: raw, at: time.Now()})
-		return raw, false, nil
+	code, headErr := headStatus(client, raw)
+	if headErr == nil {
+		if code == http.StatusOK {
+			isoResolveCache.Store(raw, isoResolveEntry{url: raw, at: time.Now()})
+			return raw, false, nil
+		}
+		// HEAD 不被支持时无法判断文件在不在，按原样交给下载链路，不做改写
+		if code == http.StatusMethodNotAllowed || code == http.StatusNotImplemented {
+			return raw, false, nil
+		}
 	}
 
 	dir, name, err := splitURL(raw)
 	if err != nil {
-		return raw, false, err
+		return fail(err)
 	}
 	names, err := listDirectoryISO(client, dir)
 	if err != nil {
-		return raw, false, fmt.Errorf("cannot list %s: %w", dir, err)
+		return fail(fmt.Errorf("cannot list %s: %w", siblingURL(dir, ""), err))
 	}
 	best := pickNewestISO(names, versionPattern(name))
 	if best == "" || best == name {
-		return raw, false, fmt.Errorf("no newer file matching %q in %s", name, dir)
+		return fail(fmt.Errorf("no newer file matching %q in %s", name, siblingURL(dir, "")))
 	}
-	candidate := dir + "/" + best
+	candidate := siblingURL(dir, best)
 	if code, err := headStatus(client, candidate); err != nil || code != http.StatusOK {
-		return raw, false, fmt.Errorf("newest candidate %s is not downloadable (HTTP %d)", best, code)
+		return fail(fmt.Errorf("newest candidate %s is not downloadable (HTTP %d)", best, code))
 	}
 	isoResolveCache.Store(raw, isoResolveEntry{url: candidate, at: time.Now()})
 	return candidate, true, nil
