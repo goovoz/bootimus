@@ -1,117 +1,185 @@
 #!/usr/bin/env bash
-# [bootimus-fork L0] GHCR 保留策略：每个包只留「latest 指向的那一个镜像」。
+# [bootimus-fork L0] GHCR 保留策略：**每个版本号只留最新一个 digest**。
 #
-# 为什么需要它：每次小改动都会构建一个新 digest，tag 是 <base>-g<sha> / sha-<sha>，
-# 基线版本（0.1.77）长期不动，于是同版本号下堆几十个 digest。部署只认 latest / 钉住的
-# digest，旧构建留着没有价值，只会让 Packages 页面难以辨认。
+#   0.1.77 → 保留该版本号下最新构建的 index（+ 它的两个平台子清单）
+#   0.1.76 → 同样保留它自己最新那个，依此类推
+#   latest → 固定指向「版本号最高的那个 keeper」
 #
-# 保留哪些：
-#   * 目标 digest（默认 latest 指向的那个）本身；
-#   * 它的多架构子清单（linux/amd64、linux/arm64）——这些也是独立「版本」，删掉会毁掉镜像。
+# 为什么按版本号而不是「全库只留一个」：跨版本回滚时至少还留着一个验证过的旧版本可以临时回滚；
+# 同版本号内的中间构建（每次小改动一个 digest）没有保留价值。
 #
-# 删除哪些：其余全部（旧构建的 4 个 tag + 它们未打 tag 的子清单）。
+# 保留/删除的边界：
+#   * 每个版本号 → updated_at 最新的那个 index；
+#   * 该 index 的**平台子清单**（linux/amd64、linux/arm64）也必须留——它们在 API 里是
+#     独立「版本」，删掉 index 就坏了（Packages 页面显示的 untagged 就是它们）；
+#   * 其余全部删除（同版本号的旧构建、旧构建的子清单）。
 #
 # 安全阀：
-#   * 目标 digest 取不到就整体中止，绝不在「不知道留谁」的情况下删东西；
+#   * 一个 keeper 都解析不出来就中止，绝不在「不知道留谁」的情况下删东西；
 #   * 15 分钟内更新过的版本跳过（避免和正在进行的构建抢）；
-#   * DRY_RUN=true 只打印计划。
+#   * DRY_RUN=true 只打印计划；
+#   * VERSIONS_FROM=<file> 用本地清单只跑分组逻辑（无网络，用于自测）。
 set -uo pipefail
 
 OWNER=${OWNER:-goovoz}
 PACKAGE=${PACKAGE:-bootimus}
+IMAGE=${IMAGE:-ghcr.io/${OWNER}/${PACKAGE}}
 GH_TOKEN=${GH_TOKEN:-}
 KEEP_DIGEST=${KEEP_DIGEST:-}
 DRY_RUN=${DRY_RUN:-false}
 GRACE_MINUTES=${GRACE_MINUTES:-15}
+FIX_LATEST=${FIX_LATEST:-true}
+VERSIONS_FROM=${VERSIONS_FROM:-}
 
 ACC="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-[ -n "$GH_TOKEN" ] || die "缺少 GH_TOKEN"
 command -v jq >/dev/null || die "缺少 jq"
 
-# ---------------------------------------------------------------- 1. 目标 digest
-if [ -z "$KEEP_DIGEST" ]; then
-    TOKEN=$(curl -fsS --max-time 25 \
-        "https://ghcr.io/token?scope=repository:${OWNER}/${PACKAGE}:pull&service=ghcr.io" \
-        | jq -r '.token // empty') || true
-    [ -n "${TOKEN:-}" ] || die "拿不到 registry token，无法解析 latest"
-    KEEP_DIGEST=$(curl -fsSI --max-time 25 \
-        -H "Authorization: Bearer ${TOKEN}" -H "Accept: ${ACC}" \
-        "https://ghcr.io/v2/${OWNER}/${PACKAGE}/manifests/latest" \
-        | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}')
-    [ -n "${KEEP_DIGEST:-}" ] || die "latest 没有返回 digest，中止（不删任何东西）"
-fi
-log "保留 digest: ${KEEP_DIGEST}"
-
-# 子清单：多架构 index 的平台清单也是独立版本，必须一起留
-KEEP_SET=$(mktemp)
-trap 'rm -f "$KEEP_SET"' EXIT
-printf '%s\n' "$KEEP_DIGEST" > "$KEEP_SET"
-if [ -n "${TOKEN:-}" ]; then
-    curl -fsS --max-time 25 -H "Authorization: Bearer ${TOKEN}" -H "Accept: ${ACC}" \
-        "https://ghcr.io/v2/${OWNER}/${PACKAGE}/manifests/${KEEP_DIGEST}" \
-        | jq -r '.manifests[]?.digest // empty' >> "$KEEP_SET" 2>/dev/null || true
-fi
-log "连同平台子清单，需要保留的 digest："
-sed 's/^/  /' "$KEEP_SET"
-
-# ------------------------------------------------------------- 2. 版本列表 + 删除
-# 用户拥有的包用 users/<owner>/...；组织包退回 orgs/<owner>/...。
-list_versions() {
-    local path=$1
-    # tags 为空时会吞掉一列，用 "-" 占位，避免 read 之后列错位
-    gh api --paginate "${path}?per_page=100" --jq \
-        '.[] | [.id, .name, ((.metadata.container.tags // []) | join(" ") | if . == "" then "-" else . end), .updated_at] | @tsv' 2>/dev/null
+# ------------------------------------------------------------------ 版本号提取
+# tag 形态：0.1.77（漂移）/ 0.1.77-ga2327e1（本次构建）/ sha-a2327e1 / latest
+# 只认前两种；平台子清单没有 tag，自然落空（它们靠 keeper 的子清单关系保留）
+base_version() {
+    local tags=$1 t
+    for t in $tags; do
+        if [[ "$t" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then printf '%s' "$t"; return 0; fi
+    done
+    for t in $tags; do
+        if [[ "$t" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-g ]]; then printf '%s' "${BASH_REMATCH[1]}"; return 0; fi
+    done
+    return 0
 }
 
-VERSIONS=$(list_versions "users/${OWNER}/packages/container/${PACKAGE}/versions")
-if [ -z "$VERSIONS" ]; then
-    VERSIONS=$(list_versions "orgs/${OWNER}/packages/container/${PACKAGE}/versions")
-fi
-if [ -z "$VERSIONS" ]; then
-    VERSIONS=$(list_versions "user/packages/container/${PACKAGE}/versions")
-fi
-[ -n "$VERSIONS" ] || die "取不到版本列表（令牌权限或包名不对），中止"
+# --------------------------------------------------------------- 1. 版本清单
+fetch_versions() {
+    if [ -n "$VERSIONS_FROM" ]; then
+        cat "$VERSIONS_FROM"
+        return 0
+    fi
+    local out
+    out=$(gh api --paginate "users/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100" --jq \
+        '.[] | [.id, .name, ((.metadata.container.tags // []) | join(" ") | if . == "" then "-" else . end), .updated_at] | @tsv' 2>/dev/null)
+    if [ -z "$out" ]; then
+        out=$(gh api --paginate "orgs/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100" --jq \
+            '.[] | [.id, .name, ((.metadata.container.tags // []) | join(" ") | if . == "" then "-" else . end), .updated_at] | @tsv' 2>/dev/null)
+    fi
+    printf '%s' "$out"
+}
 
+VERSIONS=$(fetch_versions)
+[ -n "$VERSIONS" ] || die "取不到版本列表（令牌权限或包名不对），中止"
 total=$(printf '%s\n' "$VERSIONS" | sed '/^$/d' | wc -l)
 log "包内共 ${total} 个版本"
 
-# GNU date -d 在 ubuntu-latest 上可用
+# --------------------------------------------------- 2. 每个版本号挑最新那个
+declare -A BEST_DIGEST=()
+declare -A BEST_TIME=()
+declare -A BEST_TAGS=()
+
+while IFS=$'\t' read -r id digest tags updated; do
+    [ -z "${id:-}" ] && continue
+    base=$(base_version "$tags")
+    [ -n "$base" ] || continue
+    prev=${BEST_TIME[$base]:-}
+    if [ -z "$prev" ] || [[ "$updated" > "$prev" ]]; then
+        BEST_TIME[$base]=$updated
+        BEST_DIGEST[$base]=$digest
+        BEST_TAGS[$base]=$tags
+    fi
+done <<< "$VERSIONS"
+
+[ "${#BEST_DIGEST[@]}" -gt 0 ] || die "一个版本号都没解析出来，中止（不删任何东西）"
+
+log ""
+log "每个版本号保留最新构建："
+for base in $(printf '%s\n' "${!BEST_DIGEST[@]}" | sort -V); do
+    log "  ${base}  →  ${BEST_DIGEST[$base]}  [${BEST_TAGS[$base]}]  (${BEST_TIME[$base]})"
+done
+
+NEWEST_BASE=$(printf '%s\n' "${!BEST_DIGEST[@]}" | sort -V | tail -1)
+NEWEST_DIGEST=${BEST_DIGEST[$NEWEST_BASE]}
+log ""
+log "最新版本号：${NEWEST_BASE} → latest 应指向 ${NEWEST_DIGEST}"
+
+# ------------------------------------------------- 3. keeper 集合（含平台子清单）
+KEEP_SET=$(mktemp)
+SUMMARY=$(mktemp)
+trap 'rm -f "$KEEP_SET" "$SUMMARY"' EXIT
+
+TOKEN=""
+if [ -z "$VERSIONS_FROM" ]; then
+    TOKEN=$(curl -fsS --max-time 25 \
+        "https://ghcr.io/token?scope=repository:${OWNER}/${PACKAGE}:pull&service=ghcr.io" \
+        | jq -r '.token // empty') || true
+fi
+
+for base in "${!BEST_DIGEST[@]}"; do
+    printf '%s\n' "${BEST_DIGEST[$base]}" >> "$KEEP_SET"
+    if [ -n "$TOKEN" ]; then
+        curl -fsS --max-time 25 -H "Authorization: Bearer ${TOKEN}" -H "Accept: ${ACC}" \
+            "https://ghcr.io/v2/${OWNER}/${PACKAGE}/manifests/${BEST_DIGEST[$base]}" \
+            | jq -r '.manifests[]?.digest // empty' >> "$KEEP_SET" 2>/dev/null || true
+    fi
+done
+[ -n "$KEEP_DIGEST" ] && printf '%s\n' "$KEEP_DIGEST" >> "$KEEP_SET"
+sort -u -o "$KEEP_SET" "$KEEP_SET"
+log "需要保留的 digest（含平台子清单）共 $(wc -l < "$KEEP_SET") 个"
+
+# ------------------------------------------------------------ 4. latest 校准
+if [ -n "$TOKEN" ]; then
+    LATEST_DIGEST=$(curl -fsSI --max-time 25 -H "Authorization: Bearer ${TOKEN}" -H "Accept: ${ACC}" \
+        "https://ghcr.io/v2/${OWNER}/${PACKAGE}/manifests/latest" \
+        | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}')
+    log "latest 当前指向：${LATEST_DIGEST:-<取不到>}"
+    if [ -z "${LATEST_DIGEST:-}" ]; then
+        log "WARN: 取不到 latest 的 digest，本轮不校准（不影响下面的清理判定）"
+    elif [ "$LATEST_DIGEST" != "$NEWEST_DIGEST" ]; then
+        log "latest 不等于「最高版本号的最新构建」，需指到 ${NEWEST_DIGEST}"
+        if [ "$DRY_RUN" = "true" ] || [ "$FIX_LATEST" != "true" ]; then
+            log "  （dry_run 或 FIX_LATEST=false，跳过重打 tag）"
+        elif docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}@${NEWEST_DIGEST}" >/dev/null 2>&1; then
+            log "  已把 latest 指到 ${NEWEST_DIGEST}"
+        else
+            log "  WARN: 重打 latest 失败（确认已 docker login ghcr.io），本轮跳过"
+        fi
+    fi
+fi
+
+# --------------------------------------------------------------- 5. 删除其余
 cutoff=$(date -u -d "${GRACE_MINUTES} minutes ago" +%Y-%m-%dT%H:%M:%SZ)
 
 deleted=0
 kept=0
 skipped_recent=0
 failed=0
-SUMMARY=$(mktemp)
-trap 'rm -f "$KEEP_SET" "$SUMMARY"' EXIT
 
 while IFS=$'\t' read -r id digest tags updated; do
     [ -z "${id:-}" ] && continue
+    base=$(base_version "$tags")
+    label=${base:-untagged}
     if grep -qx "$digest" "$KEEP_SET"; then
         kept=$((kept + 1))
-        printf '  keep  %-71s %s\n' "$digest" "${tags:-<untagged>}" >> "$SUMMARY"
+        printf '  keep    %-8s %-71s %s\n' "$label" "$digest" "${tags}" >> "$SUMMARY"
         continue
     fi
     if [[ "$updated" > "$cutoff" ]]; then
         skipped_recent=$((skipped_recent + 1))
-        printf '  fresh %-71s %s（%s 内更新过，跳过）\n' "$digest" "${tags:-<untagged>}" "${GRACE_MINUTES}m" >> "$SUMMARY"
+        printf '  fresh   %-8s %-71s %s（%sm 内更新，跳过）\n' "$label" "$digest" "${tags}" "$GRACE_MINUTES" >> "$SUMMARY"
         continue
     fi
     if [ "$DRY_RUN" = "true" ]; then
-        printf '  would-delete %s %s\n' "$digest" "${tags:-<untagged>}" >> "$SUMMARY"
+        printf '  would-rm %-8s %-71s %s\n' "$label" "$digest" "${tags}" >> "$SUMMARY"
         deleted=$((deleted + 1))
         continue
     fi
     if gh api -X DELETE "users/${OWNER}/packages/container/${PACKAGE}/versions/${id}" >/dev/null 2>&1 \
         || gh api -X DELETE "orgs/${OWNER}/packages/container/${PACKAGE}/versions/${id}" >/dev/null 2>&1; then
-        printf '  delete %-71s %s\n' "$digest" "${tags:-<untagged>}" >> "$SUMMARY"
+        printf '  delete  %-8s %-71s %s\n' "$label" "$digest" "${tags}" >> "$SUMMARY"
         deleted=$((deleted + 1))
     else
-        printf '  FAILED %-71s %s\n' "$digest" "${tags:-<untagged>}" >> "$SUMMARY"
+        printf '  FAILED  %-8s %-71s %s\n' "$label" "$digest" "${tags}" >> "$SUMMARY"
         failed=$((failed + 1))
     fi
 done <<< "$VERSIONS"
@@ -119,15 +187,19 @@ done <<< "$VERSIONS"
 log ""
 cat "$SUMMARY"
 log ""
-log "保留 ${kept} 个，删除 ${deleted} 个，近期更新跳过 ${skipped_recent} 个，失败 ${failed} 个（dry_run=${DRY_RUN}）"
+log "保留 ${kept} 个（${#BEST_DIGEST[@]} 个版本号），删除 ${deleted} 个，近期跳过 ${skipped_recent} 个，失败 ${failed} 个（dry_run=${DRY_RUN}）"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
-        echo "## GHCR 保留策略"
+        echo "## GHCR 保留策略（每个版本号留最新一个）"
         echo ""
-        echo "- 保留 digest：\`${KEEP_DIGEST}\`（含平台子清单）"
-        echo "- 保留 ${kept} 个 / 删除 ${deleted} 个 / 跳过 ${skipped_recent} 个 / 失败 ${failed} 个"
-        echo "- dry_run：${DRY_RUN}"
+        echo "| 版本号 | 保留 digest | 构建 tag |"
+        echo "|---|---|---|"
+        for base in $(printf '%s\n' "${!BEST_DIGEST[@]}" | sort -V); do
+            echo "| ${base} | \`${BEST_DIGEST[$base]}\` | ${BEST_TAGS[$base]} |"
+        done
+        echo ""
+        echo "保留 ${kept} 个 / 删除 ${deleted} 个 / 跳过 ${skipped_recent} 个 / 失败 ${failed} 个（dry_run=${DRY_RUN}）"
         echo ""
         echo '```'
         cat "$SUMMARY"
