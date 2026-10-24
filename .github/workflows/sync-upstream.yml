@@ -107,6 +107,9 @@ jobs:
           # [bootimus-fork] 断点续传补丁：只判定与告警
           bash .github/scripts/detect-download-resume.sh /tmp/upstream-tree | tee /tmp/detect-resume.txt
 
+          # [bootimus-fork] 自动安装生成器补丁：只判定与告警
+          bash .github/scripts/detect-autoinstall-generator.sh /tmp/upstream-tree | tee /tmp/detect-aigen.txt
+
 
           RESULT=$(sed -n 's/^RESULT=//p' /tmp/detect.txt | head -1)
           REASON=$(sed -n 's/^REASON=//p' /tmp/detect.txt | head -1)
@@ -120,6 +123,8 @@ jobs:
             echo "dlproxy_reason=$(sed -n 's/^REASON=//p' /tmp/detect-dlproxy.txt | head -1)"
             echo "resume_result=$(sed -n 's/^RESULT=//p' /tmp/detect-resume.txt | head -1)"
             echo "resume_reason=$(sed -n 's/^REASON=//p' /tmp/detect-resume.txt | head -1)"
+            echo "aigen_result=$(sed -n 's/^RESULT=//p' /tmp/detect-aigen.txt | head -1)"
+            echo "aigen_reason=$(sed -n 's/^REASON=//p' /tmp/detect-aigen.txt | head -1)"
             echo "branch=sync/$(date -u +%Y%m%d-%H%M)"
           } >> "$GITHUB_OUTPUT"
 
@@ -140,6 +145,12 @@ jobs:
         run: |
           echo "::warning::上游可能已自行支持断点续传：${{ steps.inspect.outputs.resume_reason }}"
           echo "补丁 download-resume 未自动退役，请人工确认上游续传等价（If-Range / 半成品命名）后再移除。"
+
+      - name: 自动安装生成器补丁是否该让位（仅告警）
+        if: steps.inspect.outputs.aigen_result == 'IMPLEMENTED'
+        run: |
+          echo "::warning::上游可能已自带自动安装模板生成：${{ steps.inspect.outputs.aigen_reason }}"
+          echo "补丁 autoinstall-generator 未自动退役，请人工比对模板覆盖面后再移除。"
 
 
       - name: 上游已实现 → 退役补丁
