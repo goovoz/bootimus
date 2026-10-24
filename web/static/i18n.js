@@ -2288,7 +2288,13 @@ const SOURCE_TEXT = {
         "15 characters max, no special characters.": "最多 15 个字符，不能含特殊字符。",
         "Windows zone name, e.g. China Standard Time, UTC": "Windows 时区名，例如 China Standard Time、UTC",
         "Index inside install.wim / install.esd (/IMAGE/INDEX).": "install.wim / install.esd 里的映像序号（/IMAGE/INDEX）。",
-        "Leave empty to skip the key and activate later.": "留空则跳过密钥，之后再激活。"
+        "Leave empty to skip the key and activate later.": "留空则跳过密钥，之后再激活。",
+        "Boot mode (firmware)": "引导模式（固件）",
+        "UEFI (GPT)": "UEFI（GPT）",
+        "BIOS / legacy (MBR)": "BIOS / 传统（MBR）",
+        "Must match how this client PXE-boots. The bootimus log shows arch=0 / undionly.kpxe for BIOS and arch=7 / ipxe.efi for UEFI.": "必须与客户端的 PXE 启动方式一致。日志里 arch=0 / undionly.kpxe 表示 BIOS，arch=7 / ipxe.efi 表示 UEFI。",
+        "* = Windows generates DESKTOP-XXXXXXX for each machine. A fixed value (15 chars max, no spaces) is baked into this one file, which every client booting the image shares.": "* 表示由 Windows 为每台机器生成 DESKTOP-XXXXXXX。填具体值会被写死在这份文件里，所有用该镜像启动的客户端共用同一个名字（最多 15 字符、不能有空格）。",
+        "Single-disk autounattend.xml. Set the boot mode to match the client's PXE firmware: UEFI builds GPT, BIOS builds MBR, and a mismatch aborts Setup with \"Windows cannot be installed to this disk: the selected disk is of the GPT partition style\". Windows 11 still needs TPM 2.0 and Secure Boot unless the image is bypassed.": "单盘 autounattend.xml。引导模式必须与客户端 PXE 固件一致：UEFI 走 GPT，BIOS 走 MBR，不一致会直接报「Windows 无法安装到这个磁盘。选中的磁盘采用 GPT 分区形式」。未绕过检测时 Windows 11 仍需 TPM 2.0 与安全启动。"
     }
 };
 
