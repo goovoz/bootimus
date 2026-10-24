@@ -259,16 +259,179 @@ func TestPerClientHostnameKeepsToken(t *testing.T) {
 	}
 }
 
+// 只有声明了 Placeholder 的字段才支持「按客户端取值」。以前这种记号会被原样
+// 写进答案文件（--name={{HOSTNAME}}），装上系统后才发现用户名错了；现在直接拒绝。
 func TestPerClientTokenIsOnlyForDeclaredVars(t *testing.T) {
-	out, err := Render("rhel-kickstart", map[string]string{
+	_, err := Render("rhel-kickstart", map[string]string{
 		"password": "Sup3rSecret!",
 		"username": "{{HOSTNAME}}",
 	})
+	if err == nil {
+		t.Fatal("undeclared per-client token should be rejected")
+	}
+	if !strings.Contains(err.Error(), "per-client") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// 口令里出现 & < > " ' 完全合法，但直接插进 XML 就会让整份 autounattend.xml 非法，
+// 表现成「渲染失败：XML syntax error」——用户根本不知道是自己口令的问题。
+func TestWindowsPasswordWithXMLSpecialsStaysWellFormed(t *testing.T) {
+	const pw = `P&ss<w0>rd"'!`
+	out, err := Render("windows-autounattend", map[string]string{"password": pw})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if !strings.Contains(out, "--name={{HOSTNAME}}") {
-		t.Errorf("未声明的字段不应被当作占位符处理:\n%s", out)
+	if err := Validate("autounattend", out); err != nil {
+		t.Fatalf("produced invalid XML: %v", err)
+	}
+	if strings.Contains(out, "P&ss<w0>") {
+		t.Errorf("口令没有被转义:\n%s", out)
+	}
+	if !strings.Contains(out, "P&amp;ss&lt;w0&gt;") {
+		t.Errorf("缺少转义后的口令:\n%s", out)
+	}
+}
+
+// /IMAGE/INDEX 与 DiskID 只能是整数；填了 "two" 以前会渲染成功，装到分区阶段才失败。
+func TestNumericFieldsAreValidated(t *testing.T) {
+	cases := map[string]map[string]string{
+		"image_index 非数字": {"image_index": "two"},
+		"disk_id 非数字":     {"disk_id": "first"},
+		"image_index 负数":  {"image_index": "-1"},
+		"image_index 小数":  {"image_index": "1.5"},
+	}
+	for name, extra := range cases {
+		values := map[string]string{"password": "AdminPass123"}
+		for k, v := range extra {
+			values[k] = v
+		}
+		if _, err := Render("windows-autounattend", values); err == nil {
+			t.Errorf("%s: 应该被拒绝", name)
+		}
+	}
+}
+
+// preseed 是「一行一条指令」，值里带换行就等于注入了一条新指令。
+func TestSingleLineValuesAreEnforced(t *testing.T) {
+	for _, bad := range []string{"node\nmalicious directive", "node\tx"} {
+		if _, err := Render("debian-preseed", map[string]string{
+			"password": "pw12345678",
+			"hostname": bad,
+		}); err == nil {
+			t.Errorf("hostname %q 应被拒绝", bad)
+		}
+	}
+}
+
+// Linux 主机名/用户名不允许空格：kickstart 的 --name=my user 会直接解析失败。
+func TestLinuxIdentifiersRejectSpaces(t *testing.T) {
+	if _, err := Render("rhel-kickstart", map[string]string{
+		"password": "pw12345678",
+		"username": "my user",
+	}); err == nil {
+		t.Error("用户名带空格应被拒绝")
+	}
+	if _, err := Render("debian-preseed", map[string]string{
+		"password": "pw12345678",
+		"hostname": "my host",
+	}); err == nil {
+		t.Error("主机名带空格应被拒绝")
+	}
+}
+
+// preseed 的 pkgsel 是空格分隔，kickstart 是一行一个包——不能把 textarea 原样塞进去。
+func TestPackageListIsNormalisedPerFormat(t *testing.T) {
+	out, err := Render("debian-preseed", map[string]string{
+		"password": "pw12345678",
+		"packages": "curl\nhtop\njq",
+	})
+	if err != nil {
+		t.Fatalf("preseed render: %v", err)
+	}
+	if !strings.Contains(out, "d-i pkgsel/include string curl htop jq") {
+		t.Errorf("preseed 的包列表应为空格分隔:\n%s", out)
+	}
+
+	out, err = Render("rhel-kickstart", map[string]string{
+		"password": "pw12345678",
+		"packages": "curl, htop\njq",
+	})
+	if err != nil {
+		t.Fatalf("kickstart render: %v", err)
+	}
+	for _, want := range []string{"\ncurl\n", "\nhtop\n", "\njq\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("kickstart 的包应一行一个，缺少 %q\n%s", want, out)
+		}
+	}
+}
+
+func TestPackagesWithShellMetacharsRejected(t *testing.T) {
+	if _, err := Render("debian-preseed", map[string]string{
+		"password": "pw12345678",
+		"packages": "curl; rm -rf /",
+	}); err == nil {
+		t.Error("包名里的 shell 元字符应被拒绝")
+	}
+}
+
+// 多个公钥要展开成多条指令，而不是把带换行的字符串塞进一条命令。
+func TestSSHKeysExpandPerLine(t *testing.T) {
+	keys := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIalpha lab\nssh-rsa AAAAB3NzaC1yc2EAAAAIbeta ops@host"
+
+	out, err := Render("debian-preseed", map[string]string{"password": "pw12345678", "ssh_key": keys})
+	if err != nil {
+		t.Fatalf("preseed render: %v", err)
+	}
+	if strings.Count(out, "/target/root/.ssh/authorized_keys &&") != 2 {
+		t.Errorf("preseed 应有两条 echo，实际:\n%s", out)
+	}
+	if !strings.Contains(out, `echo "ssh-ed25519`) || !strings.Contains(out, `echo "ssh-rsa`) {
+		t.Errorf("preseed 缺少公钥:\n%s", out)
+	}
+
+	out, err = Render("rhel-kickstart", map[string]string{"password": "pw12345678", "ssh_key": keys})
+	if err != nil {
+		t.Fatalf("kickstart render: %v", err)
+	}
+	if strings.Count(out, "sshkey --username=") != 2 {
+		t.Errorf("kickstart 应有两条 sshkey，实际:\n%s", out)
+	}
+
+	out, err = Render("ubuntu-autoinstall", map[string]string{"password": "pw12345678", "ssh_key": keys})
+	if err != nil {
+		t.Fatalf("autoinstall render: %v", err)
+	}
+	if err := Validate("autoinstall", out); err != nil {
+		t.Fatalf("autoinstall 产物不是合法 YAML: %v", err)
+	}
+	if strings.Count(out, ">> /root/.ssh/authorized_keys'") != 2 {
+		t.Errorf("autoinstall 应有两条追加公钥的命令:\n%s", out)
+	}
+	if !strings.Contains(out, `echo "ssh-rsa`) {
+		t.Errorf("autoinstall 缺少第二个公钥:\n%s", out)
+	}
+}
+
+func TestBrokenSSHKeyRejected(t *testing.T) {
+	for _, bad := range []string{
+		"not-a-key",
+		`ssh-ed25519 AAAA"'; rm -rf /`,
+	} {
+		if _, err := Render("ubuntu-autoinstall", map[string]string{
+			"password": "pw12345678",
+			"ssh_key":  bad,
+		}); err == nil {
+			t.Errorf("公钥 %q 应被拒绝", bad)
+		}
+	}
+}
+
+func TestYAMLEscape(t *testing.T) {
+	got := yamlEscape(`a"b\c`)
+	if got != `a\"b\\c` {
+		t.Fatalf("yamlEscape = %q", got)
 	}
 }
 
