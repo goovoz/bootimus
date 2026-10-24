@@ -111,8 +111,8 @@
         {"region": "DE (GWDG)", "base": "https://ftp.gwdg.de/debian-cd/current/amd64"}
       ],
       "releases": [
-        {"label": "13 (Trixie) DVD-1 (amd64)", "path": "/iso-dvd/debian-13.5.0-amd64-DVD-1.iso"},
-        {"label": "13 (Trixie) Netinst (amd64)", "path": "/iso-cd/debian-13.5.0-amd64-netinst.iso"}
+        {"label": "13 (Trixie) DVD-1 (amd64)", "path": "/iso-dvd/debian-13.7.0-amd64-DVD-1.iso"},
+        {"label": "13 (Trixie) Netinst (amd64)", "path": "/iso-cd/debian-13.7.0-amd64-netinst.iso"}
       ]
     },
     {
@@ -200,7 +200,7 @@
         {"region": "DE (FAU)", "base": "https://ftp.fau.de/fedora/linux/releases"}
       ],
       "releases": [
-        {"label": "44 Workstation (x86_64)", "path": "/44/Workstation/x86_64/iso/Fedora-Workstation-Live-x86_64-44-1.7.iso"},
+        {"label": "44 Workstation (x86_64)", "path": "/44/Workstation/x86_64/iso/Fedora-Workstation-Live-44-1.7.x86_64.iso"},
         {"label": "44 Server DVD (x86_64)", "path": "/44/Server/x86_64/iso/Fedora-Server-dvd-x86_64-44-1.7.iso"}
       ]
     },
@@ -435,8 +435,8 @@
         {"region": "DE (Kumi)", "base": "https://mirror.kumi.systems/kali-images/current"}
       ],
       "releases": [
-        {"label": "2024.4 Live (amd64)", "path": "/kali-linux-2024.4-live-amd64.iso"},
-        {"label": "2024.4 Installer (amd64)", "path": "/kali-linux-2024.4-installer-amd64.iso"}
+        {"label": "2024.4 Live (amd64)", "path": "/kali-linux-2026.3-live-amd64.iso"},
+        {"label": "2024.4 Installer (amd64)", "path": "/kali-linux-2026.3-installer-amd64.iso"}
       ]
     },
     {
