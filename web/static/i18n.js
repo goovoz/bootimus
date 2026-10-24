@@ -2526,7 +2526,31 @@ const SOURCE_TEXT = {
         "BIOS / legacy (MBR)": "BIOS / 传统（MBR）",
         "Must match how this client PXE-boots. The bootimus log shows arch=0 / undionly.kpxe for BIOS and arch=7 / ipxe.efi for UEFI.": "必须与客户端的 PXE 启动方式一致。日志里 arch=0 / undionly.kpxe 表示 BIOS，arch=7 / ipxe.efi 表示 UEFI。",
         "* = Windows generates DESKTOP-XXXXXXX for each machine. A fixed value (15 chars max, no spaces) is baked into this one file, which every client booting the image shares.": "* 表示由 Windows 为每台机器生成 DESKTOP-XXXXXXX。填具体值会被写死在这份文件里，所有用该镜像启动的客户端共用同一个名字（最多 15 字符、不能有空格）。",
-        "Single-disk autounattend.xml. Set the boot mode to match the client's PXE firmware: UEFI builds GPT, BIOS builds MBR, and a mismatch aborts Setup with \"Windows cannot be installed to this disk: the selected disk is of the GPT partition style\". Windows 11 still needs TPM 2.0 and Secure Boot unless the image is bypassed.": "单盘 autounattend.xml。引导模式必须与客户端 PXE 固件一致：UEFI 走 GPT，BIOS 走 MBR，不一致会直接报「Windows 无法安装到这个磁盘。选中的磁盘采用 GPT 分区形式」。未绕过检测时 Windows 11 仍需 TPM 2.0 与安全启动。"
+        "Single-disk autounattend.xml. Set the boot mode to match the client's PXE firmware: UEFI builds GPT, BIOS builds MBR, and a mismatch aborts Setup with \"Windows cannot be installed to this disk: the selected disk is of the GPT partition style\". Windows 11 still needs TPM 2.0 and Secure Boot unless the image is bypassed.": "单盘 autounattend.xml。引导模式必须与客户端 PXE 固件一致：UEFI 走 GPT，BIOS 走 MBR，不一致会直接报「Windows 无法安装到这个磁盘。选中的磁盘采用 GPT 分区形式」。未绕过检测时 Windows 11 仍需 TPM 2.0 与安全启动。",
+        "Repository mirror": "软件源镜像",
+        "Official (installer default)": "官方（安装器默认）",
+        "Aliyun (China)": "阿里云（中国）",
+        "Huawei Cloud (China)": "华为云（中国）",
+        "Tencent Cloud (China)": "腾讯云（中国）",
+        "USTC (China)": "中科大（中国）",
+        "TUNA / Tsinghua (China)": "清华 TUNA（中国）",
+        "NetEase (China)": "网易（中国）",
+        "NJU (China)": "南京大学（中国）",
+        "HUST (China)": "华中科大（中国）",
+        "Repository path": "仓库路径",
+        "Debian (debian)": "Debian（debian 目录）",
+        "Ubuntu (ubuntu)": "Ubuntu（ubuntu 目录）",
+        "Repository family": "仓库类型",
+        "Every site listed here was verified from the deployment network to serve the full Debian and Ubuntu package index. Official keeps deb.debian.org / archive.ubuntu.com.": "列表里的站点都已在部署网络上实测过，能提供完整的 Debian / Ubuntu 软件包索引。选「官方」则保持 deb.debian.org / archive.ubuntu.com。",
+        "Debian and Ubuntu keep separate trees on every mirror. Ubuntu 20.04 and newer should use the autoinstall template instead of preseed.": "Debian 与 Ubuntu 在各镜像站上走不同的目录树。Ubuntu 20.04 及更新版本请改用 autoinstall 模板，不要用 preseed。",
+        "Subiquity pulls packages from the archive while installing. Official follows the geoip default, usually archive.ubuntu.com — slow from mainland China.": "Subiquity 在安装过程中会从软件源下载软件包。选「官方」时按 geoip 判断（通常是 archive.ubuntu.com），在中国大陆会很慢。",
+        "Only repoints dnf after install — the installer itself still installs from the ISO tree served by bootimus, which is faster than any mirror. Sites without the Rocky/Alma repositories, and RHEL or Fedora (subscription/metalink), are not listed: leave this on Official for those.": "只在装完之后把 dnf 源改指向镜像——安装过程本身仍走 bootimus 提供的 ISO 目录树，比任何镜像都快。没有 Rocky/Alma 仓库的站、以及 RHEL/Fedora（订阅或 metalink）不会出现在列表里，这些情况保持「官方」即可。",
+        "Which repository files the mirror rewrite applies to; pick the family you are actually installing.": "镜像改写作用于哪套仓库文件；按你实际安装的发行版选。",
+        "Debian / Ubuntu up to 20.04 (preseed)": "Debian / Ubuntu 20.04 及更早（preseed）",
+        "Ubuntu Server 20.04+ (autoinstall / cloud-init)": "Ubuntu Server 20.04+（autoinstall / cloud-init）",
+        "Legacy debian-installer preseed. Debian uses it, and so did Ubuntu up to 20.04. Ubuntu Server 20.04 and newer installs with autoinstall (cloud-init) instead — use that template for current Ubuntu.": "旧版 debian-installer 的 preseed。Debian 用它，Ubuntu 20.04 及更早也用它；Ubuntu Server 20.04 及更新版本改用 autoinstall（cloud-init），新版本请选那个模板。",
+        "Subiquity autoinstall — the cloud-init based path that Ubuntu Server 20.04 and newer uses (this is what the docs mean by \"Ubuntu uses cloud-init\"). The password is hashed on the server before it is written.": "Subiquity autoinstall——Ubuntu Server 20.04 及更新版本用的就是这条 cloud-init 路线（文档里说「Ubuntu 使用 cloud-init」指的就是它）。密码写入前会在服务端做哈希。",
+        "Anaconda kickstart for the Red Hat family, RHEL 8/9/10 and clones. The installer reads packages from the ISO tree bootimus serves, so a mirror only repoints dnf after install.": "Red Hat 系（RHEL 8/9/10 及其衍生版）的 Anaconda kickstart。安装过程从 bootimus 提供的 ISO 目录树取包，所以镜像只在装完后改写 dnf 源。"
     }
 };
 
