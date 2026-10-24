@@ -7,7 +7,11 @@ autoinstall:
   keyboard:
     layout: {{.keymap}}
   timezone: {{.timezone}}
-  identity:
+{{if .mirror_base}}  apt:
+    primary:
+      - arches: [default]
+        uri: {{.mirror_base}}
+{{end}}  identity:
     hostname: "{{.hostname}}"
     username: {{.username}}
     password: "{{.hashed_password}}"
