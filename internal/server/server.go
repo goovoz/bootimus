@@ -1363,6 +1363,9 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/api/autoinstall-files/upload", adminWrap(adminHandler.UploadAutoInstallFile))
 	mux.HandleFunc("/api/autoinstall-files/download", adminWrap(adminHandler.DownloadAutoInstallFile))
 	mux.HandleFunc("/api/autoinstall-files/delete", adminWrap(adminHandler.DeleteAutoInstallFile))
+	// [bootimus-fork L1] fork-patch: autoinstall-generator
+	mux.HandleFunc("/api/autoinstall-templates", adminWrap(adminHandler.ListAutoInstallTemplates))
+	mux.HandleFunc("/api/autoinstall/render", adminWrap(adminHandler.RenderAutoInstallTemplate))
 
 	mux.HandleFunc("/api/profiles", adminWrap(adminHandler.ListDistroProfiles))
 	mux.HandleFunc("/api/profiles/save", adminWrap(adminHandler.SaveDistroProfile))
