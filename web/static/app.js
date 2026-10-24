@@ -7887,11 +7887,36 @@ function renderAiTemplateForm(tpl) {
               + `<input type="checkbox" id="ai-pc-${v.name}" style="margin: 0; padding: 0; width: auto; height: auto; flex: 0 0 auto;" onchange="toggleAiPerClient('${v.name}', this.checked)">`
               + `Use per-client value <code style="font-size: 11px;">${escapeHtml(v.placeholder)}</code></label>`
             : '';
+        // 主机名按各自系统的默认命名规则生成（Windows: DESKTOP-XXXXXXX，Linux: <家族>-xxxxx）
+        const randomBtn = v.name === 'hostname'
+            ? `<div><button type="button" class="btn btn-sm" style="margin-top: 4px;" onclick="randomizeAiHostname()">Random</button></div>`
+            : '';
         const required = v.required ? ' <span style="color: var(--danger);">*</span>' : '';
         return `<div class="form-group" style="margin-bottom: 8px;">`
             + `<label for="${id}" style="margin-bottom: 2px;">${escapeHtml(v.label)}${required}${badge}</label>`
-            + input + perClient + help + '</div>';
+            + input + randomBtn + perClient + help + '</div>';
     }).join('');
+}
+
+function randomHostnameFor(tpl) {
+    const lower = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const pick = (set, n) => Array.from({ length: n }, () => set[Math.floor(Math.random() * set.length)]).join('');
+    // Windows 自己生成的计算机名就是这个形态（DESKTOP- 加 7 位大写字母数字）
+    if (tpl && tpl.format === 'autounattend') {
+        return 'DESKTOP-' + pick(upper, 7);
+    }
+    // Linux 主机名：小写、可含连字符，用发行版家族做前缀
+    const family = ((tpl && tpl.distro) || 'host').replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 12) || 'host';
+    return family + '-' + pick(lower, 5);
+}
+
+function randomizeAiHostname() {
+    const tpl = currentAiTemplate();
+    const input = document.getElementById('ai-var-hostname');
+    if (!tpl || !input || input.disabled) return;
+    input.value = randomHostnameFor(tpl);
+    previewAutoInstallTemplate();
 }
 
 function toggleAiPerClient(name, on) {
