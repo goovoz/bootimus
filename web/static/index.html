@@ -810,6 +810,11 @@
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                         Upload File
                     </button>
+                    <!-- [bootimus-fork L1] fork-patch: autoinstall-generator -->
+                    <button class="btn" type="button" onclick="openAutoInstallTemplateModal()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v4"/><path d="M12 18v4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg>
+                        Generate from Template
+                    </button>
                     <input type="file" id="autoinstall-upload-trigger" style="display: none;" onchange="handleAutoInstallUpload(this)">
                     <input type="search" class="toolbar-filter" placeholder="Filter files…" oninput="applyTableFilter('autoinstall', this.value, renderAutoInstallFilesTable)">
                 </div>
@@ -844,6 +849,49 @@
                     <div style="flex: 1;"></div>
                     <button class="btn" onclick="closeModal('autoinstall-upload-modal')">Cancel</button>
                     <button class="btn btn-primary" onclick="confirmAutoInstallUpload()">Upload</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- [bootimus-fork L1] fork-patch: autoinstall-generator -->
+        <div id="autoinstall-template-modal" class="modal slide-panel">
+            <div class="modal-content slide-panel-content" style="max-width: 1040px;">
+                <div class="modal-header">
+                    <h2>Generate from Template</h2>
+                </div>
+                <div class="modal-body" style="display: flex; gap: 18px; align-items: flex-start;">
+                    <div style="flex: 0 0 380px; max-height: 66vh; overflow-y: auto; padding-right: 4px;">
+                        <div class="form-group">
+                            <label for="ai-tpl-select">Template</label>
+                            <select id="ai-tpl-select" class="form-control" onchange="onAutoInstallTemplateChange()"></select>
+                        </div>
+                        <div id="ai-tpl-summary" style="font-size: 12px; color: var(--text-secondary); margin: -8px 0 12px;"></div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="ai-tpl-distro">Distro</label>
+                                <select id="ai-tpl-distro" class="form-control"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="ai-tpl-filename">File name</label>
+                                <input type="text" id="ai-tpl-filename" class="form-control" placeholder="e.g. preseed.cfg">
+                            </div>
+                        </div>
+                        <div id="ai-tpl-vars"></div>
+                    </div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                            <label style="margin: 0;">Preview</label>
+                            <div style="flex: 1;"></div>
+                            <button class="btn btn-sm" type="button" onclick="previewAutoInstallTemplate()">Refresh preview</button>
+                        </div>
+                        <textarea id="ai-tpl-preview" rows="26" readonly style="font-family: monospace; width: 100%; padding: 8px; border: 1px solid var(--text-muted); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary);"></textarea>
+                        <small id="ai-tpl-status" style="color: var(--text-secondary); display: block; margin-top: 6px;"></small>
+                    </div>
+                </div>
+                <div style="margin: 0 20px 20px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center;">
+                    <div style="flex: 1;"></div>
+                    <button class="btn" onclick="closeModal('autoinstall-template-modal')">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveAutoInstallTemplate()">Save file</button>
                 </div>
             </div>
         </div>

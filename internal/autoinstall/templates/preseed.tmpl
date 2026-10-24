@@ -1,0 +1,58 @@
+# Bootimus preseed file — Debian / Ubuntu legacy (d-i) installer
+# Attach this file to the image in Bootimus; the installer fetches it over HTTP.
+
+#### Localization
+d-i debian-installer/locale string {{.locale}}
+d-i keyboard-configuration/xkb-keymap select {{.keymap}}
+
+#### Network
+d-i netcfg/choose_interface select auto
+d-i netcfg/get_hostname string {{.hostname}}
+d-i netcfg/get_domain string {{.domain}}
+
+#### Mirror
+d-i mirror/country string manual
+d-i mirror/http/hostname string {{.mirror_host}}
+d-i mirror/http/directory string {{.mirror_dir}}
+d-i mirror/http/proxy string
+
+#### Accounts
+d-i passwd/root-login boolean {{.root_login}}
+d-i passwd/root-password password {{.root_password}}
+d-i passwd/root-password-again password {{.root_password}}
+d-i passwd/user-fullname string {{.username}}
+d-i passwd/username string {{.username}}
+d-i passwd/user-password password {{.password}}
+d-i passwd/user-password-again password {{.password}}
+
+#### Clock
+d-i clock-setup/utc boolean true
+d-i time/zone string {{.timezone}}
+
+#### Partitioning
+d-i partman-auto/method string regular
+{{if .disk}}d-i partman-auto/disk string {{.disk}}
+{{end}}d-i partman-auto/choose_recipe select {{.recipe}}
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+
+#### Packages
+d-i pkgsel/include string {{.packages}}
+d-i pkgsel/upgrade select {{.upgrade}}
+tasksel tasksel/first multiselect {{.tasks}}
+popularity-contest popularity-contest/participate boolean false
+
+#### Bootloader
+d-i grub-installer/only_debian boolean true
+d-i grub-installer/bootdev string default
+
+#### Finish
+d-i finish-install/reboot_in_progress note
+{{if .ssh_key}}
+d-i preseed/late_command string \
+    mkdir -p /target/root/.ssh && \
+    echo "{{.ssh_key}}" > /target/root/.ssh/authorized_keys && \
+    chmod 700 /target/root/.ssh && chmod 600 /target/root/.ssh/authorized_keys
+{{end}}
