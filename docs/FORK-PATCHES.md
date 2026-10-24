@@ -41,9 +41,10 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | id | 状态 | 做什么 | 触碰的上游文件 |
 |---|---|---|---|
 | `iso-url-no-suffix` | active | 允许下载不带 `.iso` 后缀的链接：2 字节 Range 探测 Content-Type，从 Content-Disposition / 最终路径取名，UI 可显式指定文件名 | `internal/admin/handlers.go`、`internal/admin/download_test.go`、`web/static/app.js`、`web/static/index.html` |
-| `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加「英文原文 → 中文」映射（当前 770 条），并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
+| `i18n-zh-full` | active | 把管理台剩余文案补成中文：`i18n.js` 增加「英文原文 → 中文」映射（当前 830 条），并在每次 DOM 变更后自动翻译（覆盖 app.js 动态渲染的内容，不改 app.js） | `web/static/i18n.js` |
 | `download-proxy` | active | ISO 下载可走网络代理：设置页存代理地址与可选凭据，「从 URL 下载」与「获取镜像」各有一个「使用代理下载」开关 | `internal/admin/handlers.go`、`internal/models/models.go`、`internal/storage/*.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
 | `download-resume` | active | ISO 下载断点续传 + 残留清理：数据先写 `.part`（带 ETag 的 meta），再下用 `Range` 续传、`If-Range` 防串版本，完成才 rename；启动清理 7 天前的残留 | `internal/admin/handlers.go`、`internal/admin/download_resume_test.go`、`internal/server/server.go` |
+| `autoinstall-generator` | active | 自动安装文件从模板生成：4 套模板 + 变量表单 + 预览 + 格式校验，产物写入现有文件库 | `internal/autoinstall/generate.go`、`internal/autoinstall/templates/*.tmpl`、`internal/admin/handlers.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 
@@ -96,7 +97,7 @@ git checkout -b restore-iso-url-no-suffix fork-archive/iso-url-no-suffix-YYYYMMD
 补丁的取舍：**不改 `app.js`**（7290 行、几百处字面量，改完上游一动就冲突），
 而是在 `i18n.js` 里加一层「英文原文 → 译文」的映射，并接管渲染后的翻译：
 
-- `SOURCE_TEXT`：770 条原文到中文的映射（专有名词与示例值除外）
+- `SOURCE_TEXT`：830 条原文到中文的映射（专有名词与示例值除外）
 - `_translateTextNodes()`：逐文本节点精确匹配，跳过 `script/style/code/pre/textarea`
 - `_translateAttrs()`：`title` / `placeholder` / `aria-label` 同样翻译
 - `_installAutoTranslate()`：`MutationObserver` + 30ms 防抖，动态渲染后自动补译
@@ -229,6 +230,43 @@ bash ops/i18n/rebuild.sh            # 或 bash ops/i18n/rebuild.sh <upstream-ref
 
 探测器：`bash .github/scripts/detect-download-resume.sh --selftest`。只告警不自动退役 ——
 续传涉及数据正确性，必须人工确认上游实现等价（尤其 `If-Range`）后再让位。
+
+## 自动安装文件生成器（`autoinstall-generator`）
+
+上游的「Auto-Install Files」只有存取：上传、编辑、删、按镜像/客户端下发，用户得自己从零写
+autounattend.xml / kickstart / preseed / autoinstall。本补丁补中间那层「模板 + 变量 → 渲染」。
+
+### 结构
+
+| 文件 | 作用 |
+|---|---|
+| `internal/autoinstall/generate.go` | 模板目录（变量定义 + 默认文件名）、`Render()`、`Validate()` |
+| `internal/autoinstall/templates/*.tmpl` | 4 套内置模板，`go:embed` 进二进制 |
+| `GET /api/autoinstall-templates` | 返回模板元数据（前端据此建表单） |
+| `POST /api/autoinstall/render` | `{template, values}` → 正文，渲染后立刻做格式校验 |
+
+产物不直接落库：前端拿到正文后调既有的 `/api/autoinstall-files/save`，
+所以**「附加到镜像 / 按客户端覆盖」的逻辑一行没改**。
+
+### 四套模板与校验
+
+| 模板 | 格式 | 校验 |
+|---|---|---|
+| Debian / Ubuntu preseed | `preseed` | 至少 5 条 `d-i` 指令 |
+| RHEL / Rocky / Alma / Fedora | `kickstart` | 含 `%packages`、`%end`、`rootpw` |
+| Ubuntu Server 20.04+ | `autoinstall` | YAML 可解析且含顶层 `autoinstall:` 键 |
+| Windows 10 / 11 | `autounattend` | XML 良构 |
+
+Ubuntu 的 `identity.password` 必须是哈希，所以服务端用 `bcrypt` 现算，明文不落盘；
+preseed / kickstart / autounattend 按各自安装器的要求写明文（文件本身在 HTTP 上可读，
+这一条写进了表单提示与文档）。
+
+### 与「按客户端覆盖」的关系
+
+模板里标了 `per_client` 的字段（目前是 `hostname`）在表单上有提示；产物保存后仍是普通文件，
+由既有的 `/autoinstall/{file}?mac=…` 做逐客户端替换，两套机制不冲突。
+
+探测器：`bash .github/scripts/detect-autoinstall-generator.sh --selftest`。只告警不自动退役。
 
 ## 新增一个补丁的步骤
 

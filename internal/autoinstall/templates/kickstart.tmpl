@@ -1,0 +1,31 @@
+# Bootimus kickstart file — RHEL / Rocky Linux / AlmaLinux / Fedora
+# Attach this file to the image in Bootimus; the installer fetches it over HTTP.
+#version=RHEL9
+text
+lang {{.locale}}
+keyboard --vckeymap={{.keymap}} --xlayouts='{{.keymap}}'
+timezone {{.timezone}} --utc
+network --bootproto=dhcp --device=link --activate --hostname={{.hostname}}
+rootpw --plaintext {{.root_password}}
+user --name={{.username}} --groups=wheel --plaintext --password={{.password}}
+services --enabled=sshd
+zerombr
+clearpart --all --initlabel
+{{if eq .partition "lvm"}}autopart --type=lvm
+{{else if eq .partition "btrfs"}}autopart --type=btrfs
+{{else}}autopart --type=plain
+{{end}}
+reboot --eject
+
+%packages
+@^minimal-environment
+{{.packages}}
+%end
+
+%post
+systemctl enable sshd
+{{if .ssh_key}}mkdir -p /root/.ssh
+echo "{{.ssh_key}}" > /root/.ssh/authorized_keys
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/authorized_keys
+{{end}}%end
