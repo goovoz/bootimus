@@ -428,6 +428,30 @@ func TestBrokenSSHKeyRejected(t *testing.T) {
 	}
 }
 
+// 计算机名必须先按 Windows 规则清洗、再 XML 转义。顺序反了的话，15 字符的截断
+// 会切在 "&amp;" 中间，产出一份非法 XML。
+func TestWindowsHostnameCleanedBeforeEscaping(t *testing.T) {
+	cases := map[string]string{
+		"A&B":             "A&amp;B",
+		"abcdefghijklmn&": "abcdefghijklmn&amp;",
+	}
+	for in, want := range cases {
+		out, err := Render("windows-autounattend", map[string]string{
+			"password": "AdminPass123",
+			"hostname": in,
+		})
+		if err != nil {
+			t.Fatalf("%q: render: %v", in, err)
+		}
+		if err := Validate("autounattend", out); err != nil {
+			t.Fatalf("%q: 产物不是合法 XML: %v", in, err)
+		}
+		if got := between(out, "<ComputerName>", "</ComputerName>"); got != want {
+			t.Errorf("ComputerName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestYAMLEscape(t *testing.T) {
 	got := yamlEscape(`a"b\c`)
 	if got != `a\"b\\c` {
