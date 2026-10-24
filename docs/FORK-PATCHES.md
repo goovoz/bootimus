@@ -264,10 +264,16 @@ Ubuntu 的 `identity.password` 必须是哈希，所以服务端用 `bcrypt` 现
 preseed / kickstart / autounattend 按各自安装器的要求写明文（文件本身在 HTTP 上可读，
 这一条写进了表单提示与文档）。
 
-### 与「按客户端覆盖」的关系
+### 按客户端取值是模板里的显式开关
 
-模板里标了 `per_client` 的字段（目前是 `hostname`）在表单上有提示；产物保存后仍是普通文件，
-由既有的 `/autoinstall/{file}?mac=…` 做逐客户端替换，两套机制不冲突。
+变量可以声明 `placeholder`（`{{HOSTNAME}}`、`{{MAC}}` 这些是 bootimus 在下发时替换的 token）。
+表单上勾了「使用客户端自身取值」，渲染出来的文件里就保留 token，而不是把某个固定值烧进去——
+同一份文件挂到多个客户端，每台机器拿到自己的名字。
+
+实现细节：token 不能直接塞进 `text/template`（`{{HOSTNAME}}` 会被当成函数调用），所以渲染时
+先写一个哨兵（`\x00pc:hostname\x00`），执行完再换回 token；`autoinstall.yaml` 里的 hostname
+因此要加引号（`hostname: "{{HOSTNAME}}"`），否则占位符会被 YAML 当成流式映射。
+未声明 `placeholder` 的字段即使填了 `{{...}}` 也原样输出（有测试盯着）。
 
 探测器：`bash .github/scripts/detect-autoinstall-generator.sh --selftest`。只告警不自动退役。
 
