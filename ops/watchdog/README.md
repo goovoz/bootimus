@@ -189,18 +189,35 @@ systemctl list-timers bootimus-ghcr-audit.timer
 
 ## 镜像保留策略（跑在 Actions，不在本机）
 
-同一个基线版本（例如 `0.1.77`）会随每次小改动构建出新 digest，`.github/workflows/ghcr-retention.yml`
-负责把**除 `latest` 指向之外的版本全部删掉**：
+**每个版本号只留最新一个 digest**，`latest` 指向版本号最高的那个。`.github/workflows/ghcr-retention.yml`：
 
-- 触发：`Release (fork)` 跑完之后 / 每天 05:23 CST / 手动（可 `dry_run`、可 `keep_digest` 指定要保住的）
-- 保留：`latest` 指向的 index **加上它的两个平台子清单**（arm64/amd64 子清单在 API 里是独立「版本」，
-  删掉镜像就坏了）
-- 跳过：15 分钟内更新过的版本，避免和正在进行的构建抢
-- 兜底：解析不到 `latest` 就整体中止，绝不在「不知道留谁」的情况下删东西
+- 触发：`Release (fork)` 跑完之后 / 每天 05:23 CST / 手动（可 `dry_run`、可 `keep_digest`）
+- 保留：每个版本号（从 `0.1.77`、`0.1.77-ga2327e1` 这类 tag 里解析）→ `updated_at` 最新的那个 index，
+  **加上它的两个平台子清单**；`latest` 若指向别处，会重打 tag 指回「最高版本号的最新构建」
+- 删除：同版本号内的其它构建、以及它们各自的子清单
+- 跳过：15 分钟内更新过的版本（避免和正在进行的构建抢）
+- 兜底：一个版本号都解析不出来就中止，绝不在「不知道留谁」的情况下删东西
 
-由此带来的约束：**compose 不能长期钉一个旧 digest** —— 旧 digest 会被删掉，重拉会失败。
-线上靠 watchdog 自动跟 `latest`，所以正常；真要回滚请在保留策略跑之前做，或临时用
-`keep_digest` 指定那个 digest。
+### 为什么 Packages 页面总有 2 个 untagged
+
+多架构镜像是 **一个 index + 每平台一个 manifest**（linux/amd64、linux/arm64）。在 GitHub 的
+Packages API 里这三个是**三个独立版本**，而 buildx 只给 index 打 tag，所以两个平台清单永远显示
+untagged。换句话说：
+
+```
+4 tagged   = latest / 0.1.77 / 0.1.77-g<sha> / sha-<sha>   （都指向同一个 index）
+2 untagged = 该 index 的 amd64、arm64 清单
+```
+
+**它们不能删**——删了 index 就拉不下来。保留 2 个版本号时就会看到 4 个 untagged，属正常。
+
+### 回滚
+
+旧 digest 会被删掉，所以**不能提前很久钉一个中间构建来回滚**。要回滚时临时处理：
+
+- 跨版本：旧版本号的最新 digest 还在，直接把它 `keep_digest` 保住 / 或临时钉回 compose；
+- 同版本内的某个中间构建：已经被删了，需要重新构建那个 commit（或 dispatch 一次带
+  `keep_digest` 的保留策略，把目标 digest 排除，前提是它还没被删）。
 
 另外 `fork-release.yml` **不再创建 GitHub Release**：二进制只作为 Actions 构建产物（Artifacts，
 保留 90 天）上传，镜像 digest 写在每次运行的 Job Summary 里。Releases 页面因此不再堆积构建记录。
