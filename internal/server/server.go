@@ -1533,8 +1533,10 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	adminHandler := admin.NewHandler(s.config.Storage, s.config.DataDir, s.config.ISODir, s.config.BootDir, Version, s, s.toolsManager, s.config.WOLBroadcastAddr, s.config.ProfileManager, s.config.ProxyDHCPEnabled, s.config.HTTPPort, s.config.ServerAddr, s.config.WindowsSMBPort, s.smbManager, s.config.WindowsSMBEnabled, s.autoInstallLib)
 	adminHandler.AdminTLSStatus = s.AdminTLSStatus
 	// [bootimus-fork L1] fork-patch: download-resume
-	// Drop leftover .part files nothing is writing to any more.
+	// Drop leftover .part files nothing is writing to any more, and keep doing it:
+	// a host that stays up for months would otherwise never clean up again.
 	adminHandler.CleanupStaleDownloads()
+	adminHandler.StartDownloadJanitor(6 * time.Hour)
 	if s.scheduler != nil {
 		adminHandler.SchedulerReload = s.scheduler.Reload
 		adminHandler.SchedulerRunNow = s.scheduler.RunNow

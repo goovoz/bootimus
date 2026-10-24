@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -3113,6 +3114,14 @@ type DownloadProgress struct {
 	StartTime       time.Time `json:"start_time"`
 	Verification    string    `json:"verification,omitempty"`
 	Checksum        string    `json:"checksum,omitempty"`
+	FinishedAt      time.Time `json:"-"`
+
+	// 内部字段，不参与序列化：续传起点、最近一次写入时间（节流）与上一次的字节数。
+	// 速度必须按「本次实际传输的字节」算，否则续传一开始就会显示几个 G/s。
+	baseBytes   int64
+	baseAt      time.Time
+	lastBytes   int64
+	lastWritten time.Time
 }
 
 type downloadOptions struct {
@@ -3159,29 +3168,58 @@ func (dm *DownloadManager) TryBegin(url, filename string) bool {
 func (dm *DownloadManager) Add(url, filename string, totalBytes int64) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
+	now := time.Now()
+	if existing, ok := dm.downloads[filename]; ok && existing.Status == "downloading" {
+		// 保留 TryBegin 记下的起点，否则速度会从 0 重新起算
+		existing.URL = url
+		existing.TotalBytes = totalBytes
+		return
+	}
 	dm.downloads[filename] = &DownloadProgress{
 		URL:        url,
 		Filename:   filename,
 		TotalBytes: totalBytes,
 		Status:     "downloading",
-		StartTime:  time.Now(),
+		StartTime:  now,
+		baseAt:     now,
 	}
 }
+
+// progressWriteInterval / progressWriteBytes 决定进度写回的频率。每读一块就
+// Update 一次的话，1GB 要加解锁四千多次，纯属浪费。
+const (
+	progressWriteInterval = 200 * time.Millisecond
+	progressWriteBytes    = 256 * 1024
+)
 
 func (dm *DownloadManager) Update(filename string, downloadedBytes int64) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
-	if progress, ok := dm.downloads[filename]; ok {
-		progress.DownloadedBytes = downloadedBytes
-		if progress.TotalBytes > 0 {
-			progress.Percentage = float64(downloadedBytes) / float64(progress.TotalBytes) * 100
-		}
+	progress, ok := dm.downloads[filename]
+	if !ok {
+		return
+	}
+	now := time.Now()
+	first := progress.baseAt.IsZero()
+	if first {
+		// 续传：第一次 Update 的字节数就是本轮的起点
+		progress.baseBytes = downloadedBytes
+		progress.baseAt = now
+	}
+	progress.DownloadedBytes = downloadedBytes
+	if progress.TotalBytes > 0 {
+		progress.Percentage = float64(downloadedBytes) / float64(progress.TotalBytes) * 100
+	}
 
-		elapsed := time.Since(progress.StartTime).Seconds()
-		if elapsed > 0 {
-			bytesPerSec := float64(downloadedBytes) / elapsed
-			progress.Speed = formatBytes(int64(bytesPerSec)) + "/s"
-		}
+	if !first && now.Sub(progress.lastWritten) < progressWriteInterval &&
+		downloadedBytes-progress.lastBytes < progressWriteBytes {
+		return
+	}
+	progress.lastWritten = now
+	progress.lastBytes = downloadedBytes
+
+	if elapsed := now.Sub(progress.baseAt).Seconds(); elapsed > 0 {
+		progress.Speed = formatBytes(int64(float64(downloadedBytes-progress.baseBytes)/elapsed)) + "/s"
 	}
 }
 
@@ -3191,6 +3229,7 @@ func (dm *DownloadManager) Complete(filename string) {
 	if progress, ok := dm.downloads[filename]; ok {
 		progress.Status = "completed"
 		progress.Percentage = 100
+		progress.FinishedAt = time.Now()
 	}
 }
 
@@ -3200,13 +3239,21 @@ func (dm *DownloadManager) Error(filename, errMsg string) {
 	if progress, ok := dm.downloads[filename]; ok {
 		progress.Status = "error"
 		progress.Error = errMsg
+		progress.FinishedAt = time.Now()
 	}
 }
 
+// Get returns a snapshot. Callers serialise it as JSON while the worker keeps
+// writing, so handing out the internal pointer would be a data race.
 func (dm *DownloadManager) Get(filename string) *DownloadProgress {
 	dm.mu.RLock()
 	defer dm.mu.RUnlock()
-	return dm.downloads[filename]
+	progress, ok := dm.downloads[filename]
+	if !ok {
+		return nil
+	}
+	snapshot := *progress
+	return &snapshot
 }
 
 func (dm *DownloadManager) GetAll() []*DownloadProgress {
@@ -3214,9 +3261,29 @@ func (dm *DownloadManager) GetAll() []*DownloadProgress {
 	defer dm.mu.RUnlock()
 	result := make([]*DownloadProgress, 0, len(dm.downloads))
 	for _, p := range dm.downloads {
-		result = append(result, p)
+		snapshot := *p
+		result = append(result, &snapshot)
 	}
 	return result
+}
+
+// Prune drops finished entries nobody is polling any more; without it the map
+// grows for the lifetime of the process.
+func (dm *DownloadManager) Prune(olderThan time.Duration) int {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	cutoff := time.Now().Add(-olderThan)
+	removed := 0
+	for name, p := range dm.downloads {
+		if p.Status == "downloading" || p.FinishedAt.IsZero() {
+			continue
+		}
+		if p.FinishedAt.Before(cutoff) {
+			delete(dm.downloads, name)
+			removed++
+		}
+	}
+	return removed
 }
 
 func formatBytes(bytes int64) string {
@@ -3504,27 +3571,77 @@ func normalizeProxyURL(addr, user, pass string) (*url.URL, error) {
 	return u, nil
 }
 
+// 下载用到的超时。整体 Timeout 不能用（ISO 动辄几个 GB），要的是「每个阶段不许拖死」：
+// 连不上 15s 放弃、给了请求 30s 不出响应头放弃、90s 收不到任何字节由看门狗收尾。
+const (
+	downloadDialTimeout     = 15 * time.Second
+	downloadHeaderTimeout   = 30 * time.Second
+	downloadIdleConnTimeout = 30 * time.Second
+	downloadStallAfter      = 90 * time.Second
+	downloadBufferSize      = 256 * 1024
+)
+
+func newDownloadTransport(proxy *url.URL) *http.Transport {
+	// 直连时保留对环境变量代理（HTTP_PROXY/HTTPS_PROXY）的支持，和默认 Transport 一致；
+	// 只有显式选了代理才覆盖它。
+	proxyFn := http.ProxyFromEnvironment
+	if proxy != nil {
+		proxyFn = http.ProxyURL(proxy)
+	}
+	return &http.Transport{
+		Proxy:                 proxyFn,
+		DialContext:           (&net.Dialer{Timeout: downloadDialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   downloadDialTimeout,
+		ResponseHeaderTimeout: downloadHeaderTimeout,
+		ExpectContinueTimeout: time.Second,
+		IdleConnTimeout:       downloadIdleConnTimeout,
+		MaxIdleConnsPerHost:   2,
+	}
+}
+
+// 空闲连接要能被复用，否则每次走代理的下载都会漏一条 TCP 连接：以前每次都新建
+// Transport，而 IdleConnTimeout 为 0 意味着这些连接永不回收。
+var (
+	directDownloadOnce sync.Once
+	directDownloadTr   *http.Transport
+
+	proxyDownloadMu  sync.Mutex
+	proxyDownloadTrs = map[string]*http.Transport{}
+)
+
 // downloadClient returns the HTTP client used for ISO downloads. When useProxy is
 // set and a proxy is configured, the request is routed through it; otherwise the
 // download goes direct (and the returned note explains why, if it was requested).
 func (h *Handler) downloadClient(useProxy bool) (*http.Client, string) {
-	direct := &http.Client{Timeout: 0}
 	if !useProxy {
-		return direct, ""
+		directDownloadOnce.Do(func() {
+			directDownloadTr = newDownloadTransport(nil)
+		})
+		return &http.Client{Transport: directDownloadTr}, ""
 	}
 	if h.storage == nil {
-		return direct, "proxy requested but storage is unavailable; downloading directly"
+		return h.downloadClient(false)
 	}
 	cfg, err := h.storage.GetProxyConfig()
 	if err != nil || cfg == nil || strings.TrimSpace(cfg.Address) == "" {
-		return direct, "proxy requested but not configured in Settings; downloading directly"
+		client, _ := h.downloadClient(false)
+		return client, "proxy requested but not configured in Settings; downloading directly"
 	}
 	pu, err := normalizeProxyURL(cfg.Address, cfg.Username, cfg.Password)
 	if err != nil {
-		return direct, fmt.Sprintf("proxy config unusable (%v); downloading directly", err)
+		client, _ := h.downloadClient(false)
+		return client, fmt.Sprintf("proxy config unusable (%v); downloading directly", err)
 	}
-	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
-	return &http.Client{Timeout: 0, Transport: tr}, "using proxy " + pu.Redacted()
+
+	key := pu.String()
+	proxyDownloadMu.Lock()
+	tr, ok := proxyDownloadTrs[key]
+	if !ok {
+		tr = newDownloadTransport(pu)
+		proxyDownloadTrs[key] = tr
+	}
+	proxyDownloadMu.Unlock()
+	return &http.Client{Transport: tr}, "using proxy " + pu.Redacted()
 }
 
 func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptions, useProxy bool) {
@@ -3575,10 +3692,13 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 	if proxyNote != "" {
 		log.Printf("ISO download %s: %s", filename, proxyNote)
 	}
+	// 释放空闲连接，避免每次下载都给 Transport 留一条待回收的 TCP 连接
 	defer client.CloseIdleConnections()
 
 	var resp *http.Response
 	alreadyComplete := false
+	usable := false
+	lastErr := ""
 	// Two attempts at most: the second one always starts from byte 0.
 	for attempt := 0; attempt < 2; attempt++ {
 		req, reqErr := http.NewRequest(http.MethodGet, url, nil)
@@ -3611,10 +3731,12 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 				log.Printf("Source ignored the resume request for %s (HTTP 200); starting over", filename)
 			}
 			offset = 0
+			usable = true
 		case http.StatusPartialContent:
 			start, _, total, ok := parseContentRange(resp.Header.Get("Content-Range"))
 			if !ok || start != offset {
 				resp.Body.Close()
+				lastErr = fmt.Sprintf("source returned an unusable resume range (%q)", resp.Header.Get("Content-Range"))
 				log.Printf("Unusable resume response for %s (%q); starting over", filename, resp.Header.Get("Content-Range"))
 				offset = 0
 				continue
@@ -3622,13 +3744,16 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 			if total > 0 {
 				meta.Total = total
 			}
+			usable = true
 		case http.StatusRequestedRangeNotSatisfiable:
 			_, _, total, ok := parseContentRange(resp.Header.Get("Content-Range"))
 			if ok && total > 0 && offset == total {
 				log.Printf("Partial %s already holds the whole file (%d bytes)", filename, total)
 				alreadyComplete = true
+				usable = true
 			} else {
 				resp.Body.Close()
+				lastErr = fmt.Sprintf("source rejected the resume range (%q)", resp.Header.Get("Content-Range"))
 				log.Printf("Source rejected the resume range for %s (%q); starting over", filename, resp.Header.Get("Content-Range"))
 				offset = 0
 				continue
@@ -3655,6 +3780,17 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 		defer f.Close()
 		_, err = io.Copy(hasher, f)
 		return err
+	}
+
+	// 两次尝试都用完了还没拿到可用的响应：必须在这里收尾。否则会拿着一个已经
+	// Close 过的 body 继续往下读，用户看到的是 "http: read on closed response body"。
+	if !usable || resp == nil {
+		if lastErr == "" {
+			lastErr = "the source did not return a usable response"
+		}
+		log.Printf("Failed to download ISO %s: %s", filename, lastErr)
+		downloadMgr.Error(filename, lastErr)
+		return
 	}
 
 	if alreadyComplete {
@@ -3716,8 +3852,19 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 			return
 		}
 
-		buffer := make([]byte, 32*1024)
+		buffer := make([]byte, downloadBufferSize)
 		downloaded := offset
+
+		// 看门狗：http.Client 没有读超时，源站接了连接却不再发字节时 Read 会永远阻塞，
+		// 于是下载卡在 downloading、进度不再变化、也没法重试。超过 downloadStallAfter
+		// 没有任何进展就关掉 body 让 Read 立刻返回；半成品保留，下次续传。
+		stalled := make(chan struct{})
+		var stallOnce sync.Once
+		watchdog := time.AfterFunc(downloadStallAfter, func() {
+			stallOnce.Do(func() { close(stalled) })
+			resp.Body.Close()
+		})
+		defer watchdog.Stop()
 
 		// 续传：已经落盘的那部分先过一遍哈希（文件刚被 truncate 到 offset，正好是全部旧字节）
 		if offset > 0 {
@@ -3744,6 +3891,7 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 				}
 				downloaded += int64(n)
 				downloadMgr.Update(filename, downloaded)
+				watchdog.Reset(downloadStallAfter)
 			}
 
 			if readErr == io.EOF {
@@ -3752,8 +3900,14 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 			if readErr != nil {
 				out.Close()
 				resp.Body.Close()
-				log.Printf("Failed to download ISO %s: %v (partial kept for resume)", filename, readErr)
-				downloadMgr.Error(filename, readErr.Error())
+				msg := readErr.Error()
+				select {
+				case <-stalled:
+					msg = fmt.Sprintf("no data received for %s; the partial file was kept for the next attempt", downloadStallAfter)
+				default:
+				}
+				log.Printf("Failed to download ISO %s: %s (partial kept for resume)", filename, msg)
+				downloadMgr.Error(filename, msg)
 				return
 			}
 		}
@@ -3986,6 +4140,27 @@ func (h *Handler) cleanupStaleDownloads(maxAge time.Duration) {
 	if removed > 0 {
 		log.Printf("Cleaned up %d stale partial download(s) in %s", removed, h.isoDir)
 	}
+
+	// 已完成的下载记录没人再看就丢掉，否则 map 会随进程一直变大
+	if pruned := downloadMgr.Prune(24 * time.Hour); pruned > 0 {
+		log.Printf("Dropped %d finished download record(s)", pruned)
+	}
+}
+
+// StartDownloadJanitor re-runs the partial-download cleanup on a timer. Doing it
+// only at startup is not enough: a host that stays up for months would never
+// clean up again.
+func (h *Handler) StartDownloadJanitor(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.CleanupStaleDownloads()
+		}
+	}()
 }
 
 func (h *Handler) GetDownloadProgress(w http.ResponseWriter, r *http.Request) {
@@ -5428,16 +5603,40 @@ func (h *Handler) RunScheduledTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // [bootimus-fork L1] fork-patch: download-proxy
+//
+// 代理口令不回显明文：接口只给掩码，前端原样提交回来时沿用库里的旧口令。
+// 想清空就把输入框删空再保存（那时传的是空串，不是掩码）。
+const proxyPasswordMask = "********"
+
+func maskProxyConfig(cfg *models.ProxyConfig) *models.ProxyConfig {
+	if cfg == nil {
+		return nil
+	}
+	out := *cfg
+	if out.Password != "" {
+		out.Password = proxyPasswordMask
+	}
+	return &out
+}
+
 func (h *Handler) GetProxyConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
 	cfg, err := h.storage.GetProxyConfig()
 	if err != nil {
 		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
 		return
 	}
-	h.sendJSON(w, http.StatusOK, Response{Success: true, Data: cfg})
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Data: maskProxyConfig(cfg)})
 }
 
 func (h *Handler) UpdateProxyConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
 	var cfg models.ProxyConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid request"})
@@ -5445,6 +5644,14 @@ func (h *Handler) UpdateProxyConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Address = strings.TrimSpace(cfg.Address)
 	cfg.Username = strings.TrimSpace(cfg.Username)
+
+	// 前端把掩码原样提交回来，表示「这条口令没改」
+	if cfg.Password == proxyPasswordMask {
+		if existing, err := h.storage.GetProxyConfig(); err == nil && existing != nil {
+			cfg.Password = existing.Password
+		}
+	}
+
 	if cfg.Address != "" {
 		if _, err := normalizeProxyURL(cfg.Address, cfg.Username, cfg.Password); err != nil {
 			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
@@ -5455,7 +5662,7 @@ func (h *Handler) UpdateProxyConfig(w http.ResponseWriter, r *http.Request) {
 		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
 		return
 	}
-	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Proxy settings saved", Data: cfg})
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Proxy settings saved", Data: maskProxyConfig(&cfg)})
 }
 
 func (h *Handler) GetWebhookConfig(w http.ResponseWriter, r *http.Request) {
