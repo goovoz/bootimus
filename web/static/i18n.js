@@ -2796,8 +2796,20 @@ function _translateTitle() {
     if (hit !== undefined && document.title !== hit) document.title = hit;
 }
 
+// 每批 DOM 变动只翻译「变过的那几棵子树」。以前每次变动都从 document.body 全量
+// 走一遍 TreeWalker，而下载页每秒刷新进度 —— 等于每秒扫一遍全表。
+let _dirtyRoots = new Set();
+const _DIRTY_FULL_THRESHOLD = 40;
+
+function _markDirty(node) {
+    if (!node) return;
+    const el = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+    if (el && el.nodeType === Node.ELEMENT_NODE) _dirtyRoots.add(el);
+}
+
 function _applyAll() {
     if (_applying || !document.body) return;
+    _dirtyRoots = new Set();
     _applying = true;
     try {
         applyTranslations(document);
@@ -2810,13 +2822,39 @@ function _applyAll() {
     }
 }
 
+function _applyDirty() {
+    if (_applying || !document.body) return;
+    const roots = _dirtyRoots;
+    _dirtyRoots = new Set();
+    // 整表重绘时逐个子树反而更贵，超过阈值就退回全量
+    if (roots.size === 0 || roots.size > _DIRTY_FULL_THRESHOLD) {
+        _applyAll();
+        return;
+    }
+    _applying = true;
+    try {
+        roots.forEach(root => {
+            const scope = root.parentElement || root;
+            if (!scope || !scope.isConnected) return;
+            applyTranslations(scope);
+            _translateTextNodes(scope);
+            _translateAttrs(scope);
+        });
+        _translateTitle();
+    } finally {
+        _applying = false;
+        if (_autoObserver) _autoObserver.takeRecords();
+    }
+}
+
 function _installAutoTranslate() {
     if (_autoObserver || typeof MutationObserver === 'undefined' || !document.body) return;
-    _autoObserver = new MutationObserver(() => {
+    _autoObserver = new MutationObserver((records) => {
+        for (const r of records) _markDirty(r.target);
         if (_applying || _autoTimer) return;
         _autoTimer = setTimeout(() => {
             _autoTimer = null;
-            _applyAll();
+            _applyDirty();
         }, 30);
     });
     _autoObserver.observe(document.body, {
