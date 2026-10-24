@@ -2460,6 +2460,7 @@ const SOURCE_TEXT = {
         "Preview": "预览",
         "Save file": "保存文件",
         "per client": "可按客户端覆盖",
+        "URL updated to the current release": "下载链接已更新为当前版本",
         "Use per-client value": "使用客户端自身取值",
         "Tick the per-client box to keep the {{HOSTNAME}} token and let bootimus fill in each client's name.": "勾选下面的「使用客户端自身取值」即可保留 {{HOSTNAME}} 占位符，由 bootimus 在下发时填入各客户端的名称。",
         "File name is required": "文件名不能为空",

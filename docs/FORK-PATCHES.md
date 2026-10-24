@@ -45,6 +45,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | `download-proxy` | active | ISO 下载可走网络代理：设置页存代理地址与可选凭据，「从 URL 下载」与「获取镜像」各有一个「使用代理下载」开关 | `internal/admin/handlers.go`、`internal/models/models.go`、`internal/storage/*.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
 | `download-resume` | active | ISO 下载断点续传 + 残留清理：数据先写 `.part`（带 ETag 的 meta），再下用 `Range` 续传、`If-Range` 防串版本，完成才 rename；启动清理 7 天前的残留 | `internal/admin/handlers.go`、`internal/admin/download_resume_test.go`、`internal/server/server.go` |
 | `autoinstall-generator` | active | 自动安装文件从模板生成：4 套模板 + 变量表单 + 预览 + 格式校验，产物写入现有文件库 | `internal/autoinstall/generate.go`、`internal/autoinstall/templates/*.tmpl`、`internal/admin/handlers.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
+| `iso-catalog-resolve` | active | 「获取镜像」下载前解析真实文件名：URL 失效时按目录里最新的同类文件改写，15 分钟缓存 | `internal/admin/iso_resolve.go`、`internal/admin/handlers.go`、`internal/server/server.go`、`web/static/app.js`、`distro-profiles.json` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 
@@ -276,6 +277,32 @@ preseed / kickstart / autounattend 按各自安装器的要求写明文（文件
 未声明 `placeholder` 的字段即使填了 `{{...}}` 也原样输出（有测试盯着）。
 
 探测器：`bash .github/scripts/detect-autoinstall-generator.sh --selftest`。只告警不自动退役。
+
+## 镜像目录里的版本号（`iso-catalog-resolve`）
+
+`distro-profiles.json` 里每条 release 只写了 `path`，前端拼成 `base + path` 直接用。
+问题在于目录里的文件名本身带点版本号：Debian `current/` 里就是 `debian-13.7.0-amd64-netinst.iso`，
+点版本一升（13.5.0 → 13.7.0）所有写死的路径同时失效，用户看到的是 `HTTP 404`。
+
+### 做法
+
+下载前先问一次 `POST /api/iso-catalog/resolve {url}`：
+
+1. HEAD 原 URL，200 就直接返回（正常情况零额外请求，结果缓存 15 分钟）；
+2. 失效则取同目录的 HTML 索引，把原文件名里的**每一段数字**换成 `\d+` 得到模式：
+   `debian-13.5.0-amd64-netinst.iso` → `^debian-\d+\.\d+\.\d+-amd64-netinst\.iso$`
+   （`debian-edu-…`、换架构的变体因此不会误命中）；
+3. 候选按**数字序**比较取最大（`13.10.0` > `13.7.0`，字符串比较会选错）；
+4. 对新候选再 HEAD 一次，200 才改写；解析失败就保留原 URL，不阻断下载。
+
+前端命中改写时会把输入框里的 URL 一起更新，并提示「下载链接已更新为当前版本」。
+
+### 顺带修掉的数据
+
+审计 26 个下载点时发现 5 条失效（Debian 2 条、Kali 2 条、Fedora Workstation 1 条命名改了），
+已一并更新；以后靠解析兜底。
+
+探测器：`bash .github/scripts/detect-iso-catalog-resolve.sh --selftest`。
 
 ## 新增一个补丁的步骤
 
