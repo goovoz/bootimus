@@ -7864,11 +7864,34 @@ function renderAiTemplateForm(tpl) {
             const type = v.type === 'password' ? 'password' : 'text';
             input = `<input type="${type}" class="form-control" id="${id}" data-var="${v.name}" value="${escapeHtml(v.default || '')}" oninput="scheduleAiTemplatePreview()">`;
         }
+        // 支持按客户端取值的字段：勾上就把值换成占位符，由 bootimus 在下发时替换
+        const perClient = v.placeholder
+            ? `<label style="display: flex; align-items: center; gap: 4px; margin: 4px 0 0; font-size: 12px; font-weight: 400; color: var(--accent);">`
+              + `<input type="checkbox" id="ai-pc-${v.name}" style="margin: 0; padding: 0; width: auto; height: auto; flex: 0 0 auto;" onchange="toggleAiPerClient('${v.name}', this.checked)">`
+              + `Use per-client value <code style="font-size: 11px;">${escapeHtml(v.placeholder)}</code></label>`
+            : '';
         const required = v.required ? ' <span style="color: var(--danger);">*</span>' : '';
         return `<div class="form-group" style="margin-bottom: 8px;">`
             + `<label for="${id}" style="margin-bottom: 2px;">${escapeHtml(v.label)}${required}${badge}</label>`
-            + input + help + '</div>';
+            + input + perClient + help + '</div>';
     }).join('');
+}
+
+function toggleAiPerClient(name, on) {
+    const tpl = currentAiTemplate();
+    if (!tpl) return;
+    const v = (tpl.vars || []).find(x => x.name === name);
+    const input = document.getElementById('ai-var-' + name);
+    if (!v || !input) return;
+    if (on) {
+        input.dataset.savedValue = input.value;
+        input.value = v.placeholder;
+        input.disabled = true;
+    } else {
+        input.value = input.dataset.savedValue || v.default || '';
+        input.disabled = false;
+    }
+    previewAutoInstallTemplate();
 }
 
 function scheduleAiTemplatePreview() {
