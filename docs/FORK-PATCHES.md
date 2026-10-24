@@ -475,3 +475,18 @@ preseed 是更早的 debian-installer 路线：Ubuntu 到 20.04 为止用它，D
 | 日期 | 补丁 | 上游实现点 | 说明 |
 |---|---|---|---|
 <!-- 退役记录由 workflow 自动追加 -->
+
+## Fork 新增端点在「API 参考」页的登记
+
+上游的 `API_REFERENCE` 清单（`web/static/app.js`）只列上游自己的端点，fork 新增的四个
+能力以前在页面上查不到。现已补进对应分类，措辞与格式保持与上游一致：
+
+| 端点 | 分类 | 说明 |
+|---|---|---|
+| `POST /api/iso-catalog/resolve` | Images | 下载前把带版本号的目录地址解析成当前文件名 |
+| `GET /api/autoinstall-templates` | Auto-Install Files | 内置模板与变量定义 |
+| `POST /api/autoinstall/render` | Auto-Install Files | 渲染并校验答案文件 |
+| `GET` / `PUT` / `POST /api/proxy-config` | Settings | 下载代理配置（口令只回掩码） |
+
+清单从 114 条变成 119 条。改动只在这个数组里，属纯文档性质，因此用 `Fork-Meta: docs` 提交；
+若上游改动同一段，冲突按普通文本冲突处理即可。
