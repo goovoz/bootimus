@@ -80,6 +80,99 @@ func selectVar(name, label, def string, opts ...Option) Var {
 
 func opt(value, label string) Option { return Option{Value: value, Label: label} }
 
+// selectVarHelp is selectVar with an explanatory line under the field.
+func selectVarHelp(name, label, def, help string, opts ...Option) Var {
+	v := selectVar(name, label, def, opts...)
+	v.Help = help
+	return v
+}
+
+func asString(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+// mirrorSite is one package-mirror location. Paths maps a distro family to the
+// directory that actually serves its repository there; a missing entry means the
+// mirror does not carry that family, so mirrorOptions() refuses to offer it for a
+// template that needs it. Every path below was verified from the deployment
+// network by fetching the repository index itself (apt Release / dnf repomd.xml),
+// never by assuming that a directory exists: a mirror can answer 200 with an HTML
+// challenge page, or carry Debian but not Rocky.
+type mirrorSite struct {
+	Value string
+	Label string
+	Host  string
+	Paths map[string]string
+}
+
+var mirrorSites = []mirrorSite{
+	{Value: "official", Label: "Official (installer default)"},
+	{
+		Value: "aliyun", Label: "Aliyun (China)", Host: "mirrors.aliyun.com",
+		Paths: map[string]string{"debian": "debian", "ubuntu": "ubuntu", "rocky": "rockylinux", "almalinux": "almalinux"},
+	},
+	{
+		Value: "huaweicloud", Label: "Huawei Cloud (China)", Host: "mirrors.huaweicloud.com",
+		Paths: map[string]string{"debian": "debian", "ubuntu": "ubuntu", "rocky": "rockylinux", "almalinux": "almalinux"},
+	},
+	{
+		Value: "tencent", Label: "Tencent Cloud (China)", Host: "mirrors.cloud.tencent.com",
+		Paths: map[string]string{"debian": "debian", "ubuntu": "ubuntu", "rocky": "rocky", "almalinux": "almalinux"},
+	},
+	{
+		Value: "ustc", Label: "USTC (China)", Host: "mirrors.ustc.edu.cn",
+		Paths: map[string]string{"debian": "debian", "ubuntu": "ubuntu", "rocky": "rocky"},
+	},
+	{
+		Value: "tuna", Label: "TUNA / Tsinghua (China)", Host: "mirrors.tuna.tsinghua.edu.cn",
+		Paths: map[string]string{"debian": "debian", "ubuntu": "ubuntu"},
+	},
+	{
+		Value: "netease", Label: "NetEase (China)", Host: "mirrors.163.com",
+		Paths: map[string]string{"debian": "debian", "ubuntu": "ubuntu"},
+	},
+	{
+		Value: "nju", Label: "NJU (China)", Host: "mirrors.nju.edu.cn",
+		Paths: map[string]string{"debian": "debian", "ubuntu": "ubuntu", "rocky": "rocky", "almalinux": "almalinux"},
+	},
+	{
+		Value: "hust", Label: "HUST (China)", Host: "mirrors.hust.edu.cn",
+		Paths: map[string]string{"debian": "debian", "ubuntu": "ubuntu", "rocky": "rocky"},
+	},
+}
+
+// mirrorOptions lists the sites that carry every requested family, in display order.
+func mirrorOptions(families ...string) []Option {
+	out := make([]Option, 0, len(mirrorSites))
+	for _, s := range mirrorSites {
+		if s.Paths == nil {
+			out = append(out, opt(s.Value, s.Label))
+			continue
+		}
+		ok := true
+		for _, f := range families {
+			if s.Paths[f] == "" {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, opt(s.Value, s.Label))
+		}
+	}
+	return out
+}
+
+func mirrorSiteByValue(value string) mirrorSite {
+	for _, s := range mirrorSites {
+		if s.Value == value {
+			return s
+		}
+	}
+	return mirrorSite{}
+}
+
 func commonVars() []Var {
 	return []Var{
 		{
@@ -100,16 +193,16 @@ func commonVars() []Var {
 var templates = []Template{
 	{
 		ID:       "debian-preseed",
-		Name:     "Debian / Ubuntu (preseed)",
+		Name:     "Debian / Ubuntu up to 20.04 (preseed)",
 		Format:   "preseed",
 		Distro:   "debian",
 		Filename: "preseed.cfg",
-		Summary:  "Legacy debian-installer preseed for Debian and Ubuntu 20.04 and older.",
+		Summary:  "Legacy debian-installer preseed. Debian uses it, and so did Ubuntu up to 20.04. Ubuntu Server 20.04 and newer installs with autoinstall (cloud-init) instead — use that template for current Ubuntu.",
 		body:     "templates/preseed.tmpl",
 		Vars: append(commonVars(),
 			text("domain", "Domain", "local", "", false),
-			text("mirror_host", "Mirror host", "deb.debian.org", "Point this at a local or regional mirror.", false),
-			text("mirror_dir", "Mirror directory", "debian", "e.g. debian, ubuntu", false),
+			selectVarHelp("mirror", "Repository mirror", "official", "Every site listed here was verified from the deployment network to serve the full Debian and Ubuntu package index. Official keeps deb.debian.org / archive.ubuntu.com.", mirrorOptions("debian", "ubuntu")...),
+			selectVarHelp("mirror_family", "Repository path", "debian", "Debian and Ubuntu keep separate trees on every mirror. Ubuntu 20.04 and newer should use the autoinstall template instead of preseed.", opt("debian", "Debian (debian)"), opt("ubuntu", "Ubuntu (ubuntu)")),
 			selectVar("root_login", "Allow root login", "false",
 				opt("false", "Disabled"), opt("true", "Enabled")),
 			passwordVar("root_password", "Root password (optional)", false),
@@ -130,23 +223,26 @@ var templates = []Template{
 		Format:   "kickstart",
 		Distro:   "rocky",
 		Filename: "kickstart.ks",
-		Summary:  "Anaconda kickstart for the Red Hat family, RHEL 8/9/10 and clones.",
+		Summary:  "Anaconda kickstart for the Red Hat family, RHEL 8/9/10 and clones. The installer reads packages from the ISO tree bootimus serves, so a mirror only repoints dnf after install.",
 		body:     "templates/kickstart.tmpl",
 		Vars: append(commonVars(),
 			passwordVar("root_password", "Root password (optional)", false),
+			selectVarHelp("mirror", "Repository mirror", "official", "Only repoints dnf after install — the installer itself still installs from the ISO tree served by bootimus, which is faster than any mirror. Sites without the Rocky/Alma repositories, and RHEL or Fedora (subscription/metalink), are not listed: leave this on Official for those.", mirrorOptions("rocky", "almalinux")...),
+			selectVarHelp("repo_family", "Repository family", "rocky", "Which repository files the mirror rewrite applies to; pick the family you are actually installing.", opt("rocky", "Rocky Linux"), opt("almalinux", "AlmaLinux")),
 			selectVar("partition", "Partitioning", "lvm",
 				opt("lvm", "LVM"), opt("btrfs", "Btrfs"), opt("plain", "Plain partitions")),
 		),
 	},
 	{
 		ID:       "ubuntu-autoinstall",
-		Name:     "Ubuntu Server 20.04+ (autoinstall)",
+		Name:     "Ubuntu Server 20.04+ (autoinstall / cloud-init)",
 		Format:   "autoinstall",
 		Distro:   "ubuntu",
 		Filename: "autoinstall.yaml",
-		Summary:  "Subiquity autoinstall for Ubuntu Server 20.04 and newer; the password is hashed (bcrypt) before it is written.",
+		Summary:  "Subiquity autoinstall — the cloud-init based path that Ubuntu Server 20.04 and newer uses (this is what the docs mean by \"Ubuntu uses cloud-init\"). The password is hashed on the server before it is written.",
 		body:     "templates/ubuntu-autoinstall.tmpl",
 		Vars: append(commonVars(),
+			selectVarHelp("mirror", "Repository mirror", "official", "Subiquity pulls packages from the archive while installing. Official follows the geoip default, usually archive.ubuntu.com — slow from mainland China.", mirrorOptions("ubuntu")...),
 			selectVar("storage_layout", "Storage layout", "direct",
 				opt("direct", "Direct (single partition)"), opt("lvm", "LVM"), opt("zfs", "ZFS")),
 		),
@@ -236,6 +332,42 @@ func Render(id string, values map[string]string) (string, error) {
 			val = sentinel
 		}
 		data[v.Name] = val
+	}
+
+	// 镜像站点：模板里只暴露一个站点下拉和一个 family 选择，host / 目录 / base URL
+	// 全在这里换算，模板侧不做映射。选 Official 时不写任何 base，交回安装器默认。
+	data["mirror_host"] = ""
+	data["mirror_dir"] = ""
+	data["mirror_base"] = ""
+	data["repo_base"] = ""
+	switch tpl.Format {
+	case "preseed":
+		family := asString(data["mirror_family"])
+		if family == "" {
+			family = "debian"
+		}
+		host, dir := "deb.debian.org", "debian"
+		if family == "ubuntu" {
+			host, dir = "archive.ubuntu.com", "ubuntu"
+		}
+		if site := mirrorSiteByValue(asString(data["mirror"])); site.Paths != nil {
+			if p := site.Paths[family]; p != "" {
+				host, dir = site.Host, p
+			}
+		}
+		data["mirror_host"], data["mirror_dir"] = host, dir
+	case "autoinstall":
+		if site := mirrorSiteByValue(asString(data["mirror"])); site.Paths != nil {
+			if p := site.Paths["ubuntu"]; p != "" {
+				data["mirror_base"] = "http://" + site.Host + "/" + p
+			}
+		}
+	case "kickstart":
+		if site := mirrorSiteByValue(asString(data["mirror"])); site.Paths != nil {
+			if p := site.Paths[asString(data["repo_family"])]; p != "" {
+				data["repo_base"] = "http://" + site.Host + "/" + p
+			}
+		}
 	}
 
 	raw, err := templateFiles.ReadFile(tpl.body)

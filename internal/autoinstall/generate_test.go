@@ -407,3 +407,157 @@ func TestOptionalDiskIsOmitted(t *testing.T) {
 		t.Errorf("explicit disk missing:\n%s", out)
 	}
 }
+
+// 镜像站点必须「实测能提供该发行版的仓库」才允许出现在下拉里。
+// Debian/Ubuntu 十家全通过；Rocky/Alma 只有阿里云、华为云、腾讯云、南大四家。
+func TestMirrorOptionsOnlyListVerifiedSites(t *testing.T) {
+	mirrorOf := func(id string) map[string]Option {
+		tpl, ok := TemplateByID(id)
+		if !ok {
+			t.Fatalf("template %q missing", id)
+		}
+		out := map[string]Option{}
+		for _, v := range tpl.Vars {
+			if v.Name == "mirror" {
+				for _, o := range v.Options {
+					out[o.Value] = o
+				}
+			}
+		}
+		if len(out) == 0 {
+			t.Fatalf("%s: 没有 mirror 变量", id)
+		}
+		return out
+	}
+
+	for _, id := range []string{"debian-preseed", "ubuntu-autoinstall"} {
+		got := mirrorOf(id)
+		for _, want := range []string{"official", "aliyun", "huaweicloud", "tencent", "ustc", "tuna", "netease", "nju", "hust"} {
+			if _, ok := got[want]; !ok {
+				t.Errorf("%s: 缺少镜像选项 %s", id, want)
+			}
+		}
+	}
+
+	ks := mirrorOf("rhel-kickstart")
+	for _, want := range []string{"official", "aliyun", "huaweicloud", "tencent", "nju"} {
+		if _, ok := ks[want]; !ok {
+			t.Errorf("rhel-kickstart: 缺少镜像选项 %s", want)
+		}
+	}
+	for _, bad := range []string{"tuna", "netease", "ustc", "hust"} {
+		if _, ok := ks[bad]; ok {
+			t.Errorf("rhel-kickstart: %s 没有 Rocky/Alma 仓库，不应出现", bad)
+		}
+	}
+}
+
+func TestPreseedMirrorRendersHostAndPath(t *testing.T) {
+	cases := []struct {
+		mirror, family, wantHost, wantDir string
+	}{
+		{"official", "debian", "deb.debian.org", "debian"},
+		{"official", "ubuntu", "archive.ubuntu.com", "ubuntu"},
+		{"aliyun", "debian", "mirrors.aliyun.com", "debian"},
+		{"aliyun", "ubuntu", "mirrors.aliyun.com", "ubuntu"},
+		{"tuna", "ubuntu", "mirrors.tuna.tsinghua.edu.cn", "ubuntu"},
+		{"hust", "debian", "mirrors.hust.edu.cn", "debian"},
+	}
+	for _, c := range cases {
+		out, err := Render("debian-preseed", map[string]string{
+			"password":      "pw12345678",
+			"mirror":        c.mirror,
+			"mirror_family": c.family,
+		})
+		if err != nil {
+			t.Fatalf("%s/%s: render: %v", c.mirror, c.family, err)
+		}
+		if got := "d-i mirror/http/hostname string " + c.wantHost; !strings.Contains(out, got) {
+			t.Errorf("%s/%s: 缺少 %q\n%s", c.mirror, c.family, got, out)
+		}
+		if got := "d-i mirror/http/directory string " + c.wantDir; !strings.Contains(out, got) {
+			t.Errorf("%s/%s: 缺少 %q\n%s", c.mirror, c.family, got, out)
+		}
+	}
+}
+
+func TestAutoinstallMirrorEmitsAptPrimary(t *testing.T) {
+	out, err := Render("ubuntu-autoinstall", map[string]string{
+		"password": "pw12345678",
+		"mirror":   "official",
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "apt:") {
+		t.Errorf("选 Official 时不应写 apt 段（交回 subiquity 默认）:\n%s", out)
+	}
+
+	out, err = Render("ubuntu-autoinstall", map[string]string{
+		"password": "pw12345678",
+		"mirror":   "aliyun",
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{"  apt:", "    primary:", "        uri: http://mirrors.aliyun.com/ubuntu"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("缺少 %q\n%s", want, out)
+		}
+	}
+	if err := Validate("autoinstall", out); err != nil {
+		t.Errorf("带 apt 段的产物不是合法 YAML: %v\n%s", err, out)
+	}
+}
+
+func TestKickstartMirrorRewritesRepo(t *testing.T) {
+	out, err := Render("rhel-kickstart", map[string]string{
+		"password":    "pw12345678",
+		"mirror":      "official",
+		"repo_family": "rocky",
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "yum.repos.d") {
+		t.Errorf("选 Official 时不应改 dnf 源:\n%s", out)
+	}
+
+	out, err = Render("rhel-kickstart", map[string]string{
+		"password":    "pw12345678",
+		"mirror":      "aliyun",
+		"repo_family": "rocky",
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		"baseurl=http://mirrors.aliyun.com/rockylinux",
+		"/etc/yum.repos.d/rocky*.repo",
+		"$contentdir",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rocky: 缺少 %q\n%s", want, out)
+		}
+	}
+
+	out, err = Render("rhel-kickstart", map[string]string{
+		"password":    "pw12345678",
+		"mirror":      "tencent",
+		"repo_family": "almalinux",
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		"baseurl=http://mirrors.cloud.tencent.com/almalinux",
+		"/etc/yum.repos.d/almalinux*.repo",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("almalinux: 缺少 %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "rocky*.repo") {
+		t.Errorf("almalinux 分支不应碰 rocky*.repo:\n%s", out)
+	}
+}

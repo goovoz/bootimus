@@ -28,4 +28,11 @@ reboot --eject
 
 %post
 systemctl enable sshd
-%end
+{{if .repo_base}}# Repoint dnf at the chosen mirror. Only the host part is swapped, so the
+# $releasever / $contentdir paths shipped by the distro stay untouched — that is
+# why this keeps working across point releases and repo layout changes.
+{{if eq .repo_family "almalinux"}}sed -i -E 's|^mirrorlist=|#mirrorlist=|' /etc/yum.repos.d/almalinux*.repo 2>/dev/null || true
+sed -i -E 's|^# *baseurl=https?://repo\.almalinux\.org/almalinux|baseurl={{.repo_base}}|' /etc/yum.repos.d/almalinux*.repo 2>/dev/null || true
+{{else}}sed -i -E 's|^mirrorlist=|#mirrorlist=|' /etc/yum.repos.d/rocky*.repo 2>/dev/null || true
+sed -i -E 's|^# *baseurl=https?://dl\.rockylinux\.org/\$contentdir|baseurl={{.repo_base}}|' /etc/yum.repos.d/rocky*.repo 2>/dev/null || true
+{{end}}{{end}}%end
