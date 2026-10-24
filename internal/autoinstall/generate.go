@@ -424,15 +424,6 @@ func Render(id string, values map[string]string) (string, error) {
 	// 字符串塞进单条命令里。
 	data["ssh_key_list"] = splitSSHKeys(asString(data["ssh_key"]))
 
-	// Windows 计算机名有硬约束（<=15 字符、不含 \ / : * ? " < > | 与空格、不能纯数字）。
-	// 一个答案文件被整支舰队共用，所以 "*" 交给 Windows 自己生成 DESKTOP-XXXXXXX；
-	// 填了具体名字时先清洗，否则要等 specialize 阶段（装完重启后）才失败。
-	if tpl.Format == "autounattend" {
-		if h, _ := data["hostname"].(string); h != "" && h != "*" && !strings.HasPrefix(h, "\x00pc:") {
-			data["hostname"] = windowsComputerName(h)
-		}
-	}
-
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("render %q: %w", id, err)
