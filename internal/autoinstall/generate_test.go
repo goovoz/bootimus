@@ -55,7 +55,7 @@ func TestEveryTemplateRenders(t *testing.T) {
 	markers := map[string][]string{
 		"debian-preseed":       {"d-i passwd/username string admin", "d-i netcfg/get_hostname string bootimus-node"},
 		"rhel-kickstart":       {"rootpw --plaintext", "%packages", "autopart --type=lvm"},
-		"ubuntu-autoinstall":   {"autoinstall:", "hostname: bootimus-node", "layout:"},
+		"ubuntu-autoinstall":   {"autoinstall:", `hostname: "bootimus-node"`, "layout:"},
 		"windows-autounattend": {"<ComputerName>BOOTIMUS-PC</ComputerName>", "<AcceptEula>true</AcceptEula>"},
 	}
 	for _, tpl := range Templates() {
@@ -160,6 +160,51 @@ func TestAutoinstallPackageList(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing package entry %q\n%s", want, out)
 		}
+	}
+}
+
+func TestPerClientHostnameKeepsToken(t *testing.T) {
+	for _, tpl := range Templates() {
+		var hostnameVar Var
+		for _, v := range tpl.Vars {
+			if v.Name == "hostname" {
+				hostnameVar = v
+			}
+		}
+		if hostnameVar.Placeholder == "" {
+			t.Errorf("%s: hostname 没有声明占位符", tpl.ID)
+			continue
+		}
+
+		values := fillValues(t, tpl)
+		values["hostname"] = hostnameVar.Placeholder
+		out, err := Render(tpl.ID, values)
+		if err != nil {
+			t.Fatalf("%s: 按客户端渲染失败: %v", tpl.ID, err)
+		}
+		if !strings.Contains(out, hostnameVar.Placeholder) {
+			t.Errorf("%s: 输出里没有保留 %s\n%s", tpl.ID, hostnameVar.Placeholder, out)
+		}
+		if strings.Contains(out, "\x00") {
+			t.Errorf("%s: 哨兵字符泄漏到输出里\n%s", tpl.ID, out)
+		}
+		if err := Validate(tpl.Format, out); err != nil {
+			t.Errorf("%s: 带占位符的产物没通过校验: %v\n%s", tpl.ID, err, out)
+		}
+	}
+}
+
+func TestPerClientTokenIsOnlyForDeclaredVars(t *testing.T) {
+	// 普通字段填成占位符文本时应原样输出（不能悄悄变成 token 替换）
+	out, err := Render("rhel-kickstart", map[string]string{
+		"password": "Sup3rSecret!",
+		"username": "{{HOSTNAME}}",
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, "--name={{HOSTNAME}}") {
+		t.Errorf("未声明的字段不应被当作占位符处理:\n%s", out)
 	}
 }
 
