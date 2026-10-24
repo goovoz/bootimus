@@ -127,6 +127,15 @@ func sanitizeValue(format string, v Var, val string) (string, error) {
 		return "", fmt.Errorf("%s: %q contains characters that would break the answer file", v.Label, val)
 	}
 
+	// Windows 的计算机名要先按 Windows 的规则清洗，再转义。顺序反了的话，
+	// 15 字符的截断会落在 "&amp;" 中间，产出的 XML 直接非法。
+	if format == "autounattend" && v.Name == "hostname" {
+		val = windowsComputerName(val)
+		if val == "*" {
+			return val, nil
+		}
+	}
+
 	switch v.Name {
 	case "ssh_key":
 		for _, line := range strings.Split(val, "\n") {
