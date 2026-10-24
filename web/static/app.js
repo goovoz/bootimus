@@ -7817,6 +7817,146 @@ async function bulkClearNextBootClientGroup() {
 
 let cachedAutoInstallFiles = [];
 
+// [bootimus-fork L1] fork-patch: autoinstall-generator
+// 从内置模板生成自动安装文件：表单 → 渲染预览 → 复用现有 save 接口落盘。
+let aiTemplateCache = null;
+let aiPreviewTimer = null;
+
+async function openAutoInstallTemplateModal() {
+    showModal('autoinstall-template-modal');
+    const sel = document.getElementById('ai-tpl-select');
+    const distroSel = document.getElementById('ai-tpl-distro');
+
+    if (!aiTemplateCache) {
+        try {
+            const res = await authFetch(`${API_BASE}/autoinstall-templates`);
+            const data = await res.json();
+            aiTemplateCache = (data.data && data.data.templates) || [];
+        } catch (e) {
+            aiTemplateCache = [];
+        }
+    }
+
+    sel.innerHTML = aiTemplateCache
+        .map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`)
+        .join('');
+
+    try {
+        const res = await authFetch(`${API_BASE}/profiles`);
+        const data = await res.json();
+        distroSel.innerHTML = (data.data || [])
+            .map(p => `<option value="${escapeHtml(p.profile_id)}">${escapeHtml(p.display_name)}</option>`)
+            .join('');
+    } catch (e) { /* 保留空列表 */ }
+
+    onAutoInstallTemplateChange();
+}
+
+function currentAiTemplate() {
+    const id = document.getElementById('ai-tpl-select').value;
+    return (aiTemplateCache || []).find(t => t.id === id);
+}
+
+function onAutoInstallTemplateChange() {
+    const tpl = currentAiTemplate();
+    if (!tpl) return;
+    document.getElementById('ai-tpl-filename').value = tpl.filename || '';
+    document.getElementById('ai-tpl-summary').textContent = tpl.summary || '';
+    const distroSel = document.getElementById('ai-tpl-distro');
+    if (tpl.distro && [...distroSel.options].some(o => o.value === tpl.distro)) {
+        distroSel.value = tpl.distro;
+    }
+    renderAiTemplateForm(tpl);
+    previewAutoInstallTemplate();
+}
+
+function renderAiTemplateForm(tpl) {
+    const box = document.getElementById('ai-tpl-vars');
+    box.innerHTML = (tpl.vars || []).map(v => {
+        const id = 'ai-var-' + v.name;
+        const help = v.help
+            ? `<small style="color: var(--text-secondary); display: block; margin-top: 2px;">${escapeHtml(v.help)}</small>`
+            : '';
+        const badge = v.per_client
+            ? ` <span style="font-size: 11px; color: var(--accent);">per client</span>`
+            : '';
+        let input;
+        if (v.type === 'select') {
+            input = `<select class="form-control" id="${id}" data-var="${v.name}" onchange="previewAutoInstallTemplate()">`
+                + (v.options || []).map(o =>
+                    `<option value="${escapeHtml(o.value)}"${o.value === v.default ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')
+                + '</select>';
+        } else if (v.type === 'textarea') {
+            input = `<textarea class="form-control" id="${id}" data-var="${v.name}" rows="2" oninput="scheduleAiTemplatePreview()">${escapeHtml(v.default || '')}</textarea>`;
+        } else {
+            const type = v.type === 'password' ? 'password' : 'text';
+            input = `<input type="${type}" class="form-control" id="${id}" data-var="${v.name}" value="${escapeHtml(v.default || '')}" oninput="scheduleAiTemplatePreview()">`;
+        }
+        const required = v.required ? ' <span style="color: var(--danger);">*</span>' : '';
+        return `<div class="form-group" style="margin-bottom: 8px;">`
+            + `<label for="${id}" style="margin-bottom: 2px;">${escapeHtml(v.label)}${required}${badge}</label>`
+            + input + help + '</div>';
+    }).join('');
+}
+
+function scheduleAiTemplatePreview() {
+    clearTimeout(aiPreviewTimer);
+    aiPreviewTimer = setTimeout(previewAutoInstallTemplate, 400);
+}
+
+function collectAiTemplateValues() {
+    const values = {};
+    document.querySelectorAll('#ai-tpl-vars [data-var]').forEach(el => {
+        values[el.dataset.var] = el.value;
+    });
+    return values;
+}
+
+async function previewAutoInstallTemplate() {
+    const tpl = currentAiTemplate();
+    if (!tpl) return;
+    const status = document.getElementById('ai-tpl-status');
+    const preview = document.getElementById('ai-tpl-preview');
+    if (status) status.textContent = 'Rendering…';
+    try {
+        const res = await authFetch(`${API_BASE}/autoinstall/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ template: tpl.id, values: collectAiTemplateValues() }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Render failed');
+        preview.value = data.data.content;
+        if (status) status.textContent = '';
+    } catch (err) {
+        preview.value = '';
+        if (status) status.textContent = err.message;
+    }
+}
+
+async function saveAutoInstallTemplate() {
+    const distro = document.getElementById('ai-tpl-distro').value;
+    const filename = document.getElementById('ai-tpl-filename').value.trim();
+    const content = document.getElementById('ai-tpl-preview').value;
+    if (!distro) { showNotification('Please select a distro', 'warning'); return; }
+    if (!filename) { showNotification('File name is required', 'warning'); return; }
+    if (!content) { showNotification('Nothing to save — fix the fields first', 'error'); return; }
+    try {
+        const res = await authFetch(`${API_BASE}/autoinstall-files/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ distro, filename, content }),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Save failed');
+        showNotification('Auto-install file saved', 'success');
+        closeModal('autoinstall-template-modal');
+        loadAutoInstallFiles();
+    } catch (err) {
+        showNotification('Failed to save file: ' + err.message, 'error');
+    }
+}
+
 async function loadAutoInstallFiles() {
     const container = document.getElementById('autoinstall-table');
     if (container) {
