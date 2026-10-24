@@ -248,6 +248,9 @@ autounattend.xml / kickstart / preseed / autoinstall。本补丁补中间那层�
 产物不直接落库：前端拿到正文后调既有的 `/api/autoinstall-files/save`，
 所以**「附加到镜像 / 按客户端覆盖」的逻辑一行没改**。
 
+> 文件库里的文件**不会自动对外公开**：要真正下发给安装器，仍要在「镜像」或「客户端」上把它附加（既有逻辑），
+> 公开地址形如 `/autoinstall/<镜像文件名>?mac=<mac>`；`/autoinstall/<库内路径>` 是查不到东西的。
+
 ### 四套模板与校验
 
 | 模板 | 格式 | 校验 |
