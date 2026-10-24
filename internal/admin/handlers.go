@@ -4175,6 +4175,55 @@ func (h *Handler) UpdateAutoInstallScript(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// [bootimus-fork L1] fork-patch: autoinstall-generator
+// 模板目录：只返回元数据（变量定义 + 默认文件名），正文由 /api/autoinstall/render 现渲染。
+func (h *Handler) ListAutoInstallTemplates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
+	h.sendJSON(w, http.StatusOK, Response{
+		Success: true,
+		Data:    map[string]any{"templates": autoinstall.Templates()},
+	})
+}
+
+// RenderAutoInstallTemplate 把表单值灌进内置模板，做格式校验后返回正文。
+// 保存仍走 /api/autoinstall-files/save，因此「附加到镜像 / 按客户端覆盖」逻辑不变。
+func (h *Handler) RenderAutoInstallTemplate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
+	var req struct {
+		Template string            `json:"template"`
+		Values   map[string]string `json:"values"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid body"})
+		return
+	}
+	tpl, ok := autoinstall.TemplateByID(req.Template)
+	if !ok {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Unknown template: " + req.Template})
+		return
+	}
+	content, err := autoinstall.Render(req.Template, req.Values)
+	if err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+		return
+	}
+	h.sendJSON(w, http.StatusOK, Response{
+		Success: true,
+		Data: map[string]any{
+			"content":  content,
+			"filename": tpl.Filename,
+			"format":   tpl.Format,
+			"distro":   tpl.Distro,
+		},
+	})
+}
+
 func (h *Handler) ListAutoInstallFiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
