@@ -173,6 +173,7 @@ var APISections = []APISection{
 		{Method: "DELETE", Path: "/api/profiles/delete", Summary: "Delete a custom profile.", Params: []APIParam{qID("Profile ID")}},
 		{Method: "POST", Path: "/api/profiles/update", Summary: "Refresh the built-in profiles from the remote source."},
 		{Method: "GET", Path: "/api/iso-catalog", Summary: "Curated catalogue of popular distributions and mirror URLs.", ReadOnly: true},
+		{Method: "POST", Path: "/api/iso-catalog/resolve", Summary: "Resolve the current file name behind a versioned catalogue URL before downloading it.", Body: "{url, use_proxy}"},
 	}},
 	{Tag: "Auto-Install Files", Endpoints: []APIEndpoint{
 		{Method: "GET", Path: "/api/autoinstall-files", Summary: "List auto-install files."},
@@ -182,6 +183,8 @@ var APISections = []APISection{
 		{Method: "GET", Path: "/api/autoinstall-files/download", Summary: "Download a file.", Params: []APIParam{qFilename("File name")}},
 		{Method: "DELETE", Path: "/api/autoinstall-files/delete", Summary: "Delete a file.", Params: []APIParam{qFilename("File name")}},
 		{Method: "GET", Path: "/api/autoinstall-files/render", Summary: "Render a file with its placeholders substituted and list the ones left unresolved.", Params: []APIParam{{Name: "distro", In: "query", Description: "Distro profile ID", Required: true}, qFilename("File name"), {Name: "mac", In: "query", Description: "MAC address of the client to render for; without it client and group values are empty"}, {Name: "image", In: "query", Description: "ISO filename of the image to render for; without it image placeholders stay unresolved"}}},
+		{Method: "GET", Path: "/api/autoinstall-templates", Summary: "Built-in answer-file templates (preseed, kickstart, autoinstall, autounattend) with their variables."},
+		{Method: "POST", Path: "/api/autoinstall/render", Summary: "Render and validate an answer file from a built-in template.", Body: "{template, values}"},
 	}},
 	{Tag: "Custom Files", Endpoints: []APIEndpoint{
 		{Method: "GET", Path: "/api/files", Summary: "List custom files.", ReadOnly: true},
@@ -239,6 +242,8 @@ var APISections = []APISection{
 	}},
 	{Tag: "Settings", Endpoints: []APIEndpoint{
 		{Method: "GET", Path: "/api/theme", Summary: "Boot menu theme and defaults.", ReadOnly: true},
+		{Method: "GET", Path: "/api/proxy-config", Summary: "Outbound proxy used for ISO downloads. The password comes back masked."},
+		{Method: "PUT", Path: "/api/proxy-config", Summary: "Save the outbound proxy. POST is accepted too.", Body: "{address, username, password}"},
 		{Method: "PUT", Path: "/api/theme", Summary: "Update the boot menu theme.", Body: "{title, menu_timeout, default_menu_item}"},
 		{Method: "GET", Path: "/api/backup/export", Summary: "Download a tar.gz backup of the database and data directory."},
 		{Method: "POST", Path: "/api/backup/import", Summary: "Stage a backup archive for restore on the next restart.", Body: "backup=@bootimus-backup.tar.gz", Multipart: true},
