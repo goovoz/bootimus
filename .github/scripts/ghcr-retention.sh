@@ -62,8 +62,9 @@ sed 's/^/  /' "$KEEP_SET"
 # 用户拥有的包用 users/<owner>/...；组织包退回 orgs/<owner>/...。
 list_versions() {
     local path=$1
+    # tags 为空时会吞掉一列，用 "-" 占位，避免 read 之后列错位
     gh api --paginate "${path}?per_page=100" --jq \
-        '.[] | [.id, .name, ((.metadata.container.tags // []) | join(" ")), .updated_at] | @tsv' 2>/dev/null
+        '.[] | [.id, .name, ((.metadata.container.tags // []) | join(" ") | if . == "" then "-" else . end), .updated_at] | @tsv' 2>/dev/null
 }
 
 VERSIONS=$(list_versions "users/${OWNER}/packages/container/${PACKAGE}/versions")
