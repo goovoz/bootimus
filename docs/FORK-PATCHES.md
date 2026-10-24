@@ -204,6 +204,19 @@ bash ops/i18n/rebuild.sh            # 或 bash ops/i18n/rebuild.sh <upstream-ref
 
 探测器：`bash .github/scripts/detect-download-proxy.sh --selftest`。
 
+
+### 加固（2026-10-24）
+
+- **口令不回显**：`GET /api/proxy-config` 只返回 `********`，把掩码原样提交回来表示
+  「没改」，服务端沿用库里的旧口令；删空输入框才是清空。以前明文口令会出现在浏览器的
+  网络面板里。
+- **超时与连接回收**：以前 `http.Client{Timeout: 0}` + 每次下载新建 `Transport`
+  （`IdleConnTimeout` 为 0）。源站接了连接却不发数据时下载会永久挂住，状态停在
+  `downloading`，重试只会拿到 409；每次走代理还漏一条空闲连接。现在 Transport 按代理
+  地址缓存复用，拨号 15s、响应头 30s、空闲 30s，结束调 `CloseIdleConnections()`。
+- 直连时仍然尊重 `HTTP_PROXY`/`HTTPS_PROXY`（和默认 Transport 一致），只有显式勾选
+  代理才覆盖。
+
 ## 断点续传与残留清理补丁（`download-resume`）
 
 上游下载是「`client.Get` 拉全量 + `os.Create` 截断」，中断后既不能续传，也不能直接重下：
@@ -231,6 +244,19 @@ bash ops/i18n/rebuild.sh            # 或 bash ops/i18n/rebuild.sh <upstream-ref
 
 探测器：`bash .github/scripts/detect-download-resume.sh --selftest`。只告警不自动退役 ——
 续传涉及数据正确性，必须人工确认上游实现等价（尤其 `If-Range`）后再让位。
+
+
+### 加固（2026-10-24）
+
+- **进度接口的数据竞争**：`Get`/`GetAll` 以前返回内部指针，接口层 `json.Marshal` 与
+  下载协程的 `Update` 并发读写同一结构体，`-race` 判定为 DATA RACE。现在返回快照，
+  `internal/admin/download_manager_test.go` 里有对应的并发用例。
+- **卡死看门狗**：`http.Client` 没有读超时。超过 90s 收不到任何字节就关闭 body，让
+  `Read` 立刻返回，半成品保留待下次续传，状态置 `error` 而不是永远 `downloading`。
+- **进度写回节流**：每 200ms 或 256KB 才写一次（以前每 32KB 一次，1GB 要加解锁四千多次）；
+  速度按「本次实际传输的字节」算，续传不会一上来就显示几个 G/s。
+- **记录回收**：完成的记录 24 小时后从内存里丢掉；残留 `.part` 清理除了启动时执行，
+  还每 6 小时跑一次（`StartDownloadJanitor`）——长期不重启的机器以前永远不清。
 
 ## 自动安装文件生成器（`autoinstall-generator`）
 
@@ -277,6 +303,28 @@ preseed / kickstart / autounattend 按各自安装器的要求写明文（文件
 未声明 `placeholder` 的字段即使填了 `{{...}}` 也原样输出（有测试盯着）。
 
 探测器：`bash .github/scripts/detect-autoinstall-generator.sh --selftest`。只告警不自动退役。
+
+
+### 值必须先转义再进模板（2026-10-24）
+
+`text/template` 不做任何转义，而四种格式的注入面完全不同，所以 `sanitize.go` 在渲染
+前统一处理：
+
+| 格式 | 处理 |
+|---|---|
+| autounattend | XML 转义（`&` `<` `>` `"` `'`）。以前口令里有一个 `&` 就会得到「XML syntax error … invalid character entity」，合法口令被拒 |
+| autoinstall | 字符串标量加引号并做 YAML 转义 |
+| preseed / kickstart | 没有引号机制，只能约束成「单行 + 允许的字符」。以前主机名里塞一个换行就能凭空多出一条 `d-i` 指令 |
+
+同时补上以前会静默产出坏文件的校验：
+
+- `image_index` / `disk_id` 是 `number` 字段（`<DiskID>first</DiskID>` 以前能渲染成功，
+  装到分区阶段才失败）
+- 包名不允许 shell 元字符；包列表按格式落地（preseed 空格分隔、kickstart 一行一个、
+  autoinstall 是 YAML 列表），不再把 textarea 原样塞进去
+- 公钥必须是 `ssh-ed25519 AAAA…` 这种形状，且**按行展开成多条指令**，不再把一个带
+  换行的字符串塞进单条命令
+- 没声明 Placeholder 的字段里出现 `{{TOKEN}}` 直接报错，而不是原样写进答案文件
 
 ## 镜像目录里的版本号（`iso-catalog-resolve`）
 
@@ -399,6 +447,15 @@ preseed 是更早的 debian-installer 路线：Ubuntu 到 20.04 为止用它，D
 
 - `Debian / Ubuntu up to 20.04 (preseed)`
 - `Ubuntu Server 20.04+ (autoinstall / cloud-init)`
+
+
+### 加固（2026-10-24）
+
+- **保留查询串**：以前用字符串拼接重建目录地址，签名/带 token 的链接改写后丢 query
+  直接 403；现在一路用 `*url.URL`。
+- **兼容单引号与绝对地址**：`href` 以前只认双引号，Apache 风格的目录页一律解析失败。
+- **失败短缓存（2 分钟）**：解析失败时以前每次下载前都打三个请求（HEAD + 列目录 + HEAD）。
+- **HEAD 405/501 不再当成「文件没了」**：这类服务器直接按原样放行，不做改写。
 
 ## 新增一个补丁的步骤
 
