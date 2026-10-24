@@ -1,9 +1,11 @@
 name: Release (fork)
 # [bootimus-fork L0] fork 自己的发布流水线。
-# 与上游 release.yml 产物一致（4 个平台二进制 + SHA256SUMS），
+# 与上游 release.yml 产物一致（4 个平台二进制 + SHA256SUMS + GitHub Release），
 # 区别：
-#   · 二进制只作为 workflow 构建产物（Artifacts）上传，**不创建 GitHub Release**——
-#     每个小改动都写一条 Release 只会把 Releases 页面变成构建日志；
+#   · Release **按版本号建，一个版本号一个**；正文只有自动生成的 release notes，
+#     **不写任何构建记录**（版本串 / commit / 补丁清单 / 镜像 digest 都不写，
+#     digest 只出现在每次运行的 Job Summary 里）；
+#   · 同一个版本号再构建，只刷新 Release 上的资产，不往正文追加内容；
 #   · 镜像推到 ghcr.io/goovoz/bootimus，旧 digest 由 ghcr-retention.yml 定期清掉。
 #
 # 版本口径（重要）：
@@ -35,7 +37,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  contents: write # 创建 Release、上传资产
   packages: write # 推 ghcr 镜像
 
 concurrency:
@@ -47,7 +49,7 @@ env:
 
 jobs:
   binaries:
-    name: 构建二进制并上传构建产物
+    name: 构建二进制并发布 Release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7  # node24
@@ -97,15 +99,18 @@ jobs:
           sha256sum bootimus-* > SHA256SUMS
           cat SHA256SUMS
 
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4  # node24
+      # 每个版本号一个 Release；同一个版本号再跑只刷新资产。
+      # 正文不写 build info（那正是之前 Releases 变成构建日志的原因）。
+      - name: 创建/更新 Release 并上传资产
+        uses: softprops/action-gh-release@v3  # node24
         with:
-          name: bootimus-${{ steps.version.outputs.build_version }}
-          path: |
+          tag_name: v${{ steps.version.outputs.base }}
+          name: v${{ steps.version.outputs.base }}
+          generate_release_notes: true
+          files: |
             bootimus-*
             SHA256SUMS
-          if-no-files-found: error
-          retention-days: 90
+          fail_on_unmatched_files: true
 
   docker:
     name: 构建并推送多架构镜像
@@ -188,7 +193,7 @@ jobs:
             echo "|---|---|"
             echo "| 基线版本 | v${{ steps.version.outputs.base }} |"
             echo "| 版本串 | \`${{ steps.version.outputs.build_version }}\` |"
-            echo "| 二进制 | bootimus-linux-{amd64,arm64}、bootimus-windows-{amd64,arm64} + SHA256SUMS（Artifacts，保留 90 天） |"
+            echo "| 二进制 | bootimus-linux-{amd64,arm64}、bootimus-windows-{amd64,arm64} + SHA256SUMS（挂在 Release 上） |"
             echo "| 不可变 tag | \`${IMAGE}:${{ steps.version.outputs.tag_version }}\`、\`${IMAGE}:sha-${{ steps.version.outputs.rev }}\` |"
             echo "| 漂移 tag | \`${IMAGE}:${{ steps.version.outputs.base }}\`、\`${IMAGE}:latest\` |"
             echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
