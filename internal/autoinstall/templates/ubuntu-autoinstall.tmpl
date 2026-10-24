@@ -3,17 +3,17 @@
 # Attach this file to the image in Bootimus; the kernel parameter points at it.
 autoinstall:
   version: 1
-  locale: {{.locale}}
+  locale: "{{.locale}}"
   keyboard:
-    layout: {{.keymap}}
-  timezone: {{.timezone}}
+    layout: "{{.keymap}}"
+  timezone: "{{.timezone}}"
 {{if .mirror_base}}  apt:
     primary:
       - arches: [default]
         uri: {{.mirror_base}}
 {{end}}  identity:
     hostname: "{{.hostname}}"
-    username: {{.username}}
+    username: "{{.username}}"
     password: "{{.hashed_password}}"
   ssh:
     install-server: true
@@ -27,8 +27,9 @@ autoinstall:
 {{range .package_list}}    - {{.}}
 {{end}}{{end}}  late-commands:
     - curtin in-target -- systemctl enable ssh
-{{if .ssh_key}}    - curtin in-target -- mkdir -p /root/.ssh
-    - curtin in-target -- sh -c 'echo "{{.ssh_key}}" > /root/.ssh/authorized_keys'
-    - curtin in-target -- chmod 700 /root/.ssh
+{{if .ssh_key_list}}    - curtin in-target -- mkdir -p /root/.ssh
+    - curtin in-target -- rm -f /root/.ssh/authorized_keys
+{{range .ssh_key_list}}    - curtin in-target -- sh -c 'echo "{{.}}" >> /root/.ssh/authorized_keys'
+{{end}}    - curtin in-target -- chmod 700 /root/.ssh
     - curtin in-target -- chmod 600 /root/.ssh/authorized_keys
 {{end}}
