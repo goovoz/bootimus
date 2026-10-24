@@ -7,6 +7,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/device-management-toolkit/go-wsman-messages/v2 v2.50.5
 	github.com/glebarez/sqlite v1.11.0
+	github.com/GehirnInc/crypt v0.0.0-20230320061759-8cc1b52080c5
 	github.com/go-git/go-billy/v5 v5.9.0
 	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/golang-jwt/jwt/v5 v5.3.1
