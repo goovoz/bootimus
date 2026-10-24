@@ -324,8 +324,18 @@ func TestSingleLineValuesAreEnforced(t *testing.T) {
 	}
 }
 
-// Linux 主机名/用户名不允许空格：kickstart 的 --name=my user 会直接解析失败。
+// Linux 用户名允许大写（useradd / Anaconda 都接受），只是不允许空格与引号。
 func TestLinuxIdentifiersRejectSpaces(t *testing.T) {
+	out, err := Render("rhel-kickstart", map[string]string{
+		"password": "pw12345678",
+		"username": "Admin",
+	})
+	if err != nil {
+		t.Fatalf("大写用户名应被接受: %v", err)
+	}
+	if !strings.Contains(out, "user --name=Admin") {
+		t.Errorf("缺少大写用户名:\n%s", out)
+	}
 	if _, err := Render("rhel-kickstart", map[string]string{
 		"password": "pw12345678",
 		"username": "my user",
