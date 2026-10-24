@@ -167,7 +167,7 @@ var templates = []Template{
 			},
 			passwordVar("password", "Administrator password", true),
 			text("local_user", "Local account name", "user", "Created as a member of the Administrators group.", true),
-			passwordVar("local_password", "Local account password", true),
+			passwordVar("local_password", "Local account password", false),
 			text("win_locale", "Windows locale", "zh-CN", "e.g. zh-CN, en-US", true),
 			text("win_timezone", "Windows time zone", "China Standard Time", "Windows zone name, e.g. China Standard Time, UTC", true),
 			text("image_index", "Install image index", "1", "Index inside install.wim / install.esd (/IMAGE/INDEX).", true),
@@ -254,6 +254,11 @@ func Render(id string, values map[string]string) (string, error) {
 	// 始终设置该键，避免 missingkey=error 在 {{if .root_hash}} 上报错。
 	rp, _ := data["root_password"].(string)
 	data["root_hash"] = HashPassword(rp)
+
+	// Windows 本地账户口令留空时沿用管理员口令，少填一次
+	if lp, ok := data["local_password"].(string); ok && lp == "" {
+		data["local_password"] = data["password"]
+	}
 	if pkgs, ok := data["packages"].(string); ok && tpl.Format == "autoinstall" {
 		data["package_list"] = splitPackages(pkgs)
 	}
