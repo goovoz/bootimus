@@ -1,6 +1,15 @@
 name: GHCR retention (fork)
 
-# [bootimus-fork L0] 镜像保留策略：同一个基线版本只留「latest 指向的那一个 digest」。
+# [bootimus-fork L0] 镜像保留策略：**每个版本号只留最新一个 digest**，latest 指向版本号最高的那个。
+#
+# 效果举例（0.1.77 下每次小改动都会产生一个新 digest）：
+#   0.1.77 保留最新一次构建（index + amd64/arm64 两个平台子清单）
+#   0.1.76 同样保留它自己最新那个
+#   latest 一定等于「最高版本号的最新构建」，不一致时本 workflow 会把它重指过去
+#
+# 为什么按版本号而不是「全库只留一个」：跨版本回滚时至少还有一个验证过的旧版本可用；
+# 同版本号内的中间构建没有保留价值。真要回滚到某个已删除的中间 digest，用 keep_digest
+# 临时把它排除一次，或者重新构建那次的 commit。
 #
 # 为什么单独一个 workflow 而不是塞进 fork-release.yml：
 #   * 构建失败时也要能清理；构建成功时清理失败也不该把构建标记成红色；
@@ -8,9 +17,9 @@ name: GHCR retention (fork)
 #   * 需要 packages: write，独立出来权限最小。
 #
 # 触发：
-#   · Release (fork) 跑完之后（清理刚被替换掉的上一个 digest）
+#   · Release (fork) 跑完之后（清掉刚被替换掉的上一个同版本 digest）
 #   · 每天 05:23（北京时间）兜底
-#   · workflow_dispatch（可 dry-run，可指定要保留的 digest）
+#   · workflow_dispatch（可 dry-run，可指定额外要保留的 digest）
 
 on:
   workflow_run:
@@ -29,7 +38,7 @@ on:
         default: "false"
         required: false
       keep_digest:
-        description: "要保留的 digest（留空 = latest 指向的那个）"
+        description: "额外要保住的 digest（例如临时回滚用；留空则只按版本号保留）"
         required: false
         default: ""
 
@@ -43,10 +52,18 @@ concurrency:
 
 jobs:
   prune:
-    name: 只保留最新镜像 digest
+    name: 每个版本号只保留最新 digest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7  # node24
+
+      # 只有「latest 指错了」时才会用到；buildx imagetools create 需要已登录
+      - name: 登录 ghcr.io（校准 latest 用）
+        uses: docker/login-action@v4  # node24
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 清理旧版本
         env:
