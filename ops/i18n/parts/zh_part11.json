@@ -7,6 +7,8 @@
   "Preview": "预览",
   "Save file": "保存文件",
   "per client": "可按客户端覆盖",
+  "Use per-client value": "使用客户端自身取值",
+  "Tick the per-client box to keep the {{HOSTNAME}} token and let bootimus fill in each client's name.": "勾选下面的「使用客户端自身取值」即可保留 {{HOSTNAME}} 占位符，由 bootimus 在下发时填入各客户端的名称。",
   "File name is required": "文件名不能为空",
   "Nothing to save — fix the fields first": "没有可保存的内容，请先修正表单",
   "Auto-install file saved": "自动安装文件已保存",
