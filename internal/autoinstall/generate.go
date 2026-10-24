@@ -41,6 +41,10 @@ type Var struct {
 	Options   []Option `json:"options,omitempty"`
 	Required  bool     `json:"required,omitempty"`
 	PerClient bool     `json:"per_client,omitempty"`
+	// Placeholder is the token bootimus substitutes when the file is served for
+	// a specific client ({{HOSTNAME}}, {{MAC}}, ...). When the form value equals
+	// it, the rendered file keeps the token instead of a baked-in literal.
+	Placeholder string `json:"placeholder,omitempty"`
 }
 
 // Template is one built-in answer-file template.
@@ -81,7 +85,8 @@ func commonVars() []Var {
 	return []Var{
 		{
 			Name: "hostname", Label: "Host name", Type: "text", Default: "bootimus-node",
-			Help: "Set per client to give each machine its own name.", Required: true, PerClient: true,
+			Help:     "Tick the per-client box to keep the {{HOSTNAME}} token and let bootimus fill in each client's name.",
+			Required: true, PerClient: true, Placeholder: "{{HOSTNAME}}",
 		},
 		text("username", "User name", "admin", "", true),
 		passwordVar("password", "Password", true),
@@ -156,7 +161,11 @@ var templates = []Template{
 		Summary:  "UEFI single-disk autounattend.xml. Windows 11 still needs TPM 2.0 and Secure Boot unless the image is bypassed.",
 		body:     "templates/autounattend.tmpl",
 		Vars: []Var{
-			text("hostname", "Computer name", "BOOTIMUS-PC", "15 characters max, no special characters.", true),
+			{
+				Name: "hostname", Label: "Computer name", Type: "text", Default: "BOOTIMUS-PC",
+				Help: "15 characters max, no special characters.", Required: true,
+				PerClient: true, Placeholder: "{{HOSTNAME}}",
+			},
 			passwordVar("password", "Administrator password", true),
 			text("win_locale", "Windows locale", "zh-CN", "e.g. zh-CN, en-US", true),
 			text("win_timezone", "Windows time zone", "China Standard Time", "Windows zone name, e.g. China Standard Time, UTC", true),
@@ -201,6 +210,8 @@ func Render(id string, values map[string]string) (string, error) {
 	}
 
 	data := make(map[string]any, len(tpl.Vars)+4)
+	type tokenSwap struct{ sentinel, token string }
+	var swaps []tokenSwap
 	for _, v := range tpl.Vars {
 		val := strings.TrimSpace(values[v.Name])
 		if val == "" {
@@ -208,6 +219,13 @@ func Render(id string, values map[string]string) (string, error) {
 		}
 		if v.Required && val == "" {
 			return "", fmt.Errorf("%s is required", v.Label)
+		}
+		// 勾了「按客户端取值」时保留 token：模板里 {{HOSTNAME}} 这样的字面量不能直接写进
+		// text/template（会被当成函数调用），所以先塞一个哨兵，执行完再换回 token。
+		if v.Placeholder != "" && strings.EqualFold(val, v.Placeholder) {
+			sentinel := "\x00pc:" + v.Name + "\x00"
+			swaps = append(swaps, tokenSwap{sentinel, v.Placeholder})
+			val = sentinel
 		}
 		data[v.Name] = val
 	}
@@ -245,7 +263,12 @@ func Render(id string, values map[string]string) (string, error) {
 		return "", fmt.Errorf("render %q: %w", id, err)
 	}
 
-	out := strings.TrimRight(buf.String(), "\n") + "\n"
+	out := buf.String()
+	for _, s := range swaps {
+		out = strings.ReplaceAll(out, s.sentinel, s.token)
+	}
+
+	out = strings.TrimRight(out, "\n") + "\n"
 	if err := Validate(tpl.Format, out); err != nil {
 		return "", err
 	}
