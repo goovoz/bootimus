@@ -110,6 +110,9 @@ jobs:
           # [bootimus-fork] 自动安装生成器补丁：只判定与告警
           bash .github/scripts/detect-autoinstall-generator.sh /tmp/upstream-tree | tee /tmp/detect-aigen.txt
 
+          # [bootimus-fork] ISO 目录版本号解析补丁：只判定与告警
+          bash .github/scripts/detect-iso-catalog-resolve.sh /tmp/upstream-tree | tee /tmp/detect-isores.txt
+
 
           RESULT=$(sed -n 's/^RESULT=//p' /tmp/detect.txt | head -1)
           REASON=$(sed -n 's/^REASON=//p' /tmp/detect.txt | head -1)
@@ -125,6 +128,8 @@ jobs:
             echo "resume_reason=$(sed -n 's/^REASON=//p' /tmp/detect-resume.txt | head -1)"
             echo "aigen_result=$(sed -n 's/^RESULT=//p' /tmp/detect-aigen.txt | head -1)"
             echo "aigen_reason=$(sed -n 's/^REASON=//p' /tmp/detect-aigen.txt | head -1)"
+            echo "isores_result=$(sed -n 's/^RESULT=//p' /tmp/detect-isores.txt | head -1)"
+            echo "isores_reason=$(sed -n 's/^REASON=//p' /tmp/detect-isores.txt | head -1)"
             echo "branch=sync/$(date -u +%Y%m%d-%H%M)"
           } >> "$GITHUB_OUTPUT"
 
@@ -151,6 +156,12 @@ jobs:
         run: |
           echo "::warning::上游可能已自带自动安装模板生成：${{ steps.inspect.outputs.aigen_reason }}"
           echo "补丁 autoinstall-generator 未自动退役，请人工比对模板覆盖面后再移除。"
+
+      - name: ISO 目录版本号解析补丁是否该让位（仅告警）
+        if: steps.inspect.outputs.isores_result == 'IMPLEMENTED'
+        run: |
+          echo "::warning::上游可能已自带 ISO URL 解析：${{ steps.inspect.outputs.isores_reason }}"
+          echo "补丁 iso-catalog-resolve 未自动退役，请人工确认覆盖范围后再移除。"
 
 
       - name: 上游已实现 → 退役补丁

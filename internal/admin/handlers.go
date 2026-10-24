@@ -3377,6 +3377,37 @@ func filenameFromContentDisposition(cd string) string {
 	return ""
 }
 
+// [bootimus-fork L1] fork-patch: iso-catalog-resolve
+// 目录里带版本号的 ISO 文件名会随上游点版本变化（debian-13.5.0 → 13.7.0），
+// 前端在下载前问一次：这个 URL 还在吗？不在就按目录里最新的同类文件改掉。
+// 解析失败不报错，调用方按原 URL 继续（最多是下载时报 404）。
+func (h *Handler) ResolveISOCatalogURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid body"})
+		return
+	}
+	raw := strings.TrimSpace(req.URL)
+	if raw == "" {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "URL is required"})
+		return
+	}
+	resolved, changed, err := resolveLatestISOURL(raw)
+	data := map[string]any{"url": resolved, "changed": changed}
+	if err != nil {
+		data["url"] = raw
+		data["changed"] = false
+		data["note"] = err.Error()
+	}
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Data: data})
+}
+
 func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL              string `json:"url"`
