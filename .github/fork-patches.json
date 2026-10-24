@@ -77,7 +77,7 @@
     {
       "id": "autoinstall-generator",
       "status": "active",
-      "summary": "自动安装文件支持从内置模板生成：4 套模板（preseed / kickstart / Ubuntu autoinstall / Windows autounattend）+ 变量表单 + 渲染预览 + 格式校验，产物写入现有 autoinstall 文件库",
+      "summary": "自动安装文件支持从内置模板生成：4 套模板（preseed / kickstart / Ubuntu autoinstall / Windows autounattend）+ 变量表单 + 渲染预览 + 格式校验，口令按 $6$ 哈希，产物写入现有 autoinstall 文件库",
       "rationale": "上游只有应答文件的存取，用户得自己从零写四种格式；生成器把「模板 + 变量」这一层补上，产物仍走 Library.Write，因此「附加到镜像 / 按客户端覆盖」逻辑完全不用改",
       "trailer": "Fork-Patch: autoinstall-generator",
       "detector": ".github/scripts/detect-autoinstall-generator.sh",
@@ -92,7 +92,11 @@
         "internal/server/server.go",
         "web/static/index.html",
         "web/static/app.js",
-        "web/static/i18n.js"
+        "web/static/i18n.js",
+        "internal/autoinstall/sha512crypt.go",
+        "internal/autoinstall/sha512crypt_test.go",
+        "go.mod",
+        "go.sum"
       ],
       "retire_policy": "探测到 IMPLEMENTED（上游出现 autoinstall-templates 接口或 generate.go）→ 只告警不自动退役，需人工比对模板覆盖面后再移除",
       "retired_at": null,

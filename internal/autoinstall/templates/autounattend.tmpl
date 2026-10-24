@@ -94,6 +94,18 @@
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
       <UserAccounts>
+        <!-- 本地账户：OOBE 里不再要求创建账户，装完可直接用这个账号登录 -->
+        <LocalAccounts>
+          <LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+            <Name>{{.local_user}}</Name>
+            <DisplayName>{{.local_user}}</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value>{{.local_password}}</Value>
+              <PlainText>true</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
         <AdministratorPassword>
           <Value>{{.password}}</Value>
           <PlainText>true</PlainText>

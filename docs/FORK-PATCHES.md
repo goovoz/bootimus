@@ -304,6 +304,31 @@ preseed / kickstart / autounattend 按各自安装器的要求写明文（文件
 
 探测器：`bash .github/scripts/detect-iso-catalog-resolve.sh --selftest`。
 
+### 与官方文档（bootimus.com/docs/auto-install）的对齐
+
+写过一版之后对照官方文档复查，改了三处：
+
+| 项 | 之前 | 现在 | 为什么 |
+|---|---|---|---|
+| kickstart 默认文件名 | `ks.cfg` | `kickstart.ks` | 服务端按扩展名判类型，`.cfg` 会被当成 **preseed**；文档明确 `.ks` 才是 kickstart |
+| 口令写法 | preseed/kickstart 写明文，autoinstall 用 bcrypt | 三处统一 `$6$`（sha512-crypt） | 文档示例即 `$6$rounds=…`；`identity.password` 要求 crypt(3) 哈希，bcrypt 在部分镜像上不被认可 |
+| Windows 账户 | 只有内置 Administrator 口令 | 额外生成本地管理员账户（用户名/密码） | OOBE 不再要求手工建号，装完直接能登录 |
+
+`$6$` 的实现用 `github.com/GehirnInc/crypt/sha512_crypt`（纯 Go、无传递依赖），
+并用 `openssl passwd -6` 生成的 5 组向量做回归 —— 哈希算错的表现是「装完登录不了」，
+比报错难查得多。root 口令留空时不再回退成用户口令：preseed 不写 root 行、kickstart 走 `rootpw --lock`。
+
+Windows 的 `autounattend.xml` 仍用明文口令（unattend 的 `PlainText` 语义），这是格式限制，不是遗漏。
+
+### 主机名
+
+表单上的 **Random** 按钮按各自系统的默认命名规则生成：
+
+- Windows：`DESKTOP-` + 7 位大写字母数字（Windows 自己生成的计算机名就是这个形态）；
+- Linux：`<发行版家族>-` + 5 位小写字母数字，例如 `ubuntu-k3f9a`。
+
+勾了「使用客户端自身取值」时按钮不生效（此时主机名来自 `{{HOSTNAME}}` 占位符）。
+
 ## 新增一个补丁的步骤
 
 1. 在 `main` 上正常写代码，**一个补丁尽量压成一个提交**，message 末尾加 `Fork-Patch: <id>`

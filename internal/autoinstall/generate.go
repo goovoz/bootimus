@@ -19,7 +19,6 @@ import (
 	"text/template"
 
 	"go.yaml.in/yaml/v3"
-	"golang.org/x/crypto/bcrypt"
 )
 
 //go:embed templates/*.tmpl
@@ -130,7 +129,7 @@ var templates = []Template{
 		Name:     "RHEL / Rocky / AlmaLinux / Fedora (kickstart)",
 		Format:   "kickstart",
 		Distro:   "rocky",
-		Filename: "ks.cfg",
+		Filename: "kickstart.ks",
 		Summary:  "Anaconda kickstart for the Red Hat family, RHEL 8/9/10 and clones.",
 		body:     "templates/kickstart.tmpl",
 		Vars: append(commonVars(),
@@ -167,6 +166,8 @@ var templates = []Template{
 				PerClient: true, Placeholder: "{{HOSTNAME}}",
 			},
 			passwordVar("password", "Administrator password", true),
+			text("local_user", "Local account name", "user", "Created as a member of the Administrators group.", true),
+			passwordVar("local_password", "Local account password", true),
 			text("win_locale", "Windows locale", "zh-CN", "e.g. zh-CN, en-US", true),
 			text("win_timezone", "Windows time zone", "China Standard Time", "Windows zone name, e.g. China Standard Time, UTC", true),
 			text("image_index", "Install image index", "1", "Index inside install.wim / install.esd (/IMAGE/INDEX).", true),
@@ -230,13 +231,6 @@ func Render(id string, values map[string]string) (string, error) {
 		data[v.Name] = val
 	}
 
-	// preseed/kickstart：root 密码留空时跟普通用户一致，免得生成一个空口令的 root
-	if _, ok := data["root_password"]; ok {
-		if s, _ := data["root_password"].(string); s == "" {
-			data["root_password"] = data["password"]
-		}
-	}
-
 	raw, err := templateFiles.ReadFile(tpl.body)
 	if err != nil {
 		return "", fmt.Errorf("template %q unavailable: %w", id, err)
@@ -246,14 +240,20 @@ func Render(id string, values map[string]string) (string, error) {
 		return "", fmt.Errorf("template %q is broken: %w", id, err)
 	}
 
-	if tpl.Format == "autoinstall" {
-		pw, _ := data["password"].(string)
-		hash, hashErr := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
-		if hashErr != nil {
-			return "", fmt.Errorf("hash password: %w", hashErr)
+	// 安装器要的是 crypt(3) 哈希（$6$）：preseed 用 *-crypted，kickstart 用 --iscrypted，
+	// Ubuntu autoinstall 用 identity.password，三处共用一份实现。
+	if pw, ok := data["password"].(string); ok && pw != "" {
+		hash := HashPassword(pw)
+		if hash == "" {
+			return "", fmt.Errorf("cannot hash the password")
 		}
-		data["hashed_password"] = string(hash)
+		data["user_hash"] = hash
+		data["hashed_password"] = hash
 	}
+	// root 口令留空 -> 空字符串，模板据此走 --lock / 不写 root 行；
+	// 始终设置该键，避免 missingkey=error 在 {{if .root_hash}} 上报错。
+	rp, _ := data["root_password"].(string)
+	data["root_hash"] = HashPassword(rp)
 	if pkgs, ok := data["packages"].(string); ok && tpl.Format == "autoinstall" {
 		data["package_list"] = splitPackages(pkgs)
 	}
