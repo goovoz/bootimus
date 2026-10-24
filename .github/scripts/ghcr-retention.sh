@@ -152,6 +152,7 @@ cutoff=$(date -u -d "${GRACE_MINUTES} minutes ago" +%Y-%m-%dT%H:%M:%SZ)
 
 deleted=0
 kept=0
+kept_platform=0
 skipped_recent=0
 failed=0
 
@@ -161,7 +162,13 @@ while IFS=$'\t' read -r id digest tags updated; do
     label=${base:-untagged}
     if grep -qx "$digest" "$KEEP_SET"; then
         kept=$((kept + 1))
-        printf '  keep    %-8s %-71s %s\n' "$label" "$digest" "${tags}" >> "$SUMMARY"
+        note=""
+        if [ -z "$base" ]; then
+            # 没有 tag 的版本就是 index 的平台清单（amd64 / arm64），删了镜像就拉不下来
+            kept_platform=$((kept_platform + 1))
+            note="（平台清单，正常）"
+        fi
+        printf '  keep    %-8s %-71s %s%s\n' "$label" "$digest" "${tags}" "$note" >> "$SUMMARY"
         continue
     fi
     if [[ "$updated" > "$cutoff" ]]; then
@@ -187,7 +194,8 @@ done <<< "$VERSIONS"
 log ""
 cat "$SUMMARY"
 log ""
-log "保留 ${kept} 个（${#BEST_DIGEST[@]} 个版本号），删除 ${deleted} 个，近期跳过 ${skipped_recent} 个，失败 ${failed} 个（dry_run=${DRY_RUN}）"
+log "保留 ${kept} 个（${#BEST_DIGEST[@]} 个版本号 + ${kept_platform} 个平台清单），删除 ${deleted} 个，近期跳过 ${skipped_recent} 个，失败 ${failed} 个（dry_run=${DRY_RUN}）"
+log "说明：Packages 页面上的 untagged 就是这些平台清单（每个版本号 2 个：amd64 / arm64），它们是镜像本体，删掉 docker pull 会失败。"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
@@ -199,7 +207,11 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             echo "| ${base} | \`${BEST_DIGEST[$base]}\` | ${BEST_TAGS[$base]} |"
         done
         echo ""
-        echo "保留 ${kept} 个 / 删除 ${deleted} 个 / 跳过 ${skipped_recent} 个 / 失败 ${failed} 个（dry_run=${DRY_RUN}）"
+        echo "保留 ${kept} 个（含 ${kept_platform} 个平台清单）/ 删除 ${deleted} 个 / 跳过 ${skipped_recent} 个 / 失败 ${failed} 个（dry_run=${DRY_RUN}）"
+        echo ""
+        echo "> Packages 页面显示的 **untagged** 就是这些平台清单：多架构镜像由一个 index 指向"
+        echo "> amd64 / arm64 两份 manifest，buildx 只给 index 打 tag，所以子清单永远显示 untagged。"
+        echo "> 每个保留的版本号固定 2 个，删掉会导致 \`docker pull\` 失败。"
         echo ""
         echo '```'
         cat "$SUMMARY"

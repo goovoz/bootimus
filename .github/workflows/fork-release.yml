@@ -100,13 +100,19 @@ jobs:
           cat SHA256SUMS
 
       # 每个版本号一个 Release；同一个版本号再跑只刷新资产。
-      # 正文不写 build info（那正是之前 Releases 变成构建日志的原因）。
+      #
+      # 正文固定一行 Full Changelog，并且每次整体覆盖（append_body=false），
+      # 所以同一个版本号构建多少次都只有一条。
+      # 之前用 generate_release_notes: true：GitHub 生成的正文是「追加」到已有正文
+      # 后面的，同一个 tag 每构建一次就多一行 Full Changelog（v0.1.77 上堆到了 4 行）。
       - name: 创建/更新 Release 并上传资产
         uses: softprops/action-gh-release@v3  # node24
         with:
           tag_name: v${{ steps.version.outputs.base }}
           name: v${{ steps.version.outputs.base }}
-          generate_release_notes: true
+          body: |
+            **Full Changelog**: https://github.com/${{ github.repository }}/commits/v${{ steps.version.outputs.base }}
+          append_body: false
           files: |
             bootimus-*
             SHA256SUMS
