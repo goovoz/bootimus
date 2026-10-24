@@ -5487,6 +5487,23 @@ async function downloadFromGetISO(rowKey, distroName, releaseLabel, catalogueId,
         return;
     }
     renderGetISOProgress(rowKey, 'Starting…');
+    // [bootimus-fork L1] fork-patch: iso-catalog-resolve
+    // 目录里带版本号的文件名会随上游点版本变化（debian-13.5.0 → 13.7.0），
+    // 下载前先问服务端有没有更新的同类文件；解析不出来就按原 URL 继续。
+    let targetURL = url;
+    try {
+        const rr = await authFetch(`${API_BASE}/iso-catalog/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+        });
+        const rd = await rr.json();
+        if (rd.success && rd.data && rd.data.url && rd.data.url !== url) {
+            targetURL = rd.data.url;
+            input.value = targetURL;
+            showNotification('URL updated to the current release', 'info');
+        }
+    } catch (e) { /* 解析是可选步骤 */ }
     // [bootimus-fork L1] fork-patch: download-proxy
     const useProxyEl = document.getElementById('get-iso-use-proxy');
     const useProxy = !!(useProxyEl && useProxyEl.checked);

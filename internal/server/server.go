@@ -1763,6 +1763,8 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/api/profiles/delete", adminWrap(adminHandler.DeleteDistroProfile))
 	mux.HandleFunc("/api/profiles/update", adminWrap(adminHandler.UpdateDistroProfiles))
 	mux.HandleFunc("/api/iso-catalog", readWrap(adminHandler.GetISOCatalogue))
+	// [bootimus-fork L1] fork-patch: iso-catalog-resolve
+	mux.HandleFunc("/api/iso-catalog/resolve", adminWrap(adminHandler.ResolveISOCatalogURL))
 	mux.HandleFunc("/api/images/boot-method", adminWrap(adminHandler.SetBootMethod))
 	mux.HandleFunc("/api/images/winpe", adminWrap(adminHandler.SetWinPEWIM))
 
