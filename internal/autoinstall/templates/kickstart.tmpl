@@ -11,7 +11,7 @@ network --bootproto=dhcp --device=link --activate --hostname={{.hostname}}
 {{if .root_hash}}rootpw --iscrypted {{.root_hash}}
 {{else}}rootpw --lock
 {{end}}user --name={{.username}} --groups=wheel --iscrypted --password={{.user_hash}}
-{{if .ssh_key}}sshkey --username={{.username}} "{{.ssh_key}}"
+{{range .ssh_key_list}}sshkey --username={{$.username}} "{{.}}"
 {{end}}services --enabled=sshd
 zerombr
 clearpart --all --initlabel
