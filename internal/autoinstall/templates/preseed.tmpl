@@ -1,5 +1,6 @@
 # Bootimus preseed file — Debian / Ubuntu legacy (d-i) installer
 # Attach this file to the image in Bootimus; the installer fetches it over HTTP.
+# 结构参照 bootimus 官方文档 docs/auto-install 里的 preseed 示例。
 
 #### Localization
 d-i debian-installer/locale string {{.locale}}
@@ -17,13 +18,12 @@ d-i mirror/http/directory string {{.mirror_dir}}
 d-i mirror/http/proxy string
 
 #### Accounts
+# 按官方文档的写法用 crypted（$6$），文件里不出现明文口令
 d-i passwd/root-login boolean {{.root_login}}
-d-i passwd/root-password password {{.root_password}}
-d-i passwd/root-password-again password {{.root_password}}
-d-i passwd/user-fullname string {{.username}}
+{{if .root_hash}}d-i passwd/root-password-crypted password {{.root_hash}}
+{{end}}d-i passwd/user-fullname string {{.username}}
 d-i passwd/username string {{.username}}
-d-i passwd/user-password password {{.password}}
-d-i passwd/user-password-again password {{.password}}
+d-i passwd/user-password-crypted password {{.user_hash}}
 
 #### Clock
 d-i clock-setup/utc boolean true

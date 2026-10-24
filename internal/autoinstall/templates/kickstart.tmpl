@@ -1,14 +1,18 @@
 # Bootimus kickstart file — RHEL / Rocky Linux / AlmaLinux / Fedora
 # Attach this file to the image in Bootimus; the installer fetches it over HTTP.
+# 结构参照 bootimus 官方文档 docs/auto-install 里的 kickstart 示例：
+# 口令用 --iscrypted（$6$），公钥用 sshkey 指令而不是在 %post 里手写文件。
 #version=RHEL9
 text
 lang {{.locale}}
 keyboard --vckeymap={{.keymap}} --xlayouts='{{.keymap}}'
 timezone {{.timezone}} --utc
 network --bootproto=dhcp --device=link --activate --hostname={{.hostname}}
-rootpw --plaintext {{.root_password}}
-user --name={{.username}} --groups=wheel --plaintext --password={{.password}}
-services --enabled=sshd
+{{if .root_hash}}rootpw --iscrypted {{.root_hash}}
+{{else}}rootpw --lock
+{{end}}user --name={{.username}} --groups=wheel --iscrypted --password={{.user_hash}}
+{{if .ssh_key}}sshkey --username={{.username}} "{{.ssh_key}}"
+{{end}}services --enabled=sshd
 zerombr
 clearpart --all --initlabel
 {{if eq .partition "lvm"}}autopart --type=lvm
@@ -24,8 +28,4 @@ reboot --eject
 
 %post
 systemctl enable sshd
-{{if .ssh_key}}mkdir -p /root/.ssh
-echo "{{.ssh_key}}" > /root/.ssh/authorized_keys
-chmod 700 /root/.ssh
-chmod 600 /root/.ssh/authorized_keys
-{{end}}%end
+%end
