@@ -2840,6 +2840,7 @@ const API_REFERENCE = [
         { method: 'GET',    path: '/api/isos',                     desc: 'List ISO files on disk.' },
         { method: 'GET',    path: '/api/downloads',                desc: 'List active downloads.' },
         { method: 'GET',    path: '/api/downloads/progress?filename={fn}', desc: 'Download progress.' },
+        { method: 'POST',   path: '/api/iso-catalog/resolve',      desc: 'Body: <code>{url}</code>. Resolve the current file name for a versioned catalog URL before downloading.' },
     ]},
     { category: 'Image Groups', endpoints: [
         { method: 'GET',    path: '/api/groups',                   desc: 'List image groups.' },
@@ -2880,6 +2881,8 @@ const API_REFERENCE = [
         { method: 'POST',   path: '/api/autoinstall-files/upload', desc: 'Multipart: <code>file</code>.' },
         { method: 'GET',    path: '/api/autoinstall-files/download?filename={fn}', desc: 'Download file.' },
         { method: 'DELETE', path: '/api/autoinstall-files/delete?filename={fn}', desc: 'Delete file.' },
+        { method: 'GET',    path: '/api/autoinstall-templates',    desc: 'Built-in answer-file templates with their variables.' },
+        { method: 'POST',   path: '/api/autoinstall/render',       desc: 'Body: <code>{template, values}</code>. Render and validate an answer file.' },
     ]},
     { category: 'Custom Files', endpoints: [
         { method: 'GET',    path: '/api/files',                    desc: 'List all custom files.' },
@@ -2916,6 +2919,8 @@ const API_REFERENCE = [
         { method: 'GET',    path: '/api/theme',                    desc: 'Menu theme + defaults.' },
         { method: 'PUT',    path: '/api/theme',                    desc: 'Body: <code>{title, menu_timeout, default_menu_item}</code>' },
         { method: 'GET',    path: '/api/backup/export',            desc: 'Export full DB backup as JSON.' },
+        { method: 'GET',    path: '/api/proxy-config',             desc: 'Outbound proxy used for ISO downloads. The password is masked.' },
+        { method: 'PUT',    path: '/api/proxy-config',             desc: 'Body: <code>{address, username, password}</code>. Save the proxy (POST also accepted).' },
     ]},
     { category: 'Logs', endpoints: [
         { method: 'GET',    path: '/api/logs',                     desc: 'Boot log entries.' },
