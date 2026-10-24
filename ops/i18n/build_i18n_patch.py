@@ -28,7 +28,8 @@ def load_map() -> dict:
     merged = {}
     for name in ('zh_part1.json', 'zh_part2.json', 'zh_part3.json', 'zh_part4.json',
                  'zh_part5.json', 'zh_part6.json', 'zh_part7.json', 'zh_part9.json',
-                 'zh_part10.json'):
+                 'zh_part10.json',
+                 'zh_part11.json'):
         p = SRC / name
         if not p.exists():
             sys.exit(f'缺少 {p}')
