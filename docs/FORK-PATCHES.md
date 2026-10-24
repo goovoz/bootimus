@@ -366,6 +366,40 @@ Windows 走 SMB：`patchWindowsBootWim()` 把**库里的文件原文**写到 `Z:
   截断到 15 字符，纯数字或清空后为空则退回 `*`。
   这类值只会在 specialize 阶段（装完重启后）才失败，是最难查的一类错误，所以在渲染时就拦住。
 
+### 软件源镜像只列实测可用的站
+
+模板里的 `mirror` 下拉不是抄来的清单：**每一家都在部署机（.205）上真的取过仓库索引**才算可用，
+用的还是安装器自己的 UA 和路径。
+
+| 发行版 | 判据 | 通过的站 |
+|---|---|---|
+| Debian | `/{path}/dists/stable/Release` 含 `Suite:` | 阿里云、华为云、腾讯云、中科大、清华 TUNA、网易、南大、华中科大 |
+| Ubuntu | `/{path}/dists/noble/Release` 含 `Suite:` | 同上 8 家（另外北外、上交大也是通的，没进下拉） |
+| Rocky 9 | `/{path}/9/BaseOS/x86_64/os/repodata/repomd.xml` 含 `<repomd` | 阿里云 `/rockylinux`、华为云 `/rockylinux`、腾讯云 `/rocky`、南大 `/rocky` |
+| AlmaLinux 9 | 同上 | 阿里云、华为云、腾讯云、南大（都是 `/almalinux`） |
+
+所以 kickstart 的下拉只有 4 家加「官方」：清华 TUNA、网易、中科大、华中科大**没有** Rocky/Alma 的仓库，
+放进去就是必然 404/首页 HTML。**路径也要按站分别记**（`/rockylinux` 与 `/rocky` 是两家不同的布局），
+代码里存的是 `family -> path` 的表，不是拼 host 猜路径。
+
+三套模板的语义不同，别混：
+
+- **preseed**：写 `d-i mirror/http/hostname` + `directory`，装机全程从镜像取包；
+- **autoinstall**：写 `apt.primary.uri`，subiquity 装包时走镜像；选「官方」就不写这一段，
+  交回 geoip 默认（通常是 archive.ubuntu.com）；
+- **kickstart**：安装源是 bootimus 自己提供的 ISO 树（`inst.repo=`），镜像只在 `%post` 里改
+  `dnf` 的 repo 文件 —— 而且只替换 host 一段，保留发行版自带的 `$releasever` / `$contentdir`，
+  这样换小版本、仓库布局变了也不会失效。
+
+### 为什么 Ubuntu 同时有 preseed 和 autoinstall
+
+官方文档写「Ubuntu 使用 cloud-init」，指的是 **Ubuntu 20.04 及以后**（Subiquity/autoinstall）。
+preseed 是更早的 debian-installer 路线：Ubuntu 到 20.04 为止用它，Debian 至今仍在用。
+两个模板的名字因此改成带版本范围的写法，免得看起来像重复功能：
+
+- `Debian / Ubuntu up to 20.04 (preseed)`
+- `Ubuntu Server 20.04+ (autoinstall / cloud-init)`
+
 ## 新增一个补丁的步骤
 
 1. 在 `main` 上正常写代码，**一个补丁尽量压成一个提交**，message 末尾加 `Fork-Patch: <id>`
