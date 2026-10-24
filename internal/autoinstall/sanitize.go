@@ -25,7 +25,7 @@ import (
 
 var (
 	reHostname   = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
-	reUserName   = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
+	reUserName   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 	reKeymap     = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	reLocale     = regexp.MustCompile(`^[A-Za-z0-9_@.-]+$`)
 	reTimeZone   = regexp.MustCompile(`^[A-Za-z0-9_+/-]+$`)
@@ -124,7 +124,7 @@ func sanitizeValue(format string, v Var, val string) (string, error) {
 		if reTokenRef.MatchString(val) {
 			return "", fmt.Errorf("%s: %s is a per-client token, but this field does not support it", v.Label, val)
 		}
-		return "", fmt.Errorf("%s: %q contains characters that would break the answer file", v.Label, val)
+		return "", fmt.Errorf("%s: %q is not a valid value here (spaces, quotes and control characters are not allowed)", v.Label, val)
 	}
 
 	// Windows 的计算机名要先按 Windows 的规则清洗，再转义。顺序反了的话，
