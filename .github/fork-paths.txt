@@ -6,6 +6,7 @@
 .github/scripts/detect-i18n-zh-full.sh
 .github/scripts/detect-download-proxy.sh
 .github/scripts/detect-autoinstall-generator.sh
+.github/scripts/detect-iso-catalog-resolve.sh
 .github/scripts/detect-download-resume.sh
 .github/scripts/mark_retired.py
 .github/workflows/sync-upstream.yml
@@ -57,3 +58,6 @@ ops/watchdog/default.env
 #   internal/autoinstall/generate.go                 —— 模板目录 + 渲染 + 格式校验
 #   internal/autoinstall/templates/*.tmpl            —— 4 套内置模板（go:embed）
 #   internal/autoinstall/generate_test.go            —— 渲染/校验回归测试
+# 补丁 iso-catalog-resolve：
+#   internal/admin/iso_resolve.go        —— 目录列表里挑最新的同类文件（数字序比较）
+#   internal/admin/iso_resolve_test.go   —— 解析逻辑回归测试

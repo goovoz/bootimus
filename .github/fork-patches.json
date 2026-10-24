@@ -97,6 +97,26 @@
       "retire_policy": "探测到 IMPLEMENTED（上游出现 autoinstall-templates 接口或 generate.go）→ 只告警不自动退役，需人工比对模板覆盖面后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
+    },
+    {
+      "id": "iso-catalog-resolve",
+      "status": "active",
+      "summary": "「获取镜像」下载前解析真实文件名：目录里的 ISO 带点版本号（debian-13.5.0 → 13.7.0），URL 404 时按目录里最新的同类文件自动改写，并按 15 分钟缓存",
+      "rationale": "distro-profiles.json 里的路径只能写死版本号，上游一点版本升级就整条链接失效；靠人工跟版本不现实，改成下载前向源站确认",
+      "trailer": "Fork-Patch: iso-catalog-resolve",
+      "detector": ".github/scripts/detect-iso-catalog-resolve.sh",
+      "touches": [
+        "internal/admin/iso_resolve.go",
+        "internal/admin/iso_resolve_test.go",
+        "internal/admin/handlers.go",
+        "internal/server/server.go",
+        "web/static/app.js",
+        "distro-profiles.json",
+        "internal/profiles/distro-profiles.json"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游有 iso-catalog/resolve 或版本号解析）→ 只告警不自动退役，需人工确认覆盖范围（目录列表解析 + 数字序比较）后再移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
     }
   ]
 }
