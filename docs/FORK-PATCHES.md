@@ -324,10 +324,47 @@ Windows 的 `autounattend.xml` 仍用明文口令（unattend 的 `PlainText` 语
 
 表单上的 **Random** 按钮按各自系统的默认命名规则生成：
 
-- Windows：`DESKTOP-` + 7 位大写字母数字（Windows 自己生成的计算机名就是这个形态）；
+- Windows：`DESKTOP-` + 7 位大写字母数字（Windows 自己生成的计算机名就是这个形态）。注意默认值是 `*`，交给 Windows 自己生成；Random 按钮生成的是**固定**名字，会写死在这份文件里供所有客户端共用；
 - Linux：`<发行版家族>-` + 5 位小写字母数字，例如 `ubuntu-k3f9a`。
 
 勾了「使用客户端自身取值」时按钮不生效（此时主机名来自 `{{HOSTNAME}}` 占位符）。
+
+### 引导模式必须与固件一致（GPT / MBR）
+
+`autounattend.xml` 里的分区表不是随便写的：**Legacy BIOS 只能装到 MBR 盘，UEFI 只能装到 GPT 盘**。
+不匹配时 Setup 的原话是「Windows 无法安装到这个磁盘。选中的磁盘采用 GPT 分区形式」，
+点确定就取消安装——不写日志、不解释，一轮试装二十分钟白费。
+
+所以模板有 `firmware` 变量，默认 `uefi`：
+
+| 取值 | 分区 | 安装目标 |
+|---|---|---|
+| `uefi` | `EFI` 300MB(FAT32) + `MSR` 16MB + `Primary` 剩余(NTFS, C:) | PartitionID 3 |
+| `bios` | `Primary` 500MB(NTFS、活动) + `Primary` 剩余(NTFS, C:) | PartitionID 2 |
+
+判断客户端是哪种，看服务端日志就够了：
+
+```
+proxyDHCP: DISCOVER -> bc:24:11:dc:91:c7 arch=0 bootfile=undionly.kpxe   # Legacy BIOS
+proxyDHCP: DISCOVER -> bc:24:11:dc:91:c7 arch=7 bootfile=ipxe.efi        # UEFI
+```
+
+`arch=0` + `undionly.kpxe` 就是 Legacy BIOS，此时 wimboot 起的 WinPE 也是 BIOS 模式，
+答案文件必须选 `bios`。（wimboot 会按 iPXE 的启动模式自动选 `bootmgr` 或 `bootmgfw.efi`，
+所以固件模式是客户端 PXE 时就定死的，服务端改不了。）
+
+### Windows 的计算机名不能用占位符
+
+Windows 走 SMB：`patchWindowsBootWim()` 把**库里的文件原文**写到 `Z:\AutoUnattend.xml`，
+`startnet.cmd` 再拷到 `X:\` 交给 `setup.exe /unattend:X:\AutoUnattend.xml`。这一层是 **image 级**、
+不是 per-client，所以 `{{HOSTNAME}}` 不会被替换，只会原样变成计算机名（早期版本正是这么错的）。
+
+现在的做法：
+
+- 默认值 `*` —— Windows 自己生成 `DESKTOP-XXXXXXX`，一份文件供整支舰队用也不会重名；
+- 填具体值时先按 Windows 规则清洗：`\ / : * ? " < > |`、空格、句点等换成 `-`，
+  截断到 15 字符，纯数字或清空后为空则退回 `*`。
+  这类值只会在 specialize 阶段（装完重启后）才失败，是最难查的一类错误，所以在渲染时就拦住。
 
 ## 新增一个补丁的步骤
 

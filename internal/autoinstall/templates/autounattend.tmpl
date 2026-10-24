@@ -1,7 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Bootimus autounattend.xml — Windows 10 / 11 (UEFI, single disk) -->
-<!-- Attach this file to the image in Bootimus; Setup picks it up automatically. -->
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
+<!-- Bootimus autounattend.xml — Windows 10 / 11 / Server, single disk.
+     The boot mode below MUST match how the client PXE-boots:
+       uefi -> GPT (EFI + MSR + Primary),  install target = partition 3
+       bios -> MBR (System + Primary),     install target = partition 2
+     A mismatch aborts Setup with "Windows cannot be installed to this disk:
+     the selected disk is of the GPT partition style".
+     ComputerName "*" lets Windows generate DESKTOP-XXXXXXX per machine, which
+     is what you want when one file is shared by a whole fleet. -->
+<unattend xmlns="urn:schemas-microsoft-com:unattend" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <settings pass="windowsPE">
     <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <SetupUILanguage>
@@ -14,10 +20,38 @@
     </component>
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <DiskConfiguration>
-        <Disk wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+        <Disk wcm:action="add">
           <DiskID>{{.disk_id}}</DiskID>
           <WillWipeDisk>true</WillWipeDisk>
-          <CreatePartitions>
+{{if eq .firmware "bios"}}          <CreatePartitions>
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>Primary</Type>
+              <Size>500</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Active>true</Active>
+              <Format>NTFS</Format>
+              <Label>System</Label>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>2</PartitionID>
+              <Format>NTFS</Format>
+              <Label>Windows</Label>
+              <Letter>C</Letter>
+            </ModifyPartition>
+          </ModifyPartitions>
+{{else}}          <CreatePartitions>
             <CreatePartition wcm:action="add">
               <Order>1</Order>
               <Type>EFI</Type>
@@ -53,19 +87,19 @@
               <Letter>C</Letter>
             </ModifyPartition>
           </ModifyPartitions>
-        </Disk>
+{{end}}        </Disk>
       </DiskConfiguration>
       <ImageInstall>
         <OSImage>
           <InstallFrom>
-            <MetaData wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+            <MetaData wcm:action="add">
               <Key>/IMAGE/INDEX</Key>
               <Value>{{.image_index}}</Value>
             </MetaData>
           </InstallFrom>
           <InstallTo>
             <DiskID>{{.disk_id}}</DiskID>
-            <PartitionID>3</PartitionID>
+            <PartitionID>{{if eq .firmware "bios"}}2{{else}}3{{end}}</PartitionID>
           </InstallTo>
         </OSImage>
       </ImageInstall>
@@ -94,9 +128,9 @@
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
       <UserAccounts>
-        <!-- 本地账户：OOBE 里不再要求创建账户，装完可直接用这个账号登录 -->
+        <!-- Local account: OOBE no longer asks to create one, log in with this after install -->
         <LocalAccounts>
-          <LocalAccount wcm:action="add" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <LocalAccount wcm:action="add">
             <Name>{{.local_user}}</Name>
             <DisplayName>{{.local_user}}</DisplayName>
             <Group>Administrators</Group>

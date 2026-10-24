@@ -75,7 +75,7 @@ func TestEveryTemplateRenders(t *testing.T) {
 		"debian-preseed":       {"d-i passwd/username string admin", "d-i netcfg/get_hostname string bootimus-node"},
 		"rhel-kickstart":       {"user --name=admin", "%packages", "autopart --type=lvm"},
 		"ubuntu-autoinstall":   {"autoinstall:", `hostname: "bootimus-node"`, "layout:"},
-		"windows-autounattend": {"<ComputerName>BOOTIMUS-PC</ComputerName>", "<AcceptEula>true</AcceptEula>", "<LocalAccount"},
+		"windows-autounattend": {"<ComputerName>*</ComputerName>", "<AcceptEula>true</AcceptEula>", "<LocalAccount"},
 	}
 	for _, tpl := range Templates() {
 		out, err := Render(tpl.ID, fillValues(t, tpl))
@@ -228,6 +228,14 @@ func TestPerClientHostnameKeepsToken(t *testing.T) {
 				hostnameVar = v
 			}
 		}
+		// Windows 的答案文件是 image 级预置到 SMB 共享上的原文，服务端不做按客户端替换，
+		// 因此这里不能声明占位符（否则 {{HOSTNAME}} 会原样变成计算机名）。
+		if tpl.Format == "autounattend" {
+			if hostnameVar.Placeholder != "" || hostnameVar.PerClient {
+				t.Errorf("%s: Windows 答案文件不支持按客户端占位符，hostname 不应声明 Placeholder/PerClient", tpl.ID)
+			}
+			continue
+		}
 		if hostnameVar.Placeholder == "" {
 			t.Errorf("%s: hostname 没有声明占位符", tpl.ID)
 			continue
@@ -262,6 +270,106 @@ func TestPerClientTokenIsOnlyForDeclaredVars(t *testing.T) {
 	if !strings.Contains(out, "--name={{HOSTNAME}}") {
 		t.Errorf("未声明的字段不应被当作占位符处理:\n%s", out)
 	}
+}
+
+// Windows Setup 只认与固件一致的分区表：BIOS 启动装到 GPT 盘上会直接报
+// "Windows cannot be installed to this disk ... GPT partition style"。
+// 模板必须两种方案都能出，且 InstallTo 分区号跟着走。
+func TestWindowsFirmwareSelectsPartitionLayout(t *testing.T) {
+	cases := []struct {
+		firmware string
+		want     []string
+		notWant  []string
+	}{
+		{
+			firmware: "uefi",
+			want:     []string{"<Type>EFI</Type>", "<Type>MSR</Type>", "<Format>FAT32</Format>", "<PartitionID>3</PartitionID>"},
+			notWant:  []string{"<Active>true</Active>"},
+		},
+		{
+			firmware: "bios",
+			want:     []string{"<Active>true</Active>", "<Size>500</Size>", "<PartitionID>2</PartitionID>"},
+			notWant:  []string{"<Type>EFI</Type>", "<Type>MSR</Type>", "<Format>FAT32</Format>"},
+		},
+	}
+	for _, c := range cases {
+		out, err := Render("windows-autounattend", map[string]string{
+			"password": "AdminPass123",
+			"firmware": c.firmware,
+		})
+		if err != nil {
+			t.Fatalf("%s: render: %v", c.firmware, err)
+		}
+		if err := Validate("autounattend", out); err != nil {
+			t.Fatalf("%s: produced invalid XML: %v", c.firmware, err)
+		}
+		for _, want := range c.want {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: missing %q\n%s", c.firmware, want, out)
+			}
+		}
+		for _, nw := range c.notWant {
+			if strings.Contains(out, nw) {
+				t.Errorf("%s: must not contain %q\n%s", c.firmware, nw, out)
+			}
+		}
+	}
+}
+
+func TestWindowsFirmwareDefaultsToUEFI(t *testing.T) {
+	out, err := Render("windows-autounattend", map[string]string{"password": "AdminPass123"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, "<Type>EFI</Type>") {
+		t.Errorf("默认应为 UEFI/GPT:\n%s", out)
+	}
+}
+
+func TestWindowsComputerNameIsSanitised(t *testing.T) {
+	cases := map[string]string{
+		"Lab PC 01":            "Lab-PC-01",
+		"verylongmachine-name": "verylongmachine", // 截断到 15
+		"12345":                "*",               // 纯数字 -> 交给 Windows 生成
+		"  ":                   "*",
+		"{{HOSTNAME}}":         "HOSTNAME", // 花括号被清掉后还能救回来
+	}
+	for in, want := range cases {
+		out, err := Render("windows-autounattend", map[string]string{
+			"password": "AdminPass123",
+			"hostname": in,
+		})
+		if err != nil {
+			t.Fatalf("%q: render: %v", in, err)
+		}
+		got := between(out, "<ComputerName>", "</ComputerName>")
+		if got != want {
+			t.Errorf("ComputerName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWindowsComputerNameKeepsStar(t *testing.T) {
+	out, err := Render("windows-autounattend", map[string]string{"password": "AdminPass123"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if got := between(out, "<ComputerName>", "</ComputerName>"); got != "*" {
+		t.Fatalf("默认 ComputerName 应为 *（Windows 自行生成），实际 %q", got)
+	}
+}
+
+func between(s, open, close string) string {
+	i := strings.Index(s, open)
+	if i < 0 {
+		return ""
+	}
+	i += len(open)
+	j := strings.Index(s[i:], close)
+	if j < 0 {
+		return ""
+	}
+	return s[i : i+j]
 }
 
 func TestValidateRejectsBrokenFiles(t *testing.T) {

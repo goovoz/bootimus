@@ -157,13 +157,20 @@ var templates = []Template{
 		Format:   "autounattend",
 		Distro:   "windows",
 		Filename: "autounattend.xml",
-		Summary:  "UEFI single-disk autounattend.xml. Windows 11 still needs TPM 2.0 and Secure Boot unless the image is bypassed.",
+		Summary:  "Single-disk autounattend.xml. Set the boot mode to match the client's PXE firmware: UEFI builds GPT, BIOS builds MBR, and a mismatch aborts Setup with \"Windows cannot be installed to this disk: the selected disk is of the GPT partition style\". Windows 11 still needs TPM 2.0 and Secure Boot unless the image is bypassed.",
 		body:     "templates/autounattend.tmpl",
 		Vars: []Var{
 			{
-				Name: "hostname", Label: "Computer name", Type: "text", Default: "BOOTIMUS-PC",
-				Help: "15 characters max, no special characters.", Required: true,
-				PerClient: true, Placeholder: "{{HOSTNAME}}",
+				Name: "firmware", Label: "Boot mode (firmware)", Type: "select", Default: "uefi",
+				Options: []Option{
+					{Value: "uefi", Label: "UEFI (GPT)"},
+					{Value: "bios", Label: "BIOS / legacy (MBR)"},
+				},
+				Help: "Must match how this client PXE-boots. The bootimus log shows arch=0 / undionly.kpxe for BIOS and arch=7 / ipxe.efi for UEFI.",
+			},
+			{
+				Name: "hostname", Label: "Computer name", Type: "text", Default: "*",
+				Help: "* = Windows generates DESKTOP-XXXXXXX for each machine. A fixed value (15 chars max, no spaces) is baked into this one file, which every client booting the image shares.",
 			},
 			passwordVar("password", "Administrator password", true),
 			text("local_user", "Local account name", "user", "Created as a member of the Administrators group.", true),
@@ -263,6 +270,15 @@ func Render(id string, values map[string]string) (string, error) {
 		data["package_list"] = splitPackages(pkgs)
 	}
 
+	// Windows 计算机名有硬约束（<=15 字符、不含 \ / : * ? " < > | 与空格、不能纯数字）。
+	// 一个答案文件被整支舰队共用，所以 "*" 交给 Windows 自己生成 DESKTOP-XXXXXXX；
+	// 填了具体名字时先清洗，否则要等 specialize 阶段（装完重启后）才失败。
+	if tpl.Format == "autounattend" {
+		if h, _ := data["hostname"].(string); h != "" && h != "*" && !strings.HasPrefix(h, "\x00pc:") {
+			data["hostname"] = windowsComputerName(h)
+		}
+	}
+
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("render %q: %w", id, err)
@@ -328,4 +344,37 @@ func Validate(format, content string) error {
 		return fmt.Errorf("unsupported format %q", format)
 	}
 	return nil
+}
+
+// windowsComputerName coerces a value into something Windows Setup accepts:
+// 15 characters or fewer, none of \ / : * ? " < > | or spaces, not all digits.
+// Values that cannot be salvaged become "*" (let Windows generate the name).
+func windowsComputerName(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\', '/', ':', '*', '?', '"', '<', '>', '|', ' ', '\t', '.', ',', ';', '{', '}', '(', ')':
+			b.WriteRune('-')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if r := []rune(out); len(r) > 15 {
+		out = string(r[:15])
+	}
+	out = strings.TrimRight(out, "-")
+
+	allDigits := out != ""
+	for _, r := range out {
+		if r < '0' || r > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if out == "" || allDigits {
+		return "*"
+	}
+	return out
 }
