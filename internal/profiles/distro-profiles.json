@@ -483,8 +483,8 @@
         {"region": "DE (Kumi)", "base": "https://mirror.kumi.systems/kali-images/current"}
       ],
       "releases": [
-        {"label": "2024.4 Live (amd64)", "path": "/kali-linux-2026.3-live-amd64.iso"},
-        {"label": "2024.4 Installer (amd64)", "path": "/kali-linux-2026.3-installer-amd64.iso"}
+        {"label": "2026.3 Installer (amd64)", "path": "/kali-linux-2026.3-installer-amd64.iso"},
+        {"label": "2026.3 Netinst (amd64)", "path": "/kali-linux-2026.3-installer-netinst-amd64.iso"}
       ]
     },
     {
