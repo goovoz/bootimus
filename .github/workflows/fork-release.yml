@@ -1,7 +1,10 @@
 name: Release (fork)
 # [bootimus-fork L0] fork 自己的发布流水线。
-# 与上游 release.yml 产物一致（4 个平台二进制 + SHA256SUMS + GitHub Release），
-# 区别：镜像推到 ghcr.io/goovoz/bootimus。
+# 与上游 release.yml 产物一致（4 个平台二进制 + SHA256SUMS），
+# 区别：
+#   · 二进制只作为 workflow 构建产物（Artifacts）上传，**不创建 GitHub Release**——
+#     每个小改动都写一条 Release 只会把 Releases 页面变成构建日志；
+#   · 镜像推到 ghcr.io/goovoz/bootimus，旧 digest 由 ghcr-retention.yml 定期清掉。
 #
 # 版本口径（重要）：
 #   基线版本 = VERSION 文件 / tag / 手动输入，纯 x.y.z，**必须与上游保持一致**，
@@ -32,7 +35,7 @@ on:
         default: ""
 
 permissions:
-  contents: write # 创建 Release、上传资产
+  contents: read
   packages: write # 推 ghcr 镜像
 
 concurrency:
@@ -44,7 +47,7 @@ env:
 
 jobs:
   binaries:
-    name: 构建二进制并发布 Release
+    name: 构建二进制并上传构建产物
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7  # node24
@@ -94,41 +97,15 @@ jobs:
           sha256sum bootimus-* > SHA256SUMS
           cat SHA256SUMS
 
-      - name: 创建 Release 并上传资产
-        uses: softprops/action-gh-release@v3  # node24
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4  # node24
         with:
-          tag_name: v${{ steps.version.outputs.base }}
-          name: v${{ steps.version.outputs.base }}
-          generate_release_notes: true
-          files: |
+          name: bootimus-${{ steps.version.outputs.build_version }}
+          path: |
             bootimus-*
             SHA256SUMS
-          fail_on_unmatched_files: true
-
-      # append_body 只在「更新已有 release」时生效，创建时会被忽略，所以创建后用 API 写正文。
-      # 重跑同一个 tag 时 gh-release 会再加一行 Full Changelog，这里顺手去重 + 幂等追加说明。
-      - name: 写入 fork 构建说明
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          TAG="v${{ steps.version.outputs.base }}"
-          BUILD="${{ steps.version.outputs.build_version }}"
-          TAGVER="${{ steps.version.outputs.tag_version }}"
-          RID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .id)
-          BODY=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RID}" --jq '.body // ""')
-          # 只保留第一条 Full Changelog；清掉上一轮写的 fork 说明块，下面重新生成
-          BODY=$(printf '%s\n' "$BODY" | awk '/^\*\*Full Changelog\*\*/{ if (seen++) next } { print }')
-          # 清掉上一轮写的说明块（含早期那版「这是 fork 构建」段落），下面重新生成
-          BODY=$(printf '%s\n' "$BODY" | sed '/^## fork 构建信息$/,/^---$/d')
-          BODY=$(printf '%s\n' "$BODY" | sed '/^\*\*这是 fork 构建\*\*/,/^需要上游原版请取/d')
-          # 用 printf 拼说明块：heredoc 里以 - 开头的行会把 YAML 块标量顶出缩进
-          NOTE=$(printf '\n\n## fork 构建信息\n\n- 版本串：`%s`（commit `%s`）\n- 基线上游：`%s`，加本地补丁 `iso-url-no-suffix`（不带 .iso 后缀的链接也能下载）、`i18n-zh-full`（管理台中文全量覆盖）\n- 镜像 tag：`%s:%s`、`%s:sha-%s`\n- 需要上游原版请取 [garybowers/bootimus](https://github.com/garybowers/bootimus) 的发布\n\n---\n' \
-            "${BUILD}" "${{ github.sha }}" "${TAG}" \
-            "${IMAGE}" "${TAGVER}" "${IMAGE}" "${{ steps.version.outputs.rev }}")
-          printf '%s%s\n' "$BODY" "$NOTE" > /tmp/release-body.md
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RID}" -F body=@/tmp/release-body.md >/dev/null
-          echo "正文已更新（构建 ${BUILD}）"
+          if-no-files-found: error
+          retention-days: 90
 
   docker:
     name: 构建并推送多架构镜像
@@ -201,28 +178,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: 把 digest 写进 Release 正文
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          TAG="v${{ steps.version.outputs.base }}"
-          if ! RID=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .id 2>/dev/null); then
-            echo "还没有 ${TAG} 的 Release（binaries 作业未跑），跳过"
-            exit 0
-          fi
-          D="${{ steps.build.outputs.digest }}"
-          [ -n "$D" ] || { echo "digest 为空，跳过"; exit 0; }
-          BODY=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RID}" --jq '.body // ""')
-          BODY=$(printf '%s\n' "$BODY" | sed '/^## 镜像 digest$/,/^$/d')
-          NOTE=$(printf '\n## 镜像 digest\n\n- 本次构建：`%s`\n- 镜像：`%s:%s`\n- 固定引用（最可复现）：`image: %s@%s`\n' \
-            "${{ steps.version.outputs.build_version }}" \
-            "${IMAGE}" "${{ steps.version.outputs.tag_version }}" \
-            "${IMAGE}" "$D")
-          printf '%s%s\n' "$BODY" "$NOTE" > /tmp/digest-body.md
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RID}" -F body=@/tmp/digest-body.md >/dev/null
-          echo "Release 正文已写入 digest $D"
-
       - name: 结果汇总
         if: always()
         run: |
@@ -233,7 +188,7 @@ jobs:
             echo "|---|---|"
             echo "| 基线版本 | v${{ steps.version.outputs.base }} |"
             echo "| 版本串 | \`${{ steps.version.outputs.build_version }}\` |"
-            echo "| 二进制 | bootimus-linux-{amd64,arm64}、bootimus-windows-{amd64,arm64} + SHA256SUMS |"
+            echo "| 二进制 | bootimus-linux-{amd64,arm64}、bootimus-windows-{amd64,arm64} + SHA256SUMS（Artifacts，保留 90 天） |"
             echo "| 不可变 tag | \`${IMAGE}:${{ steps.version.outputs.tag_version }}\`、\`${IMAGE}:sha-${{ steps.version.outputs.rev }}\` |"
             echo "| 漂移 tag | \`${IMAGE}:${{ steps.version.outputs.base }}\`、\`${IMAGE}:latest\` |"
             echo "| digest | \`${{ steps.build.outputs.digest }}\` |"

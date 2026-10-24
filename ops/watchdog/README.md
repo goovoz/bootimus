@@ -34,7 +34,7 @@ Watchtower 只认 tag，对 digest 引用不会动。所以这里自己写了个
 | `/etc/default/bootimus-watchdog` | 可调参数 |
 | `/var/log/bootimus-watchdog.log` | 运行日志（>5MB 自动轮转成 `.1`） |
 | `/var/lib/bootimus-watchdog/` | 锁、`rollback.yml`、历史 compose 备份、`failed-digests` |
-| `ghcr-audit.sh` | 只读巡检：核对 ghcr 上的 tag 是否还在（不删除任何东西） |
+| `ghcr-audit.sh` | 只读巡检：latest 是否还在、tag 能否解析 digest、线上钉住的 digest 是否 200（不删除任何东西） |
 | `bootimus-ghcr-audit.service` / `.timer` | 每天 07:30 CST 跑一次巡检 |
 | `install-ghcr-audit.sh` | 巡检的安装脚本，复用 watchdog 的 Server酱 sendkey |
 
@@ -160,8 +160,9 @@ rm -f /var/lib/bootimus-watchdog/failed-digests
 | 情况 | 动作 |
 |---|---|
 | tag 集合没变 | 只写日志，不打扰 |
-| 有 tag 消失 / 某 tag 拿不到 digest | 推送告警（Server酱） |
-| compose 里钉住的 digest 返回 404 | 推送告警 |
+| 某些 tag 消失 | **不告警**——保留策略（`ghcr-retention.yml`）本来就是只留 latest 指向的那一个，旧 tag 被删是预期 |
+| `latest` 不见了 | 推送告警（Server酱）：保留策略不会删它 |
+| 某 tag 拿不到 digest / compose 里钉住的 digest 返回 404 | 推送告警 |
 | 拿不到 token、tags 列表为空 | 只记日志、退出码 2，**不告警**（区分「API 抖动」和「真被删」） |
 
 因为包是 public，巡检用匿名 token，**不需要 PAT**，也不碰 docker，权限只有读。
@@ -185,6 +186,24 @@ systemctl list-timers bootimus-ghcr-audit.timer
 ```
 
 日志 `/var/log/ghcr-audit.log`；快照与变更历史在 `/var/lib/bootimus-watchdog/ghcr-tags.txt` 和 `ghcr-changes.log`。
+
+## 镜像保留策略（跑在 Actions，不在本机）
+
+同一个基线版本（例如 `0.1.77`）会随每次小改动构建出新 digest，`.github/workflows/ghcr-retention.yml`
+负责把**除 `latest` 指向之外的版本全部删掉**：
+
+- 触发：`Release (fork)` 跑完之后 / 每天 05:23 CST / 手动（可 `dry_run`、可 `keep_digest` 指定要保住的）
+- 保留：`latest` 指向的 index **加上它的两个平台子清单**（arm64/amd64 子清单在 API 里是独立「版本」，
+  删掉镜像就坏了）
+- 跳过：15 分钟内更新过的版本，避免和正在进行的构建抢
+- 兜底：解析不到 `latest` 就整体中止，绝不在「不知道留谁」的情况下删东西
+
+由此带来的约束：**compose 不能长期钉一个旧 digest** —— 旧 digest 会被删掉，重拉会失败。
+线上靠 watchdog 自动跟 `latest`，所以正常；真要回滚请在保留策略跑之前做，或临时用
+`keep_digest` 指定那个 digest。
+
+另外 `fork-release.yml` **不再创建 GitHub Release**：二进制只作为 Actions 构建产物（Artifacts，
+保留 90 天）上传，镜像 digest 写在每次运行的 Job Summary 里。Releases 页面因此不再堆积构建记录。
 
 ## 维护提示（本仓库特有）
 
