@@ -70,6 +70,11 @@ func textarea(name, label, def, help string) Var {
 	return Var{Name: name, Label: label, Type: "textarea", Default: def, Help: help}
 }
 
+// numberVar is a text field that only accepts a whole number.
+func numberVar(name, label, def, help string) Var {
+	return Var{Name: name, Label: label, Type: "number", Default: def, Help: help, Required: true}
+}
+
 func passwordVar(name, label string, required bool) Var {
 	return Var{Name: name, Label: label, Type: "password", Help: "Stored in the generated file as plain text — keep the file on a trusted network.", Required: required}
 }
@@ -273,9 +278,8 @@ var templates = []Template{
 			passwordVar("local_password", "Local account password", false),
 			text("win_locale", "Windows locale", "zh-CN", "e.g. zh-CN, en-US", true),
 			text("win_timezone", "Windows time zone", "China Standard Time", "Windows zone name, e.g. China Standard Time, UTC", true),
-			text("image_index", "Install image index", "1", "Index inside install.wim / install.esd (/IMAGE/INDEX).", true),
-			text("disk_id", "Disk number", "0", "", true),
-			text("product_key", "Product key (optional)", "", "Leave empty to skip the key and activate later.", false),
+			numberVar("image_index", "Install image index", "1", "Index inside install.wim / install.esd (/IMAGE/INDEX)."),
+			numberVar("disk_id", "Disk number", "0", ""), text("product_key", "Product key (optional)", "", "Leave empty to skip the key and activate later.", false),
 		},
 	},
 }
@@ -329,9 +333,15 @@ func Render(id string, values map[string]string) (string, error) {
 		if v.Placeholder != "" && strings.EqualFold(val, v.Placeholder) {
 			sentinel := "\x00pc:" + v.Name + "\x00"
 			swaps = append(swaps, tokenSwap{sentinel, v.Placeholder})
-			val = sentinel
+			data[v.Name] = sentinel
+			continue
 		}
-		data[v.Name] = val
+		// 转义与校验必须在这里做：模板执行之后就无法区分「值」和「语法」了。
+		clean, err := sanitizeValue(tpl.Format, v, val)
+		if err != nil {
+			return "", err
+		}
+		data[v.Name] = clean
 	}
 
 	// 镜像站点：模板里只暴露一个站点下拉和一个 family 选择，host / 目录 / base URL
@@ -398,9 +408,21 @@ func Render(id string, values map[string]string) (string, error) {
 	if lp, ok := data["local_password"].(string); ok && lp == "" {
 		data["local_password"] = data["password"]
 	}
-	if pkgs, ok := data["packages"].(string); ok && tpl.Format == "autoinstall" {
+	// 包列表按格式落地：preseed 的 pkgsel 是空格分隔、kickstart 一行一个包、
+	// autoinstall 是 YAML 列表。以前三种都把 textarea 原样塞进去，换行会把
+	// preseed 的一行指令截成两行。
+	pkgs := asString(data["packages"])
+	switch tpl.Format {
+	case "preseed":
+		data["packages"] = strings.Join(splitPackages(pkgs), " ")
+	case "kickstart":
+		data["packages"] = strings.Join(splitPackages(pkgs), "\n")
+	case "autoinstall":
 		data["package_list"] = splitPackages(pkgs)
 	}
+	// 公钥可能多行：按格式展开成多条指令 / 多行 echo，而不是把一个带换行的
+	// 字符串塞进单条命令里。
+	data["ssh_key_list"] = splitSSHKeys(asString(data["ssh_key"]))
 
 	// Windows 计算机名有硬约束（<=15 字符、不含 \ / : * ? " < > | 与空格、不能纯数字）。
 	// 一个答案文件被整支舰队共用，所以 "*" 交给 Windows 自己生成 DESKTOP-XXXXXXX；
