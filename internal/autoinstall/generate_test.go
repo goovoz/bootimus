@@ -6,8 +6,6 @@ package autoinstall
 import (
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 func fillValues(t *testing.T, tpl Template) map[string]string {
@@ -51,12 +49,33 @@ func TestTemplatesAreEmbedded(t *testing.T) {
 	}
 }
 
+// 文件名决定服务端 Content-Type 与类型判定（.cfg=preseed / .ks=kickstart），
+// 官方文档明确按扩展名区分，这里卡住默认值。
+func TestDefaultFilenamesMatchFormat(t *testing.T) {
+	want := map[string]string{
+		"preseed":      ".cfg",
+		"kickstart":    ".ks",
+		"autoinstall":  ".yaml",
+		"autounattend": ".xml",
+	}
+	for _, tpl := range Templates() {
+		suffix, ok := want[tpl.Format]
+		if !ok {
+			t.Errorf("%s: unknown format %q", tpl.ID, tpl.Format)
+			continue
+		}
+		if !strings.HasSuffix(tpl.Filename, suffix) {
+			t.Errorf("%s: filename %q should end in %s", tpl.ID, tpl.Filename, suffix)
+		}
+	}
+}
+
 func TestEveryTemplateRenders(t *testing.T) {
 	markers := map[string][]string{
 		"debian-preseed":       {"d-i passwd/username string admin", "d-i netcfg/get_hostname string bootimus-node"},
-		"rhel-kickstart":       {"rootpw --plaintext", "%packages", "autopart --type=lvm"},
+		"rhel-kickstart":       {"user --name=admin", "%packages", "autopart --type=lvm"},
 		"ubuntu-autoinstall":   {"autoinstall:", `hostname: "bootimus-node"`, "layout:"},
-		"windows-autounattend": {"<ComputerName>BOOTIMUS-PC</ComputerName>", "<AcceptEula>true</AcceptEula>"},
+		"windows-autounattend": {"<ComputerName>BOOTIMUS-PC</ComputerName>", "<AcceptEula>true</AcceptEula>", "<LocalAccount"},
 	}
 	for _, tpl := range Templates() {
 		out, err := Render(tpl.ID, fillValues(t, tpl))
@@ -70,6 +89,9 @@ func TestEveryTemplateRenders(t *testing.T) {
 		}
 		if err := Validate(tpl.Format, out); err != nil {
 			t.Errorf("%s: produced invalid output: %v", tpl.ID, err)
+		}
+		if tpl.Format != "autounattend" && strings.Contains(out, "Sup3rSecret!") {
+			t.Errorf("%s: 明文口令泄漏到文件里\n%s", tpl.ID, out)
 		}
 	}
 }
@@ -88,25 +110,42 @@ func TestRenderHonoursValues(t *testing.T) {
 	for _, want := range []string{
 		"network --bootproto=dhcp --device=link --activate --hostname=node-42",
 		"user --name=ops",
-		"rootpw --plaintext rootpw123456",
+		"rootpw --iscrypted $6$",
 		"autopart --type=plain",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q\n%s", want, out)
 		}
 	}
+	if strings.Contains(out, "hunter2hunter2") || strings.Contains(out, "rootpw123456") {
+		t.Errorf("plain-text password leaked:\n%s", out)
+	}
 }
 
-func TestRenderRootPasswordFallsBackToUserPassword(t *testing.T) {
+func TestPreseedUsesCryptedPasswords(t *testing.T) {
 	out, err := Render("debian-preseed", map[string]string{"password": "only-one-pass"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if !strings.Contains(out, "d-i passwd/root-password password only-one-pass") {
-		t.Errorf("root password did not fall back to the user password:\n%s", out)
+	if !strings.Contains(out, "d-i passwd/user-password-crypted password $6$") {
+		t.Errorf("preseed 应写 crypted 口令:\n%s", out)
+	}
+	// root 口令留空时不写 root 口令行（root 登录默认关闭）
+	if strings.Contains(out, "passwd/root-password") {
+		t.Errorf("root 口令留空时不应出现 root-password 行:\n%s", out)
 	}
 	if strings.Contains(out, "d-i passwd/root-login boolean true") {
-		t.Errorf("root login should default to disabled:\n%s", out)
+		t.Errorf("root login 默认应关闭:\n%s", out)
+	}
+}
+
+func TestKickstartLocksRootWhenNoRootPassword(t *testing.T) {
+	out, err := Render("rhel-kickstart", map[string]string{"password": "pw12345678"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, "rootpw --lock") {
+		t.Errorf("未给 root 口令时应锁 root:\n%s", out)
 	}
 }
 
@@ -140,11 +179,29 @@ func TestAutoinstallPasswordIsHashed(t *testing.T) {
 			hash = strings.Trim(strings.TrimSpace(strings.SplitN(line, ":", 2)[1]), `"`)
 		}
 	}
-	if hash == "" {
-		t.Fatalf("no password line found:\n%s", out)
+	if !strings.HasPrefix(hash, "$6$") {
+		t.Fatalf("Ubuntu autoinstall 需要 sha512-crypt（$6$）口令，实际 %q", hash)
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte("Sup3rSecret!")); err != nil {
-		t.Fatalf("password line is not a bcrypt hash of the input: %v", err)
+}
+
+func TestWindowsCreatesLocalAccount(t *testing.T) {
+	out, err := Render("windows-autounattend", map[string]string{
+		"password":       "AdminPass123",
+		"local_user":     "labuser",
+		"local_password": "LabPass456",
+	})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		`<LocalAccount wcm:action="add"`,
+		"<Name>labuser</Name>",
+		"<Group>Administrators</Group>",
+		"<Value>LabPass456</Value>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n%s", want, out)
+		}
 	}
 }
 
@@ -195,7 +252,6 @@ func TestPerClientHostnameKeepsToken(t *testing.T) {
 }
 
 func TestPerClientTokenIsOnlyForDeclaredVars(t *testing.T) {
-	// 普通字段填成占位符文本时应原样输出（不能悄悄变成 token 替换）
 	out, err := Render("rhel-kickstart", map[string]string{
 		"password": "Sup3rSecret!",
 		"username": "{{HOSTNAME}}",
