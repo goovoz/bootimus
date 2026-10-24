@@ -3,7 +3,9 @@
 #
 # 目的：把「GitHub 网页显示异常」与「镜像真的被删」区分开。
 #   - 每次抓一遍 registry 的 tag → digest，存成快照（去重排序）
-#   - 与上次快照比对：标签消失 / 标签拿不到 digest / 线上钉住的 digest 404 → 推送告警
+#   - 告警条件只有三个：latest 不见了 / 某个 tag 解析不出 digest / 线上钉住的 digest 不是 200
+#   - **标签减少不再告警**：ghcr-retention.yml 的职责就是只留 latest 指向的那一个 digest，
+#     旧 tag 被删是预期行为（快照仅用于留档与排查）
 #   - 其余情况只写日志，不打扰
 #
 # 退出码：0 正常；1 发现回归（已告警）；2 自身执行失败（网络/API 异常，不做判定）
@@ -100,20 +102,24 @@ if [ -n "$PIN_DIGEST" ]; then
         "https://ghcr.io/v2/${REPO_SLUG}/manifests/${PIN_DIGEST}")
 fi
 
-# 5. 与上次快照比对（集合比较，不看顺序/重复）
+# 5. 与上次快照比对（集合比较，不看顺序/重复）——仅留档，不作为告警依据
 REMOVED=""
 if [ -f "$SNAP" ]; then
     REMOVED=$(comm -23 <(awk '{print $1}' "$SNAP" | sort -u) <(awk '{print $1}' "$NEW" | sort -u) | tr '\n' ' ')
 fi
 
-log "tag 数 ${COUNT}；缺失 digest:${MISSING:- 无}；线上钉住 digest: ${PIN_DIGEST:-未找到} → HTTP ${PIN_CODE}"
+# 保留策略只留一个 digest，所以 latest 是否还在才是关键信号
+LATEST_MISSING=0
+printf '%s\n' "$TAGS" | grep -qx "latest" || LATEST_MISSING=1
+
+log "tag 数 ${COUNT}；缺失 digest:${MISSING:- 无}；线上钉住 digest: ${PIN_DIGEST:-未找到} → HTTP ${PIN_CODE}；较上次消失:${REMOVED:- 无}（预期，保留策略会删旧 tag）"
 
 # 6. 判定
 REGRESS=0
 REASON=""
-if [ -n "$REMOVED" ]; then
+if [ "$LATEST_MISSING" -eq 1 ]; then
     REGRESS=1
-    REASON="${REASON}标签消失：${REMOVED}\n"
+    REASON="${REASON}latest 标签不见了（保留策略不会删它，说明被别的东西动过）\n"
 fi
 if [ -n "$MISSING" ]; then
     REGRESS=1
