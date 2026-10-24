@@ -2480,6 +2480,7 @@ const SOURCE_TEXT = {
         "Mirror directory": "镜像目录",
         "Allow root login": "允许 root 登录",
         "Root password": "root 密码",
+        "Root password (optional)": "root 密码（可选）",
         "Partition recipe": "分区方案",
         "Upgrade during install": "安装时升级",
         "Task selection": "任务选择",
