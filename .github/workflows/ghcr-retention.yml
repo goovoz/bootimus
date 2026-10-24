@@ -1,0 +1,58 @@
+name: GHCR retention (fork)
+
+# [bootimus-fork L0] 镜像保留策略：同一个基线版本只留「latest 指向的那一个 digest」。
+#
+# 为什么单独一个 workflow 而不是塞进 fork-release.yml：
+#   * 构建失败时也要能清理；构建成功时清理失败也不该把构建标记成红色；
+#   * 每天定时跑一次，可以兜住手动推送 / 历史遗留；
+#   * 需要 packages: write，独立出来权限最小。
+#
+# 触发：
+#   · Release (fork) 跑完之后（清理刚被替换掉的上一个 digest）
+#   · 每天 05:23（北京时间）兜底
+#   · workflow_dispatch（可 dry-run，可指定要保留的 digest）
+
+on:
+  workflow_run:
+    workflows: ["Release (fork)"]
+    types: [completed]
+  schedule:
+    - cron: "23 21 * * *" # 05:23 CST
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = 只打印计划，不删除"
+        type: choice
+        options:
+          - "false"
+          - "true"
+        default: "false"
+        required: false
+      keep_digest:
+        description: "要保留的 digest（留空 = latest 指向的那个）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write # 删除包版本
+
+concurrency:
+  group: ghcr-retention
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: 只保留最新镜像 digest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7  # node24
+
+      - name: 清理旧版本
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PACKAGE: bootimus
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          KEEP_DIGEST: ${{ inputs.keep_digest }}
+        run: bash .github/scripts/ghcr-retention.sh
