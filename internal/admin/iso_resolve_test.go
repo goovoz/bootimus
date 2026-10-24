@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -66,7 +67,7 @@ func fakeMirror(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(listing))
 	})
-	serveFile := func(name string) http.HandlerFunc {
+	serveFile := func() http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Length", "4")
 			if r.Method == http.MethodHead {
@@ -75,8 +76,8 @@ func fakeMirror(t *testing.T) *httptest.Server {
 			w.Write([]byte("iso!"))
 		}
 	}
-	mux.HandleFunc("/iso-cd/debian-13.7.0-amd64-netinst.iso", serveFile("13.7.0"))
-	mux.HandleFunc("/iso-cd/debian-13.10.0-amd64-netinst.iso", serveFile("13.10"))
+	mux.HandleFunc("/iso-cd/debian-13.7.0-amd64-netinst.iso", serveFile())
+	mux.HandleFunc("/iso-cd/debian-13.10.0-amd64-netinst.iso", serveFile())
 	return httptest.NewServer(mux)
 }
 
@@ -115,13 +116,107 @@ func TestResolveLatestISOURLKeepsWorkingURL(t *testing.T) {
 	}
 }
 
+// 签名/带 token 的链接：目录与候选地址都必须保留查询串，否则改写出来的链接
+// 直接 403。
+func TestResolveKeepsQueryString(t *testing.T) {
+	var hits int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/iso-cd/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/iso-cd/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("token") != "abc" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(`<a href="app-2.0-amd64.iso">app-2.0-amd64.iso</a>`))
+	})
+	mux.HandleFunc("/iso-cd/app-2.0-amd64.iso", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		if r.URL.Query().Get("token") != "abc" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Length", "4")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	raw := srv.URL + "/iso-cd/app-1.0-amd64.iso?token=abc"
+	got, changed, err := resolveLatestISOURL(raw)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected a rewrite, got %q", got)
+	}
+	if !strings.Contains(got, "app-2.0-amd64.iso") || !strings.Contains(got, "token=abc") {
+		t.Fatalf("resolved URL lost the query string: %q", got)
+	}
+}
+
+// 除 nginx 之外的目录页常用单引号，之前只认 href="…"，这类站点一律解析失败。
+func TestResolveAcceptsSingleQuotedHrefs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/iso/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/iso/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte("<a href='tool-9.1-amd64.iso'>tool</a>"))
+	})
+	mux.HandleFunc("/iso/tool-9.1-amd64.iso", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "4")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	got, changed, err := resolveLatestISOURL(srv.URL + "/iso/tool-8.0-amd64.iso")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !changed || !strings.HasSuffix(got, "/iso/tool-9.1-amd64.iso") {
+		t.Fatalf("resolved to %q", got)
+	}
+}
+
+// 解析失败要短时间缓存：以前每次下载前都会打三个请求（HEAD + 列目录 + HEAD）。
+func TestResolveCachesFailures(t *testing.T) {
+	var listHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/") {
+			atomic.AddInt32(&listHits, 1)
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	raw := srv.URL + "/iso/none-1.0-amd64.iso"
+	if _, _, err := resolveLatestISOURL(raw); err == nil {
+		t.Fatal("expected an error")
+	}
+	if _, _, err := resolveLatestISOURL(raw); err == nil {
+		t.Fatal("expected an error on the cached path too")
+	}
+	if n := atomic.LoadInt32(&listHits); n != 1 {
+		t.Fatalf("directory listing hit %d times, want 1 (failure should be cached)", n)
+	}
+}
+
 func TestSplitURL(t *testing.T) {
 	dir, name, err := splitURL("https://example.com/a/b/debian-1.0.iso")
-	if err != nil || dir != "https://example.com/a/b" || name != "debian-1.0.iso" {
-		t.Fatalf("splitURL = %q, %q, %v", dir, name, err)
+	if err != nil {
+		t.Fatalf("splitURL: %v", err)
+	}
+	if dir.String() != "https://example.com/a/b" || name != "debian-1.0.iso" {
+		t.Fatalf("splitURL = %q, %q", dir.String(), name)
 	}
 	if _, _, err := splitURL("ftp://example.com/x.iso"); err == nil {
 		t.Fatal("ftp should be rejected")
+	}
+	if got := siblingURL(dir, "debian-1.1.iso"); got != "https://example.com/a/b/debian-1.1.iso" {
+		t.Fatalf("siblingURL = %q", got)
 	}
 }
 
