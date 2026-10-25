@@ -606,3 +606,15 @@ housekeeping、安装记录、副本同步等），fork 的补丁在这个基线
 - `cache-housekeeping.yml`：每天 04:23（北京时间）+ 手动，兜底扫一遍
 
 手动演练：Actions → `Cache housekeeping (fork)` → `dry_run=true`。
+
+## 冲突分支的生命周期（`sync-conflict/*`）
+
+自动 rebase 撞到冲突时，工作流会把带冲突标记的现场推到
+`sync-conflict/<日期>-<时分>` 并开一个 `[需人工]` PR —— 这是**给人看现场用的临时载体**，
+不是长期分支。
+
+- 解决完就该删：它既不会并入 `main`（`main` 上的结果是重新 rebase 出来的），也没有更多信息量
+- `sync-upstream.yml` 最后一步「清理过期冲突分支」兜底：超过 `keep_days`（默认 7 天）
+  且**没有开着的 PR** 才删；有开着的 PR 说明还在人工处理，一律保留
+- 只碰 `sync-conflict/*`；`fork-archive/*`（退役补丁的归档）永久保留，绝不删
+- 手动看一眼：`git ls-remote --heads origin 'sync-conflict/*'`
