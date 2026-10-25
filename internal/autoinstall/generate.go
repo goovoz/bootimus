@@ -310,8 +310,12 @@ func TemplateByID(id string) (Template, bool) {
 	return Template{}, false
 }
 
-// Render fills in a template and validates the result.
-func Render(id string, values map[string]string) (string, error) {
+// RenderTemplate fills in a template and validates the result.
+//
+// 名字故意不叫 Render/Validate：上游（2026-10-24 起）在自己新增的
+// internal/autoinstall/render.go / validate.go 里已经占用了这两个名字，且签名不同。
+// 同一个包里同名符号会让 rebase 之后直接编译失败，所以这里用带后缀的名字把冲突挡在源头。
+func RenderTemplate(id string, values map[string]string) (string, error) {
 	tpl, ok := TemplateByID(id)
 	if !ok {
 		return "", fmt.Errorf("unknown template %q", id)
@@ -435,7 +439,7 @@ func Render(id string, values map[string]string) (string, error) {
 	}
 
 	out = strings.TrimRight(out, "\n") + "\n"
-	if err := Validate(tpl.Format, out); err != nil {
+	if err := ValidateAnswerFile(tpl.Format, out); err != nil {
 		return "", err
 	}
 	return out, nil
@@ -454,8 +458,8 @@ func splitPackages(raw string) []string {
 	return out
 }
 
-// Validate runs a format-specific sanity check on a finished answer file.
-func Validate(format, content string) error {
+// ValidateAnswerFile runs a format-specific sanity check on a finished answer file.
+func ValidateAnswerFile(format, content string) error {
 	switch format {
 	case "autoinstall":
 		var doc map[string]any
