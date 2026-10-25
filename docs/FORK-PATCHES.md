@@ -45,7 +45,13 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 > 解决方式是配一个带 **Workflows: Read and write** 权限的 fine-grained PAT 存成 secret：
 > Settings → Secrets and variables → Actions → New repository secret，名字 `SYNC_TOKEN`。
 > workflow 里写的是 `secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN`，没配时会退回默认 token，
-> 其余步骤照常，只有涉及 workflow 文件的推送会失败并给出明确提示。
+> 其余步骤照常。
+>
+> 同一个 secret 还解决**开 PR** 的问题：仓库默认不允许 `GITHUB_TOKEN` 创建 PR
+> （实测 `gh pr create` → GraphQL `Resource not accessible by integration`），
+> 用 PAT 就正常。不想用 PAT 的话，替代方案是在
+> Settings → Actions → General → Workflow permissions 里勾上
+> "Allow GitHub Actions to create and approve pull requests"。
 
 ## 补丁清单
 
