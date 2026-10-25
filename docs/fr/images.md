@@ -5,6 +5,10 @@ Guide complet pour gérer les images ISO, extraire les fichiers de boot, et gér
 ##  Table des matières
 
 - [Ajouter des images](#ajouter-des-images)
+- [Sommes de contrôle et notifications de mise à jour](#sommes-de-contrôle-et-notifications-de-mise-à-jour)
+- [Images noyau unifiées (UKI)](#images-noyau-unifiées-uki)
+- [OpenBSD et NetBSD](#openbsd-et-netbsd)
+- [WinPE et médias de secours](#winpe-et-médias-de-secours)
 - [Extraction du kernel](#extraction-du-kernel)
 - [Support netboot](#support-netboot)
 - [Optimisation Ubuntu Desktop](#optimisation-ubuntu-desktop)
@@ -58,6 +62,21 @@ curl -u admin:password -X POST http://localhost:8081/api/images/download \
 curl -u admin:password http://localhost:8081/api/downloads/progress?filename=ubuntu-24.04-live-server-amd64.iso
 ```
 
+### Sommes de contrôle et notifications de mise à jour
+
+**Vérification au téléchargement.** Quand un ISO est récupéré via **Get Images** (le catalogue intégré), Bootimus cherche un fichier de sommes de contrôle publié à côté (`SHA256SUMS`, `sha256sum.txt` et similaires) et hache le téléchargement au fil de l'eau. Une différence fait échouer le téléchargement et supprime le fichier, de sorte qu'une image tronquée ou altérée n'atteint jamais le menu de boot. Les téléchargements depuis une simple URL peuvent aussi être vérifiés en passant un `sha256` ou une `checksum_url` à `/api/images/download` :
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8081/api/images/download \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://releases.ubuntu.com/24.04.4/ubuntu-24.04.4-live-server-amd64.iso",
+       "checksum_url": "https://releases.ubuntu.com/24.04.4/SHA256SUMS"}'
+```
+
+Les images vérifiées affichent un badge **✓ Verified** dans la liste des images et le SHA-256 enregistré dans le panneau des propriétés de l'image. Les images téléchargées sans somme de contrôle publiée, ou uploadées à la main, sont marquées **Unverified** ; colle un SHA-256 ou l'URL d'un fichier de sommes de contrôle dans le panneau des propriétés et clique sur **Verify** pour hacher le fichier en arrière-plan (`POST /api/images/verify?filename=…`, interroge la même URL en `GET`).
+
+**Nouvelles versions.** Une fois par jour (et via **Settings → Housekeeping → Check now**, ou `POST /api/catalogue/check`) Bootimus compare les images installées avec le catalogue. Une image téléchargée depuis le catalogue est reconnue par sa distribution et sa ligne de version, donc `ubuntu-24.04.3-desktop-amd64.iso` est signalée quand `24.04.4` apparaît ; les images ajoutées avant cette fonctionnalité sont reconnues d'après la forme de leur nom de fichier. Les images signalées portent un badge **Update available** et un bouton **Download newer version** dans le panneau des propriétés, les outils affichent le même badge avec **Download newer**, et le tableau de bord compte les mises à jour en attente. La vérification utilise le catalogue en ligne quand les mises à jour de profils distantes sont autorisées et se rabat sur le catalogue embarqué dans le binaire quand `--disable-remote-profiles` est défini. Décoche **Check the catalogue daily** sous Housekeeping pour la désactiver.
+
 ### Organiser avec des dossiers
 
 Les ISOs placés dans des sous-répertoires sont automatiquement regroupés dans le menu de boot :
@@ -87,6 +106,66 @@ Si tu copies manuellement des ISOs dans le répertoire data (y compris dans des 
 ```bash
 curl -u admin:password -X POST http://localhost:8081/api/scan
 ```
+
+## Images noyau unifiées (UKI)
+
+Une image noyau unifiée (UKI) est un exécutable EFI unique qui regroupe un noyau Linux, son initrd et sa ligne de commande noyau. Bootimus démarre les UKI directement, sans extraction.
+
+**Ajouter une UKI** : téléverse le fichier `.efi`, télécharge-le depuis une URL ou copie-le dans `/data/isos/` puis lance un scan, exactement comme pour une ISO. Bootimus n'enregistre que les fichiers `.efi` qui sont des UKI (exécutables EFI avec une section `.linux`) ; les autres programmes EFI sont refusés et les fichiers situés dans le dossier extrait d'une ISO sont ignorés.
+
+**Paramètres de boot** : la ligne de commande intégrée dans la section `.cmdline` de l'UKI est copiée dans les paramètres de boot de l'image lors de son premier ajout, pour que tu puisses la voir et la modifier dans les propriétés de l'image. Bootimus démarre l'image avec :
+
+```
+kernel http://<server>:8080/isos/<image>.efi <boot parameters>
+```
+
+Avec Secure Boot désactivé, ces paramètres remplacent la ligne de commande intégrée, c'est pourquoi celle-ci est pré-remplie. Avec Secure Boot activé, le systemd-stub de la plupart des UKI les ignore et utilise toujours la ligne de commande intégrée.
+
+**UEFI uniquement** : les UKI sont des programmes EFI, les clients en BIOS legacy ne peuvent donc pas les démarrer. En choisir une sur un client BIOS affiche un message indiquant qu'UEFI est nécessaire.
+
+## OpenBSD et NetBSD
+
+OpenBSD et NetBSD ne bootent pas depuis un kernel et un initrd à la manière de Linux. Chacun embarque son propre chargeur réseau de second niveau, et ce chargeur ne parle que TFTP : il récupère son fichier de configuration et le kernel d'installation à la racine du serveur TFTP. Bootimus supporte les deux en extrayant ces fichiers de l'ISO d'installation et en les servant via son serveur TFTP ; le port TFTP doit donc être joignable depuis les clients (il l'est déjà pour le PXE lui-même).
+
+**Ajouter une image** : uploade `install77.iso` (ou `cd77.iso`) pour OpenBSD, ou `NetBSD-10.1-amd64.iso` pour NetBSD, puis lance **Extract Kernel/Initrd** comme pour n'importe quel autre ISO. L'extraction copie les chargeurs et le kernel d'installation dans un dossier `bsd/` à côté de l'ISO et extrait l'arborescence complète de l'ISO pour que l'installeur puisse récupérer ses sets depuis `http://<server>:8080/boot/<image>/iso/`.
+
+| Distribution | Chargeurs pris dans l'ISO | Kernel |
+|--------------|---------------------------|--------|
+| OpenBSD | `pxeboot` (BIOS), `BOOTX64.EFI`, `BOOTIA32.EFI`, `BOOTAA64.EFI` (UEFI) depuis `/<version>/<arch>/` | `bsd.rd` |
+| NetBSD | `pxeboot_ia32.bin` (BIOS) depuis `/<arch>/installation/misc/`, `bootx64.efi` (UEFI) quand l'ISO en contient un | `netbsd-INSTALL.gz` |
+
+**Fonctionnement du boot** : l'entrée de menu chaîne vers un petit script iPXE sur le port HTTP, qui note que ce client (par adresse IP) a choisi cette image, puis chaîne le chargeur correspondant en TFTP depuis `bsd/<image>/`. Pendant les 15 minutes suivantes, les requêtes de cette IP pour les fichiers que les chargeurs cherchent à la racine TFTP (`etc/boot.conf`, `etc/random.seed`, `bsd.rd`, `bsd` pour OpenBSD ; `boot.cfg`, `EFI/NetBSD/boot.cfg`, `netbsd` et `netbsd-INSTALL.gz` pour NetBSD) sont servies depuis cette image. Le fichier de configuration est généré à la volée et pointe le chargeur vers le kernel sous `bsd/<image>/`, donc les chemins explicites fonctionnent aussi. Si l'ISO n'a pas le chargeur pour le firmware du client, celui-ci voit un message l'indiquant et revient au menu.
+
+**Console série et autres réglages du chargeur** : place des lignes de configuration supplémentaires du chargeur dans les **Boot Parameters** de l'image, séparées par des points-virgules. Pour OpenBSD, elles sont ajoutées au `boot.conf` généré, par exemple `stty com0 115200;set tty com0`. Pour NetBSD, elles sont ajoutées au `boot.cfg` généré, par exemple `consdev=com0`.
+
+**Limitations connues** :
+
+- Ce support est récent et n'a pas encore été vérifié sur du matériel réel. Merci de signaler ce qui fonctionne et ce qui ne fonctionne pas.
+- Le `pxeboot_ia32.bin` de NetBSD effectue son propre échange DHCP une fois chargé et lit le champ DHCP `filename` pour choisir entre NFS et TFTP. Sans préfixe `tftp:` à cet endroit, il utilise NFS par défaut, ce que Bootimus ne fournit pas pour cet usage. Si le chargeur indique qu'il ne peut pas ouvrir `boot.cfg` ou le kernel, tape `boot tftp:bsd/<image>/netbsd-INSTALL.gz` à son invite, ou donne aux clients NetBSD `filename "tftp:boot.cfg";` sur ton serveur DHCP. Les chargeurs d'OpenBSD utilisent toujours TFTP et n'ont pas besoin de cette étape.
+- L'association par client est indexée par adresse IP ; deux clients derrière la même adresse NAT qui bootent des images BSD différentes à moins de 15 minutes d'écart recevraient donc la même configuration.
+- L'autoinstall des installeurs BSD n'est pas encore câblé. Les installeurs peuvent quand même récupérer leurs sets depuis l'arborescence ISO extraite en HTTP.
+
+## WinPE et médias de secours
+
+Bootimus démarre les installeurs Windows via [wimboot](https://ipxe.org/wimboot), et le même chemin couvre désormais les médias de secours basés sur WinPE tels que le WinPE de Sergei Strelec, Active@ Boot Disk et Hiren's BootCD PE.
+
+**Dispositions supportées** : tout ISO qui contient un `BCD` (sous `boot/` ou `efi/microsoft/boot/`), `boot/boot.sdi` et au moins un fichier `.wim`. Les médias d'installation ont aussi `sources/install.wim` ou `install.esd` ; un média qui n'en a pas est classé dans le profil **WinPE / Rescue Media** (`winpe`) au lieu de **Windows**, donc aucun traitement d'auto-installation ou SMB ne lui est appliqué. Les fichiers WIM situés dans les quatre premiers niveaux de répertoires sont trouvés, donc les `SSTR/*.wim` de Strelec et les dispositions similaires fonctionnent sans rien renommer.
+
+**Choisir le WIM** : après extraction, le panneau des propriétés de l'image liste chaque WIM trouvé avec sa taille. Choisis celui que wimboot doit charger et, quand un WIM contient plusieurs images, l'index d'image. L'index n'est ajouté à la ligne wimboot que s'il est supérieur à un, et un `index=` explicite dans les paramètres de boot est prioritaire. La même chose peut se régler via l'API :
+
+```bash
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"wim_path":"SSTR/strelec10x64Eng.wim","wim_index":1}' \
+  "http://localhost:8081/api/images/winpe?filename=WinPE_Strelec.iso"
+```
+
+**Fonctionnement du boot** : seul le WIM sélectionné est envoyé au client ; wimboot synthétise lui-même le BCD et `boot.sdi`, ce qui évite l'écran noir que certains médias produisent quand le BCD du DVD est utilisé. Les paramètres de boot sont limités aux options propres à wimboot (`rawbcd`, `rawwim`, `gui`, `linear`, `quiet`, `pause`, `index`, `initrdfile`), exactement comme pour les installeurs Windows.
+
+**Limitations** :
+
+- Les programmes que l'environnement de secours s'attend à trouver sur son propre média de boot (par exemple le dossier `SSTR` d'outils portables de Strelec) ne sont pas dans le WIM, ils manquent donc après un boot PXE à moins que l'environnement ne puisse les récupérer lui-même par le réseau. Le bureau WinPE de base et les outils intégrés au WIM fonctionnent.
+- Les médias qui ont besoin de leurs propres entrées BCD (menus `bootmgr` personnalisés, menus de sélection multi-WIM) démarrent directement dans le WIM choisi au lieu d'afficher ce menu.
+- Les fichiers `.wim` seuls ne peuvent pas encore être uploadés tels quels ; place-les sur un ISO avec un `BCD` et `boot.sdi`, ou utilise un ISO de secours complet.
 
 ## Extraction du kernel
 

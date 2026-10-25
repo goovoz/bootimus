@@ -27,17 +27,20 @@ const (
 )
 
 type Config struct {
-	ServerIP        net.IP
-	ServerHTTPPort  int
-	Interface       string
-	BootfileBIOS    string
-	BootfileUEFI    string
-	BootfileARM64   string
-	NoBootfileption bool
+	ServerIP         net.IP
+	ServerHTTPPort   int
+	Interface        string
+	BootfileBIOS     string
+	BootfileUEFI     string
+	BootfileARM64    string
+	NoBootfileption  bool
+	NoVendorOption   bool
+	OmitVendorOption func(mac net.HardwareAddr) bool
 	// Bootfiles, when set, is consulted on every request; any non-empty value
 	// it returns overrides the static Bootfile* fields. This lets the server
 	// switch bootloader sets at runtime without restarting proxyDHCP.
-	Bootfiles func() (bios, uefi, arm64 string)
+	Bootfiles func(clientHWAddr net.HardwareAddr) (bios, uefi, arm64 string)
+	Observer  func(Event)
 }
 
 type Server struct {
@@ -94,7 +97,7 @@ func (s *Server) Start() error {
 	}
 	s.conn4011 = conn4011
 
-	bios, uefi, arm64 := s.effectiveBootfiles()
+	bios, uefi, arm64 := s.effectiveBootfiles(nil)
 	log.Printf("proxyDHCP: listening on UDP/67 + UDP/4011, advertising next-server=%s (BIOS=%s, UEFI=%s, ARM64=%s)",
 		s.cfg.ServerIP, bios, uefi, arm64)
 
@@ -145,19 +148,62 @@ func (s *Server) loop(conn *net.UDPConn, bootp bool) {
 }
 
 func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, req *dhcpv4.DHCPv4, bootp bool) {
-	resp, bootfile, ok := s.buildReply(req)
+	port := 4011
+	if bootp {
+		port = 67
+	}
+	resp, ev, ok := s.evaluate(req)
+	ev.Port = port
+	ev.Source = src.String()
 	if !ok {
+		s.observe(ev)
 		return
 	}
 
 	dst := replyAddr(src, req, bootp)
+	ev.ReplyTo = dst.String()
 	if _, err := conn.WriteToUDP(resp.ToBytes(), dst); err != nil {
 		log.Printf("proxyDHCP: send reply: %v", err)
+		ev.Outcome = OutcomeFailed
+		ev.Decision = fmt.Sprintf("Reply could not be sent to %s: %v", dst, err)
+		s.observe(ev)
 		return
 	}
 	metrics.ProxyDHCPOffers.WithLabelValues(strconv.Itoa(int(clientArch(req)))).Inc()
 	log.Printf("proxyDHCP: %s -> %s arch=%d bootfile=%s",
-		req.MessageType(), req.ClientHWAddr, clientArch(req), bootfile)
+		req.MessageType(), req.ClientHWAddr, clientArch(req), ev.Bootfile)
+	ev.Outcome = OutcomeReplied
+	ev.Decision = fmt.Sprintf("Sent %s with bootfile %s to %s", ev.ReplyType, ev.Bootfile, dst)
+	s.observe(ev)
+}
+
+func (s *Server) observe(ev Event) {
+	if s.cfg.Observer != nil {
+		s.cfg.Observer(ev)
+	}
+}
+
+func requestEvent(req *dhcpv4.DHCPv4) Event {
+	arch := clientArch(req)
+	ev := Event{
+		MAC:         req.ClientHWAddr.String(),
+		MessageType: req.MessageType().String(),
+		Arch:        int(arch),
+		ArchName:    arch.String(),
+		VendorClass: req.ClassIdentifier(),
+	}
+	if gw := req.GatewayIPAddr; gw != nil && !gw.IsUnspecified() {
+		ev.Relay = gw.String()
+	}
+	if guid := req.GetOneOption(dhcpv4.OptionClientMachineIdentifier); len(guid) == 17 {
+		ev.ClientGUID = formatGUID(guid[1:])
+	}
+	return ev
+}
+
+func formatGUID(b []byte) string {
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		b[3], b[2], b[1], b[0], b[5], b[4], b[7], b[6], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])
 }
 
 func replyAddr(src *net.UDPAddr, req *dhcpv4.DHCPv4, bootp bool) *net.UDPAddr {
@@ -171,9 +217,17 @@ func replyAddr(src *net.UDPAddr, req *dhcpv4.DHCPv4, bootp bool) *net.UDPAddr {
 }
 
 func (s *Server) buildReply(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, string, bool) {
+	resp, ev, ok := s.evaluate(req)
+	return resp, ev.Bootfile, ok
+}
+
+func (s *Server) evaluate(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, Event, bool) {
+	ev := requestEvent(req)
 	classID, ok := bootClassID(req.ClassIdentifier())
 	if !ok {
-		return nil, "", false
+		ev.Outcome = OutcomeIgnored
+		ev.Decision = fmt.Sprintf("Ignored: vendor class %q is not PXEClient or HTTPClient, so this is not a network boot request", req.ClassIdentifier())
+		return nil, ev, false
 	}
 
 	var respType dhcpv4.MessageType
@@ -183,8 +237,11 @@ func (s *Server) buildReply(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, string, bool) {
 	case dhcpv4.MessageTypeRequest, dhcpv4.MessageTypeInform:
 		respType = dhcpv4.MessageTypeAck
 	default:
-		return nil, "", false
+		ev.Outcome = OutcomeIgnored
+		ev.Decision = fmt.Sprintf("Ignored: %s messages are not answered by proxyDHCP", req.MessageType())
+		return nil, ev, false
 	}
+	ev.ReplyType = respType.String()
 
 	bootfile := s.bootfileFor(req)
 	modifiers := []dhcpv4.Modifier{
@@ -196,29 +253,40 @@ func (s *Server) buildReply(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, string, bool) {
 	if classID == httpClientClass {
 		bootfile = s.httpBootURL(bootfile)
 	} else {
-		vendorOpts := pxeVendorOptions()
+		modifiers = append(modifiers, dhcpv4.WithOption(dhcpv4.OptTFTPServerName(s.cfg.ServerIP.String())))
 		if clientArch(req) == iana.INTEL_X86PC && raspberrypi.IsRaspberryPiMAC(req.ClientHWAddr) {
-			vendorOpts = []byte("Raspberry Pi Boot")
+			ev.RaspberryPi = true
+			modifiers = append(modifiers, dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, []byte("Raspberry Pi Boot"))))
+		} else if !s.omitVendorOption(req.ClientHWAddr) {
+			modifiers = append(modifiers, dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, pxeVendorOptions())))
+		} else {
+			ev.VendorOptionOmitted = true
 		}
-		modifiers = append(modifiers,
-			dhcpv4.WithOption(dhcpv4.OptTFTPServerName(s.cfg.ServerIP.String())),
-			dhcpv4.WithOption(dhcpv4.OptGeneric(dhcpv4.OptionVendorSpecificInformation, vendorOpts)),
-		)
 	}
 	if !s.cfg.NoBootfileption {
 		modifiers = append(modifiers, dhcpv4.WithOption(dhcpv4.OptBootFileName(bootfile)))
 	}
+	ev.Bootfile = bootfile
 	resp, err := dhcpv4.NewReplyFromRequest(req, modifiers...)
 	if err != nil {
 		log.Printf("proxyDHCP: build reply: %v", err)
-		return nil, "", false
+		ev.Outcome = OutcomeFailed
+		ev.Decision = fmt.Sprintf("Reply could not be built: %v", err)
+		return nil, ev, false
 	}
 	resp.YourIPAddr = net.IPv4zero
 	if guid := req.GetOneOption(dhcpv4.OptionClientMachineIdentifier); guid != nil {
 		resp.UpdateOption(dhcpv4.OptGeneric(dhcpv4.OptionClientMachineIdentifier, guid))
 	}
 	resp.BootFileName = bootfile
-	return resp, bootfile, true
+	return resp, ev, true
+}
+
+func (s *Server) omitVendorOption(mac net.HardwareAddr) bool {
+	if s.cfg.NoVendorOption {
+		return true
+	}
+	return s.cfg.OmitVendorOption != nil && s.cfg.OmitVendorOption(mac)
 }
 
 func bootClassID(vci string) (string, bool) {
@@ -246,10 +314,10 @@ func pxeVendorOptions() []byte {
 	}
 }
 
-func (s *Server) effectiveBootfiles() (bios, uefi, arm64 string) {
+func (s *Server) effectiveBootfiles(clientHWAddr net.HardwareAddr) (bios, uefi, arm64 string) {
 	bios, uefi, arm64 = s.cfg.BootfileBIOS, s.cfg.BootfileUEFI, s.cfg.BootfileARM64
 	if s.cfg.Bootfiles != nil {
-		overrideBIOS, overrideUEFI, overrideARM64 := s.cfg.Bootfiles()
+		overrideBIOS, overrideUEFI, overrideARM64 := s.cfg.Bootfiles(clientHWAddr)
 		if overrideBIOS != "" {
 			bios = overrideBIOS
 		}
@@ -264,7 +332,7 @@ func (s *Server) effectiveBootfiles() (bios, uefi, arm64 string) {
 }
 
 func (s *Server) bootfileFor(req *dhcpv4.DHCPv4) string {
-	bios, uefi, arm64 := s.effectiveBootfiles()
+	bios, uefi, arm64 := s.effectiveBootfiles(req.ClientHWAddr)
 	switch clientArch(req) {
 	case iana.EFI_IA32, iana.EFI_X86_64, iana.EFI_BC,
 		iana.EFI_X86_HTTP, iana.EFI_X86_64_HTTP, iana.EFI_BC_HTTP:

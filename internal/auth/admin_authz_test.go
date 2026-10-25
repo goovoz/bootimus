@@ -22,7 +22,18 @@ func (f *fakeUserStore) GetUser(username string) (*models.User, error) {
 	if !ok {
 		return nil, http.ErrNoLocation
 	}
-	return u, nil
+	c := *u
+	return &c, nil
+}
+func (f *fakeUserStore) CreateUser(user *models.User) error {
+	c := *user
+	f.users[user.Username] = &c
+	return nil
+}
+func (f *fakeUserStore) UpdateUser(username string, user *models.User) error {
+	c := *user
+	f.users[username] = &c
+	return nil
 }
 
 func TestAdminMiddlewareRequiresAdmin(t *testing.T) {

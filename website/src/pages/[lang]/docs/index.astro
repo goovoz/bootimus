@@ -4,7 +4,7 @@ import Nav from '../../../components/Nav.astro';
 import Footer from '../../../components/Footer.astro';
 import DocsSidebar from '../../../components/DocsSidebar.astro';
 import { docsNav } from '../../../lib/docs-nav';
-import { docUrl } from '../../../lib/docs';
+import { docUrl, listDocs, slugFromId } from '../../../lib/docs';
 import { useTranslations, locales, defaultLocale, type Locale } from '../../../i18n';
 
 export const prerender = false;
@@ -15,6 +15,9 @@ if (!lang || !locales.includes(lang) || lang === defaultLocale) {
 }
 
 const { t } = useTranslations(lang);
+const translated = new Set((await listDocs(lang)).map((e) => slugFromId(e.id)));
+const allSlugs = docsNav.flatMap((s) => s.items.map((i) => i.slug));
+const hasMissing = allSlugs.some((slug) => !translated.has(slug));
 ---
 <Base title={t('meta.docsTitle')} description={t('meta.docsDescription')}>
   <Nav />
@@ -23,16 +26,18 @@ const { t } = useTranslations(lang);
     <DocsSidebar locale={lang} />
 
     <article class="docs-article">
-      <div class="fb-banner" role="note">
-        <span class="fb-dot" aria-hidden="true"></span>
-        <div class="fb-body">
-          <div class="fb-title">{t('docs.fallbackBanner')}</div>
-          <a class="fb-cta" href={`https://github.com/garybowers/bootimus/tree/main/docs/${lang}`} target="_blank" rel="noopener">
-            {t('docs.translateCta')}
-          </a>
+      {hasMissing && (
+        <div class="fb-banner" role="note">
+          <span class="fb-dot" aria-hidden="true"></span>
+          <div class="fb-body">
+            <div class="fb-title">{t('docs.fallbackBanner')}</div>
+            <a class="fb-cta" href={`https://github.com/garybowers/bootimus/tree/main/docs/${lang}`} target="_blank" rel="noopener">
+              {t('docs.translateCta')}
+            </a>
+          </div>
+          <code class="fb-tag">en → {lang}</code>
         </div>
-        <code class="fb-tag">en → {lang}</code>
-      </div>
+      )}
 
       <header class="docs-head">
         <span class="section-kicker text-amber">// {t('docs.title').toLowerCase()}</span>
@@ -49,7 +54,7 @@ const { t } = useTranslations(lang);
                 <a class="dx-card" href={docUrl(lang, item.slug)}>
                   <div class="dx-card-head">
                     <h3>{item.title}</h3>
-                    <span class="dx-pending">{t('docs.pending')}</span>
+                    {!translated.has(item.slug) && <span class="dx-pending">{t('docs.pending')}</span>}
                   </div>
                   {item.description && <p class="text-dim">{item.description}</p>}
                   <span class="dx-go">read →</span>

@@ -7,4 +7,6 @@ type UserStore interface {
 	ResetAdminPassword() (string, error)
 	GetUser(username string) (*models.User, error)
 	UpdateUserLastLogin(username string) error
+	CreateUser(user *models.User) error
+	UpdateUser(username string, user *models.User) error
 }

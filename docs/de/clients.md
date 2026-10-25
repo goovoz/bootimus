@@ -10,6 +10,9 @@ Kompletter Leitfaden zur Verwaltung von Netzwerk-Boot-Clients mit MAC-basierter 
 - [Öffentliche vs. private Images](#öffentliche-vs-private-images)
 - [Client-Statistiken](#client-statistiken)
 - [Bulk-Operationen](#bulk-operationen)
+- [Boot-Menü eines Clients in der Vorschau ansehen](#boot-menü-eines-clients-in-der-vorschau-ansehen)
+- [Von iSCSI oder AoE booten](#von-iscsi-oder-aoe-booten)
+- [Remote-Konsole](#remote-konsole)
 - [Fehlersuche](#fehlersuche)
 
 ## Überblick
@@ -26,6 +29,7 @@ Bootimus nutzt MAC-Adress-basierte Zugriffskontrolle, um zu steuern, welche Clie
 - **Zugewiesene Images**: Wenn ein Client zugewiesene Images hat, sieht er **nur diese** (nicht die volle Public-Liste)
 - **Öffentliche Images zeigen**: Wenn zusätzlich zu zugewiesenen Images aktiviert, sieht der Client sowohl zugewiesene als auch öffentliche Images
 - **Next-Boot-Aktion**: Einmaliger Boot-Image-Override, der sich nach Nutzung automatisch löscht
+- **Auto-Installations-Variablen**: Benannte Werte, die Auto-Install-Dateien als `{{VAR.<name>}}` zur Verfügung stehen; Gruppenvariablen sind Defaults, Client-Variablen überschreiben sie (siehe [Auto-Install](auto-install.md#variablen))
 
 ### Client-Auto-Discovery
 
@@ -373,6 +377,75 @@ curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8081/api/clients
 - Wenn der Client nicht bootet, bevor die Aktion verbraucht ist, löscht sich der Next-Boot beim ersten PXE-Request
 - Leere Gruppen werden aus dem Menü ausgeblendet, wenn ein Client zugewiesene Images hat
 
+## Boot-Menü eines Clients in der Vorschau ansehen
+
+Rendere das exakte iPXE-Skript, das ein Client erhalten wird, ohne auf seinen PXE-Boot zu warten. Die Vorschau hat keine Nebenwirkungen: nichts wird ins Boot-Log geschrieben, die Next-Boot-Aktion des Clients wird nicht verbraucht, und der Cluster-Enrolment-Zustand bleibt unangetastet.
+
+### Per Web-Oberfläche
+
+- Klicke **"Preview Menu"** in einer Client-Zeile, oder
+- Öffne **Boot Menu** → **Preview as Client**, gib eine MAC-Adresse ein (oder lass `unknown` für einen nicht registrierten Client stehen) und klicke **"Preview Menu"**
+
+Das Modal zeigt, ob die MAC ein registrierter Client ist, ob er das normale Menü oder einen Cluster-Install-Boot bekäme, ein eventuell anstehendes Next-Boot-Image und das vollständige Skript mit den Buttons **Copy** und **Download**.
+
+### Per API
+
+```bash
+# Vorschau für einen bestimmten Client
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8081/api/clients/menu-preview?mac=00:11:22:33:44:55"
+
+# Vorschau des anonymen Menüs, das ein nicht registrierter Client bekommt
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/clients/menu-preview
+```
+
+Die Antwortdaten enthalten `mac`, `known_client`, `client_name`, `next_boot_image`, `kind` (`menu` oder `install`) und `script`. Schreibgeschützte Nutzer dürfen diesen Endpunkt aufrufen.
+
+## Von iSCSI oder AoE booten
+
+Clients können ein Betriebssystem booten, das auf einer SAN-Platte statt auf einer lokalen liegt. Bootimus übergibt die Platte mit iPXEs `sanboot`-Befehl an die Firmware, deshalb funktioniert hier alles, was mit iPXE von einem SAN booten kann: iSCSI- und ATA-over-Ethernet-Targets sowie rohe Disk-Images über HTTP. Bootimus hostet die Platten nicht; richte ein Target auf einen Storage-Server, den du ohnehin betreibst.
+
+### Ein Target definieren
+
+**Clients** → **SAN Targets** → **Add SAN Target**:
+
+| Feld | Bedeutung |
+|------|-----------|
+| Name | Erscheint im Boot-Menü als "Boot from SAN: *name*" |
+| SAN URI | Die iPXE-SAN-URI, zum Beispiel `iscsi:10.0.0.5::::iqn.2024-01.lan:disk0`, `aoe:e0.0` oder `http://10.0.0.5/disk.img` |
+| Initiator IQN | Optional. `{{MAC}}` wird durch die MAC-Adresse des Clients ohne Doppelpunkte ersetzt, sodass ein Target viele Clients mit unterschiedlichen Initiator-Namen bedienen kann |
+| CHAP | Optional Benutzername und Passwort, plus Reverse-CHAP-Zugangsdaten (mutual CHAP), falls das Target sie verlangt |
+
+Das iSCSI-URI-Format ist `iscsi:<server>:<protocol>:<port>:<lun>:<iqn>`. Lass Protokoll, Port und LUN für die Defaults leer, wie im Beispiel oben.
+
+### Ein Target zuweisen
+
+Öffne einen Client (oder eine Client-Gruppe) und wähle das Target unter **SAN Target**. Ein Client ohne eigenes Target erbt das der Gruppe. Das Menü des Clients bekommt einen Eintrag "Boot from SAN"; hake **Boot from SAN by default** an, damit das Menü beim Ablauf des Timeouts auf diesen Eintrag fällt und eine neu gestartete Maschine direkt wieder vom SAN hochkommt. Ein anstehendes Next-Boot-Image hat weiterhin Vorrang, und die üblichen Images bleiben wählbar.
+
+Für einen einmaligen SAN-Boot wähle das Target unter **Next Boot**; es wird nach den Images aufgeführt und löscht sich nach einem Boot wie jede andere Next-Boot-Aktion.
+
+### Beispiel-Targets
+
+Ein Linux-Target mit `tgt`:
+
+```bash
+sudo tgtadm --lld iscsi --op new --mode target --tid 1 -T iqn.2024-01.lan:disk0
+sudo tgtadm --lld iscsi --op new --mode logicalunit --tid 1 --lun 1 -b /srv/iscsi/disk0.img
+sudo tgtadm --lld iscsi --op bind --mode target --tid 1 -I ALL
+```
+
+Target-URI: `iscsi:10.0.0.5::::iqn.2024-01.lan:disk0`
+
+Mit LIO (`targetcli`) legst du einen fileio- oder block-Backstore, eine IQN, eine LUN und ein Portal an und deaktivierst entweder die Authentifizierung für die TPG oder setzt `userid`/`password` (und `mutual_userid`/`mutual_password`) passend zu den CHAP-Feldern hier.
+
+**Windows** installiert und bootet über iPXEs SAN-Hook von iSCSI: boote den Windows-Installer aus dem Menü, während dem Client ein Target zugewiesen ist, und der Installer sieht die iSCSI-Platte als lokales Laufwerk. Setze nach der Installation **Boot from SAN by default**, damit die Maschine bei jedem Boot dorthin zurückkehrt. Windows braucht den Netzwerktreiber für die NIC, von der es gebootet hat; die meisten modernen Intel- und Realtek-NICs deckt der Installer ab.
+
+### Vorbehalte
+
+- CHAP-Zugangsdaten landen im iPXE-Skript, das der bootende Client über unverschlüsseltes HTTP holt. Behandle das Boot-Netzwerk als vertrauenswürdig, so wie du es für Auto-Install-Antwortdateien ohnehin tust.
+- iPXEs `sanboot` setzt einen Bootloader auf der SAN-Platte voraus; es installiert nichts.
+- Schreibgeschützte Nutzer sehen die Targets, aber nicht die CHAP-Passwörter.
+
 ## Wake-on-LAN
 
 Sende ein WOL-Magic-Paket, um einen Client aus der Ferne aufzuwecken. Kombiniere das mit **Next Boot**, um eine Maschine zu wecken und sie in ein bestimmtes Image booten zu lassen.
@@ -387,6 +460,28 @@ curl -H "Authorization: Bearer $TOKEN" -X POST "http://localhost:8081/api/client
 curl -H "Authorization: Bearer $TOKEN" -X POST "http://localhost:8081/api/clients/wake?mac=00:11:22:33:44:55" \
   -H "Content-Type: application/json" \
   -d '{"broadcast_addr":"192.168.1.255"}'
+```
+
+## Remote-Konsole
+
+Clients mit konfiguriertem BMC-Host bekommen im Client-Bearbeiten-Dialog einen Button **Open Console** und in der Client-Liste einen Button **Console**. Er öffnet eine interaktive serielle Konsole im Browser, die über einen WebSocket durch Bootimus gestreamt wird, sodass sich eine Maschine ohne angeschlossenen Monitor durch POST, Firmware-Setup und Installer hindurch beobachten lässt. Die Konsole ist nur für Administratoren, eine Sitzung pro Client gleichzeitig, und schließt sich nach 30 Minuten ohne Aktivität.
+
+| Protokoll | Transport | Voraussetzungen |
+|---|---|---|
+| **Intel AMT** | Serial-over-LAN über den AMT-Redirection-Dienst, von Bootimus nativ implementiert auf Port 16994 (16995, wenn der Client den TLS-Management-Port 16993 verwendet) | SOL und der Redirection-Listener in MEBx unter *Remote Control* oder im AMT-Web-UI unter *Remote Control* → *Redirection* aktiviert; dieselben Zugangsdaten wie für die Power-Steuerung |
+| **Redfish** | IPMI-Serial-over-LAN, indem auf dem Bootimus-Host `ipmitool sol activate` ausgeführt wird | `ipmitool` im `PATH` (das Docker-Image enthält es), UDP-Port 623 auf dem BMC erreichbar und SOL für den BMC-Nutzer aktiviert. Der Redfish-Port wird für die Konsole nicht verwendet |
+
+Die serielle Konsole zeigt nur, was Firmware oder Betriebssystem auf den seriellen Port schreiben. Auf den meisten Servern heißt das, *Console Redirection* im BIOS- oder UEFI-Setup zu aktivieren und unter Linux `console=ttyS0,115200` (oder `ttyS1`, je nach Board) auf die Kernel-Kommandozeile zu setzen. Intel-AMT-Maschinen leiten COM1 mit 115200 Baud um, sobald SOL aktiviert ist. Bleibt der Bildschirm leer, drücke Enter; erscheint während des Boots nichts, ist die Console Redirection in der Firmware nicht eingeschaltet.
+
+Tastendrücke werden so gesendet, wie sie getippt werden, die üblichen Terminal-Kürzel funktionieren also. Das Schließen des Dialogs oder ein Klick auf **Disconnect** beendet die Sitzung und deaktiviert bei IPMI die SOL-Payload auf dem BMC, damit die nächste Verbindung sauber startet.
+
+### Per API
+
+Der Endpunkt ist ein WebSocket unter `/api/clients/console?mac=...` auf dem Admin-Port. Browser können bei einem WebSocket keinen `Authorization`-Header senden, deshalb wird der JWT entweder als zweiter `Sec-WebSocket-Protocol`-Eintrag nach `bearer` oder als Query-Parameter `token` übergeben. Binary-Frames transportieren Konsolenausgabe und Tastendrücke; Text-Frames von Bootimus sind JSON-Statusmeldungen wie `{"type":"connected","message":"..."}`.
+
+```bash
+# Beispiel mit websocat: interaktive Konsole für einen Client
+websocat --binary "ws://localhost:8081/api/clients/console?mac=00:11:22:33:44:55&token=$TOKEN"
 ```
 
 ## Hardware-Inventar

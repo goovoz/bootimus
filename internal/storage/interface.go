@@ -18,6 +18,7 @@ type Storage interface {
 
 	ListClients() ([]*models.Client, error)
 	GetClient(mac string) (*models.Client, error)
+	GetClientBootloaderSets(mac string) (clientSet, groupSet string, err error)
 	CreateClient(client *models.Client) error
 	UpdateClient(mac string, client *models.Client) error
 	DeleteClient(mac string) error
@@ -40,6 +41,12 @@ type Storage interface {
 	GetUser(username string) (*models.User, error)
 	UpdateUserLastLogin(username string) error
 	ListUsers() ([]*models.User, error)
+	ListAPITokens() ([]*models.APIToken, error)
+	CreateAPIToken(token *models.APIToken) error
+	GetAPITokenByHash(hash string) (*models.APIToken, error)
+	GetAPIToken(id uint) (*models.APIToken, error)
+	RevokeAPIToken(id uint) error
+	TouchAPIToken(id uint, at time.Time) error
 	CreateUser(user *models.User) error
 	UpdateUser(username string, user *models.User) error
 	DeleteUser(username string) error
@@ -81,12 +88,42 @@ type Storage interface {
 	GetMenuTheme() (*models.MenuTheme, error)
 	UpdateMenuTheme(theme *models.MenuTheme) error
 
+	ListSANTargets() ([]*models.SANTarget, error)
+	GetSANTarget(id uint) (*models.SANTarget, error)
+	CreateSANTarget(target *models.SANTarget) error
+	UpdateSANTarget(id uint, target *models.SANTarget) error
+	DeleteSANTarget(id uint) error
+	CountSANTargetUsers(id uint) (int64, int64, error)
+
 	GetWebhookConfig() (*models.WebhookConfig, error)
 	UpdateWebhookConfig(cfg *models.WebhookConfig) error
 
+<<<<<<< HEAD
 	// [bootimus-fork L1] fork-patch: download-proxy
 	GetProxyConfig() (*models.ProxyConfig, error)
 	UpdateProxyConfig(cfg *models.ProxyConfig) error
+=======
+	GetHousekeepingSettings() (*models.HousekeepingSettings, error)
+	UpdateHousekeepingSettings(settings *models.HousekeepingSettings) error
+	RecordHousekeepingRun(status, report string) error
+	DeleteBootLogsBefore(cutoff time.Time) (int64, error)
+	DeleteInventoryHistoryBefore(cutoff time.Time) (int64, error)
+	DeleteDiscoveredClientsNotSeenSince(cutoff time.Time) (int64, error)
+	CreateInstallRecord(rec *models.InstallRecord) error
+	UpdateInstallRecord(rec *models.InstallRecord) error
+	GetInstallRecordByToken(token string) (*models.InstallRecord, error)
+	LatestOpenInstallRecord(mac, imageFilename string) (*models.InstallRecord, error)
+	ListInstallRecords(mac string, limit int) ([]models.InstallRecord, error)
+	ListOpenInstallRecordsBefore(cutoff time.Time) ([]models.InstallRecord, error)
+	SetClientInstallStatus(mac, state, image string, at time.Time) error
+
+	GetReplicaState() (*models.ReplicaState, error)
+	SaveReplicaState(state *models.ReplicaState) error
+
+	CreateAuditLog(entry *models.AuditLog) error
+	ListAuditLogs(filter AuditLogFilter) ([]models.AuditLog, int64, error)
+	DeleteAuditLogsBefore(cutoff time.Time) (int64, error)
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 
 	ListScheduledTasks() ([]*models.ScheduledTask, error)
 	ListScheduledTasksByGroup(groupID uint) ([]*models.ScheduledTask, error)
@@ -134,4 +171,17 @@ type Storage interface {
 	ResetClientEnrollment(mac string) error
 
 	GetStats() (map[string]int64, error)
+
+	CreateDiskImage(image *models.DiskImage) error
+	GetDiskImage(id uint) (*models.DiskImage, error)
+	GetDiskImageByName(name string) (*models.DiskImage, error)
+	ListDiskImages() ([]*models.DiskImage, error)
+	UpdateDiskImage(image *models.DiskImage) error
+	DeleteDiskImage(id uint) error
+	CreateDiskJob(job *models.DiskJob) error
+	GetDiskJob(id uint) (*models.DiskJob, error)
+	GetDiskJobByToken(token string) (*models.DiskJob, error)
+	ListDiskJobs(mac string, limit int) ([]*models.DiskJob, error)
+	ActiveDiskJobForClient(mac string) (*models.DiskJob, error)
+	UpdateDiskJob(job *models.DiskJob) error
 }

@@ -21,7 +21,7 @@ Distro-Profile definieren:
 - **Wie erkannt wird**, um welche Distro es sich bei einem ISO handelt (Filename-Pattern-Matching)
 - **Wo Kernel, initrd und squashfs** im ISO zu finden sind
 - **Welche Boot-Parameter** beim PXE-Boot verwendet werden
-- **Welcher Auto-Install-Typ** unterstützt wird (preseed, kickstart, autoinstall etc.)
+- **Welcher Auto-Install-Typ** unterstützt wird (preseed, kickstart, autoinstall, autoyast, agama, ignition, proxmox etc.)
 
 ### Profiltypen
 
@@ -182,7 +182,7 @@ curl -H "Authorization: Bearer $TOKEN" -X DELETE "http://localhost:8081/api/prof
 | `squashfs_paths` | Nein | Pfade, die für das squashfs-Root-Dateisystem probiert werden |
 | `default_boot_params` | Nein | Standard-Kernel-Boot-Parameter (mit Platzhalter-Unterstützung) |
 | `boot_params_with_squashfs` | Nein | Alternative Boot-Parameter, wenn ein squashfs erkannt wird |
-| `auto_install_type` | Nein | Auto-Install-Format: `preseed`, `kickstart`, `autoinstall`, `autounattend` |
+| `auto_install_type` | Nein | Auto-Install-Format: `preseed`, `kickstart`, `autoinstall`, `autounattend`, `autoyast`, `agama`, `ignition`, `proxmox` (siehe [Auto-Install](auto-install.md#unterstützte-formate)) |
 | `boot_method` | Nein | Boot-Methode überschreiben (z.B. `wimboot` für Windows) |
 
 ## Platzhalter

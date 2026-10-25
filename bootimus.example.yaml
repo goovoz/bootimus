@@ -7,6 +7,7 @@ http_port: 8080
 admin_port: 8081  # Admin interface port
 nbd_enabled: true  # Enable NBD server for network block device ISO mounting
 nbd_port: 10809  # NBD server port
+install_timeout_hours: 6  # Mark unattended installs that never report completion as failed after this long
 
 # Windows unattended install via SMB (off by default).
 # When enabled, bootimus starts an isolated smbd that exposes each extracted
@@ -16,6 +17,28 @@ nbd_port: 10809  # NBD server port
 windows_smb:
   enabled: false
   port: 445
+
+# Multi-site: run this instance as a read-only replica of a primary Bootimus.
+# Create an API token on the primary (Users -> API Tokens; admin scope also
+# syncs auto-install files) and point the replica at the primary's admin URL.
+# Changes are refused on the replica; it mirrors clients, images, groups,
+# SAN targets, the menu theme, custom profiles, tools and custom files.
+replica:
+  primary_url: ""        # e.g. https://bootimus.hq.example.com:8081
+  token: ""              # btk_... token created on the primary
+  interval: 5m           # how often to sync (minimum 30s)
+  sync_isos: true        # copy ISOs locally; false serves them from the primary
+
+# Serve the admin interface over HTTPS (off by default).
+# With no cert_file and key_file a self-signed certificate is generated once
+# and kept under <data_dir>/tls/. redirect_port optionally answers plain HTTP
+# on another port with a redirect to HTTPS. Send SIGHUP to reload the files.
+admin_tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+  self_signed: false
+  redirect_port: 0
 boot_dir: ""  # Optional - iPXE bootloaders are embedded in binary
 data_dir: ./data  # Required - contains ISO files
 server_addr: ""  # Auto-detected if empty

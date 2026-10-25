@@ -2,6 +2,7 @@ package smb
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -11,7 +12,10 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 )
+
+const startupGrace = time.Second
 
 type Manager struct {
 	dataDir    string
@@ -22,6 +26,9 @@ type Manager struct {
 	shares map[string]string
 
 	cmd *exec.Cmd
+
+	stateMu sync.Mutex
+	runErr  error
 }
 
 func NewManager(dataDir, addr, bindInterface string, port int) *Manager {
@@ -98,7 +105,33 @@ func (m *Manager) Port() int {
 	return m.port
 }
 
+func (m *Manager) Err() error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return m.runErr
+}
+
+func (m *Manager) Running() bool {
+	return m.Err() == nil && m.cmd != nil && m.cmd.Process != nil
+}
+
+func (m *Manager) setErr(err error) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.runErr == nil {
+		m.runErr = err
+	}
+}
+
 func (m *Manager) Start() error {
+	err := m.start()
+	if err != nil {
+		m.setErr(err)
+	}
+	return err
+}
+
+func (m *Manager) start() error {
 	smbdPath, err := exec.LookPath("smbd")
 	if err != nil {
 		return fmt.Errorf("smbd not found in PATH (install the samba package): %w", err)
@@ -106,6 +139,10 @@ func (m *Manager) Start() error {
 
 	if err := m.ensureStateDirs(); err != nil {
 		return fmt.Errorf("failed to create smbd state directories: %w", err)
+	}
+
+	if err := checkPermissionSupport(m.smbDir()); err != nil {
+		return err
 	}
 
 	if err := m.writeConfig(); err != nil {
@@ -120,25 +157,71 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("failed to start smbd: %w", err)
 	}
 
-	log.Printf("SMB: smbd started (PID %d, port %d)", m.cmd.Process.Pid, m.port)
-
+	exited := make(chan error, 1)
 	go func(cmd *exec.Cmd) {
 		err := cmd.Wait()
 		if err != nil {
-			log.Printf("SMB: smbd exited: %v (check %s/log/smbd.log)", err, m.smbDir())
+			log.Printf("SMB: smbd exited: %v (check %s)", err, m.logPath())
+			m.setErr(fmt.Errorf("smbd exited: %v", err))
 		} else {
 			log.Printf("SMB: smbd exited cleanly")
+			m.setErr(errors.New("smbd exited"))
 		}
+		exited <- err
 	}(m.cmd)
 
+	select {
+	case err := <-exited:
+		msg := fmt.Sprintf("smbd exited immediately (%v)", err)
+		if tail := logTail(m.logPath(), 3); tail != "" {
+			msg += ": " + tail
+		}
+		return fmt.Errorf("%s (see %s)", msg, m.logPath())
+	case <-time.After(startupGrace):
+	}
+
+	log.Printf("SMB: smbd started (PID %d, port %d)", m.cmd.Process.Pid, m.port)
 	return nil
+}
+
+func checkPermissionSupport(dir string) error {
+	probe := filepath.Join(dir, ".permcheck")
+	_ = os.RemoveAll(probe)
+	if err := os.Mkdir(probe, 0755); err != nil {
+		return fmt.Errorf("failed to create %s: %w", probe, err)
+	}
+	defer os.Remove(probe)
+	chmodErr := os.Chmod(probe, 0755)
+	st, err := os.Stat(probe)
+	if err != nil {
+		return fmt.Errorf("failed to stat %s: %w", probe, err)
+	}
+	if mode := st.Mode().Perm(); mode != 0755 || chmodErr != nil {
+		return fmt.Errorf("%s is on a filesystem that cannot store Unix permissions (a 0755 directory reads back as %04o) and smbd refuses to run there; move the Bootimus data directory to a native Linux filesystem such as ext4 or XFS", dir, mode)
+	}
+	return nil
+}
+
+func logTail(path string, lines int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	all := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(all) > lines {
+		all = all[len(all)-lines:]
+	}
+	for i, l := range all {
+		all[i] = strings.TrimSpace(l)
+	}
+	return strings.Join(all, " | ")
 }
 
 func (m *Manager) Reload() error {
 	if err := m.writeConfig(); err != nil {
 		return fmt.Errorf("failed to write smb.conf: %w", err)
 	}
-	if m.cmd == nil || m.cmd.Process == nil {
+	if !m.Running() {
 		return nil
 	}
 	ctrlPath, err := exec.LookPath("smbcontrol")
@@ -154,7 +237,7 @@ func (m *Manager) Reload() error {
 }
 
 func (m *Manager) Stop() {
-	if m.cmd != nil && m.cmd.Process != nil {
+	if m.Running() {
 		if err := m.cmd.Process.Kill(); err != nil {
 			log.Printf("SMB: warning - could not kill smbd: %v", err)
 		}
@@ -180,6 +263,7 @@ func SanitiseShareName(isoBase string) string {
 
 func (m *Manager) smbDir() string     { return filepath.Join(m.dataDir, "smb") }
 func (m *Manager) configPath() string { return filepath.Join(m.smbDir(), "smb.conf") }
+func (m *Manager) logPath() string    { return filepath.Join(m.smbDir(), "log", "smbd.log") }
 
 func (m *Manager) ensureStateDirs() error {
 	for _, sub := range []string{"locks", "state", "cache", "pid", "log", "ncalrpc", "private", "usershares"} {

@@ -20,6 +20,8 @@ func TestISODownloadFilename(t *testing.T) {
 		{url: "https://example.com/pub/ubuntu.iso", want: "ubuntu.iso"},
 		{url: "https://example.com/pub/ubuntu.iso", requested: "renamed.ISO", want: "renamed.ISO"},
 		{url: "https://example.com/pub/readme.txt", wantErr: true},
+		{url: "https://github.com/rgl/hello-world-debian-uki/releases/download/v0.0.1/hello-world.efi", want: "hello-world.efi"},
+		{url: "https://example.com/pub/ubuntu.iso", requested: "hello.efi", want: "hello.efi"},
 		{url: "https://example.com/pub/ubuntu.iso", requested: "renamed.img", wantErr: true},
 		{url: "https://example.com/pub/ubuntu.iso", requested: "../../etc/evil.iso", wantErr: true},
 		{url: "https://example.com/pub/ubuntu.iso", requested: "sub/dir.iso", wantErr: true},

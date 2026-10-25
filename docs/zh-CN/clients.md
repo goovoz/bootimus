@@ -10,6 +10,12 @@
 - [公开镜像与私有镜像](#公开镜像与私有镜像)
 - [客户端统计](#客户端统计)
 - [批量操作](#批量操作)
+- [下次引导动作](#下次引导动作)
+- [预览客户端的引导菜单](#预览客户端的引导菜单)
+- [从 iSCSI 或 AoE 引导](#从-iscsi-或-aoe-引导)
+- [Wake-on-LAN](#wake-on-lan)
+- [远程控制台](#远程控制台)
+- [硬件清单](#硬件清单)
 - [故障排查](#故障排查)
 
 ## 概述
@@ -26,6 +32,7 @@ Bootimus 通过基于 MAC 地址的访问控制来管理哪些客户端可以引
 - **已分配镜像**:当一个客户端有已分配镜像时,它**只看到这些镜像**(而不是完整的公开列表)
 - **显示公开镜像**:当与已分配镜像一起启用时,客户端能看到已分配镜像和公开镜像
 - **下次引导动作**:一次性的引导镜像覆盖,使用后自动清除
+- **自动安装变量**:以 `{{VAR.<name>}}` 形式提供给无人值守安装文件的命名值;组变量是默认值,客户端变量覆盖它们(见[无人值守安装](auto-install.md#变量))
 
 ### 客户端自动发现
 
@@ -373,6 +380,75 @@ curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8081/api/clients
 - 如果客户端在动作消费之前没有引导,下次 PXE 请求时会清除下次引导
 - 当客户端有已分配镜像时,空组会从菜单中隐藏
 
+## 预览客户端的引导菜单
+
+无需等待客户端实际 PXE 引导,即可渲染出它将收到的 iPXE 脚本。预览没有副作用:不会写入引导日志,不会消费客户端的下次引导动作,集群注册状态也保持不变。
+
+### 通过 Web 界面
+
+- 点击客户端行上的 **"Preview Menu"**,或
+- 打开 **Boot Menu** → **Preview as Client**,输入 MAC 地址(或保留 `unknown` 表示未注册的客户端),然后点击 **"Preview Menu"**
+
+弹窗会显示该 MAC 是否为已注册客户端、它会收到普通菜单还是集群安装引导、是否有待处理的下次引导镜像,以及带 **Copy** 和 **Download** 按钮的完整脚本。
+
+### 通过 API
+
+```bash
+# Preview for a specific client
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8081/api/clients/menu-preview?mac=00:11:22:33:44:55"
+
+# Preview the anonymous menu an unregistered client gets
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/clients/menu-preview
+```
+
+响应数据包含 `mac`、`known_client`、`client_name`、`next_boot_image`、`kind`(`menu` 或 `install`)和 `script`。只读用户也可以调用此端点。
+
+## 从 iSCSI 或 AoE 引导
+
+客户端可以引导位于 SAN 磁盘而非本地磁盘上的操作系统。Bootimus 用 iPXE 的 `sanboot` 命令把磁盘交给固件,所以凡是 iPXE 能从 SAN 引导的都适用:iSCSI 和 ATA-over-Ethernet 目标,以及通过 HTTP 提供的原始磁盘镜像。Bootimus 不托管磁盘;请把目标指向你已经在运行的存储服务器。
+
+### 定义目标
+
+**Clients** → **SAN Targets** → **Add SAN Target**:
+
+| 字段 | 含义 |
+|------|------|
+| Name | 在引导菜单中显示为 "Boot from SAN: *name*" |
+| SAN URI | iPXE 的 SAN URI,例如 `iscsi:10.0.0.5::::iqn.2024-01.lan:disk0`、`aoe:e0.0` 或 `http://10.0.0.5/disk.img` |
+| Initiator IQN | 可选。`{{MAC}}` 会替换为去掉冒号的客户端 MAC 地址,因此一个目标可以用不同的发起方名称服务多个客户端 |
+| CHAP | 可选的用户名和密码,如果目标要求,还可填写反向(双向)CHAP 凭据 |
+
+iSCSI URI 的格式为 `iscsi:<server>:<protocol>:<port>:<lun>:<iqn>`。协议、端口和 LUN 留空即使用默认值,如上例所示。
+
+### 分配目标
+
+打开一个客户端(或客户端组),在 **SAN Target** 下选择目标。没有自己目标的客户端会继承组的目标。该客户端的菜单会多出一个 "Boot from SAN" 条目;勾选 **Boot from SAN by default** 可让它成为超时触发时菜单落入的条目,这样重启的机器会直接从 SAN 启动。待处理的下次引导镜像仍然优先,常规镜像也仍可选择。
+
+要进行一次性的 SAN 引导,请在 **Next Boot** 中选择该目标;它列在镜像之后,并像其他下次引导动作一样在一次引导后清除。
+
+### 目标示例
+
+使用 `tgt` 的 Linux 目标:
+
+```bash
+sudo tgtadm --lld iscsi --op new --mode target --tid 1 -T iqn.2024-01.lan:disk0
+sudo tgtadm --lld iscsi --op new --mode logicalunit --tid 1 --lun 1 -b /srv/iscsi/disk0.img
+sudo tgtadm --lld iscsi --op bind --mode target --tid 1 -I ALL
+```
+
+目标 URI:`iscsi:10.0.0.5::::iqn.2024-01.lan:disk0`
+
+使用 LIO(`targetcli`)时,创建一个 fileio 或 block 后端存储、一个 iqn、一个 LUN 和一个 portal,然后要么为该 TPG 禁用认证,要么设置 `userid`/`password`(以及 `mutual_userid`/`mutual_password`)以匹配这里的 CHAP 字段。
+
+**Windows** 通过 iPXE 的 SAN 钩子从 iSCSI 安装和引导:在客户端已分配目标的情况下,从菜单引导 Windows 安装程序,安装程序会把 iSCSI 磁盘视为本地驱动器。安装完成后勾选 **Boot from SAN by default**,机器便会在每次启动时回到它。Windows 需要其引导所用网卡的网络驱动;大多数现代 Intel 和 Realtek 网卡安装程序都已覆盖。
+
+### 注意事项
+
+- CHAP 凭据会放入 iPXE 脚本中,而引导中的客户端是通过明文 HTTP 获取该脚本的。请像对待自动安装应答文件那样,把引导网络视为可信网络。
+- iPXE 的 `sanboot` 要求 SAN 磁盘上已有引导加载程序;它不会安装任何东西。
+- 只读用户能看到目标,但看不到 CHAP 密码。
+
 ## Wake-on-LAN
 
 发送一个 WOL magic 包以远程唤醒客户端。与 **Next Boot** 结合使用,可以唤醒一台机器并让它引导到指定镜像。
@@ -387,6 +463,28 @@ curl -H "Authorization: Bearer $TOKEN" -X POST "http://localhost:8081/api/client
 curl -H "Authorization: Bearer $TOKEN" -X POST "http://localhost:8081/api/clients/wake?mac=00:11:22:33:44:55" \
   -H "Content-Type: application/json" \
   -d '{"broadcast_addr":"192.168.1.255"}'
+```
+
+## 远程控制台
+
+配置了 BMC 主机的客户端会在客户端编辑对话框中获得 **Open Console** 按钮,并在客户端列表中获得 **Console** 按钮。它会在浏览器中打开一个交互式串口控制台,经 Bootimus 通过 WebSocket 转发,因此无需外接显示器就能观察机器的 POST、固件设置和安装程序。控制台仅限管理员使用,每个客户端同一时间只能有一个会话,30 分钟无活动后自动关闭。
+
+| 协议 | 传输方式 | 要求 |
+|---|---|---|
+| **Intel AMT** | 经由 AMT 重定向服务的 Serial-over-LAN,由 Bootimus 在 16994 端口原生实现(客户端使用 TLS 管理端口 16993 时为 16995) | 在 MEBx 的 *Remote Control* 下,或在 AMT Web 界面的 *Remote Control* → *Redirection* 下启用 SOL 和重定向监听器;用户和密码与电源控制相同 |
+| **Redfish** | 在 Bootimus 主机上运行 `ipmitool sol activate` 实现的 IPMI Serial-over-LAN | `PATH` 中有 `ipmitool`(Docker 镜像已包含),BMC 的 UDP 623 端口可达,且已为该 BMC 用户启用 SOL。控制台不使用 Redfish 端口 |
+
+串口控制台只显示固件或操作系统写到串口的内容。在大多数服务器上,这意味着要在 BIOS 或 UEFI 设置中启用 *Console Redirection*,在 Linux 上则要在内核命令行加入 `console=ttyS0,115200`(或 `ttyS1`,取决于主板)。Intel AMT 机器在启用 SOL 后会以 115200 波特率重定向 COM1。如果屏幕一直空白,请按回车;如果引导期间什么都没出现,说明固件中没有打开控制台重定向。
+
+按键会按原样发送,所以常用的终端快捷键都能用。关闭对话框或点击 **Disconnect** 会结束会话,对于 IPMI 还会在 BMC 上停用 SOL 负载,以便下一次连接干净地开始。
+
+### 通过 API
+
+端点是管理端口上位于 `/api/clients/console?mac=...` 的 WebSocket。浏览器无法在 WebSocket 上发送 `Authorization` 头,因此 JWT 要么作为 `Sec-WebSocket-Protocol` 中紧跟 `bearer` 的第二项传递,要么作为 `token` 查询参数传递。二进制帧承载控制台输出和按键;来自 Bootimus 的文本帧是 JSON 状态消息,例如 `{"type":"connected","message":"..."}`。
+
+```bash
+# websocat example: interactive console for a client
+websocat --binary "ws://localhost:8081/api/clients/console?mac=00:11:22:33:44:55&token=$TOKEN"
 ```
 
 ## 硬件清单

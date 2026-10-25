@@ -10,6 +10,13 @@ Complete guide for managing network boot clients with MAC-based access control.
 - [Public vs Private Images](#public-vs-private-images)
 - [Client Statistics](#client-statistics)
 - [Bulk Operations](#bulk-operations)
+- [Next Boot Action](#next-boot-action)
+- [Previewing a Client's Boot Menu](#previewing-a-clients-boot-menu)
+- [Booting from iSCSI or AoE](#booting-from-iscsi-or-aoe)
+- [Wake-on-LAN](#wake-on-lan)
+- [BMC Power Control](#bmc-power-control)
+- [Remote Console](#remote-console)
+- [Hardware Inventory](#hardware-inventory)
 - [Troubleshooting](#troubleshooting)
 
 ## Overview
@@ -26,6 +33,8 @@ Bootimus uses MAC address-based access control to manage which clients can boot 
 - **Assigned Images**: When a client has images assigned, it sees **only those images** (not the full public list)
 - **Show Public Images**: When enabled alongside assigned images, client sees both assigned and public images
 - **Next Boot Action**: A one-time boot image override that auto-clears after use
+- **Bootloader Set**: An optional initial bootloader override for this client
+- **Auto-install variables**: Named values available to auto-install files as `{{VAR.<name>}}`; group variables are defaults, client variables override them (see [Auto-Install](auto-install.md#variables))
 
 ### Client Auto-Discovery
 
@@ -85,6 +94,22 @@ Bootimus accepts MAC addresses in these formats:
 All formats are normalised to colon-separated lowercase.
 
 ## Client Permissions
+
+### Select a Bootloader Set
+
+The bootloader set used for the initial PXE download is resolved in this order:
+
+1. Client bootloader set
+2. Client-group bootloader set
+3. Globally active bootloader set
+
+Select a set in the client's edit dialog, or leave **Default (global setting)**
+to inherit from its group and then the global setting.
+
+Per-client and client-group selection requires Bootimus's built-in proxyDHCP
+server, because it uses the PXE request's MAC address to advertise a
+set-qualified boot filename. External DHCP servers continue to advertise their
+statically configured filename and therefore use the globally active set.
 
 ### Assign Images to Client
 
@@ -373,6 +398,75 @@ curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8081/api/clients
 - If the client doesn't boot before the action is consumed, the next boot clears on the first PXE request
 - Empty groups are hidden from the menu when a client has assigned images
 
+## Previewing a Client's Boot Menu
+
+Render the exact iPXE script a client will receive without waiting for it to PXE boot. The preview has no side effects: nothing is written to the boot log, the client's next-boot action is not consumed, and cluster enrolment state is left alone.
+
+### Via Web Interface
+
+- Click **"Preview Menu"** on a client row, or
+- Open **Boot Menu** → **Preview as Client**, enter a MAC address (or leave `unknown` for an unregistered client) and click **"Preview Menu"**
+
+The modal shows whether the MAC is a registered client, whether it would receive the normal menu or a cluster install boot, any pending next-boot image, and the full script with **Copy** and **Download** buttons.
+
+### Via API
+
+```bash
+# Preview for a specific client
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8081/api/clients/menu-preview?mac=00:11:22:33:44:55"
+
+# Preview the anonymous menu an unregistered client gets
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/clients/menu-preview
+```
+
+The response data contains `mac`, `known_client`, `client_name`, `next_boot_image`, `kind` (`menu` or `install`) and `script`. Read-only users can call this endpoint.
+
+## Booting from iSCSI or AoE
+
+Clients can boot an operating system that lives on a SAN disk rather than a local one. Bootimus hands the disk to the firmware with iPXE's `sanboot` command, so anything that can boot from a SAN with iPXE works here: iSCSI and ATA-over-Ethernet targets, and raw disk images served over HTTP. Bootimus does not host the disks; point a target at a storage server you already run.
+
+### Defining a target
+
+**Clients** → **SAN Targets** → **Add SAN Target**:
+
+| Field | Meaning |
+|-------|---------|
+| Name | Shown in the boot menu as "Boot from SAN: *name*" |
+| SAN URI | The iPXE SAN URI, for example `iscsi:10.0.0.5::::iqn.2024-01.lan:disk0`, `aoe:e0.0` or `http://10.0.0.5/disk.img` |
+| Initiator IQN | Optional. `{{MAC}}` is replaced with the client's MAC address without colons, so one target can serve many clients with distinct initiator names |
+| CHAP | Optional username and password, plus reverse (mutual) CHAP credentials if the target demands them |
+
+The iSCSI URI format is `iscsi:<server>:<protocol>:<port>:<lun>:<iqn>`. Leave the protocol, port and LUN empty for the defaults, as in the example above.
+
+### Assigning a target
+
+Open a client (or a client group) and pick the target under **SAN Target**. A client without its own target inherits the group's. The client's menu gains a "Boot from SAN" entry; tick **Boot from SAN by default** to make it the entry the menu falls through to when the timeout fires, so a rebooted machine comes straight back up from the SAN. A pending next-boot image still takes priority, and the usual images remain selectable.
+
+For a one-off SAN boot choose the target in **Next Boot**; it is listed after the images and clears after one boot like any other next-boot action.
+
+### Example targets
+
+A Linux target with `tgt`:
+
+```bash
+sudo tgtadm --lld iscsi --op new --mode target --tid 1 -T iqn.2024-01.lan:disk0
+sudo tgtadm --lld iscsi --op new --mode logicalunit --tid 1 --lun 1 -b /srv/iscsi/disk0.img
+sudo tgtadm --lld iscsi --op bind --mode target --tid 1 -I ALL
+```
+
+Target URI: `iscsi:10.0.0.5::::iqn.2024-01.lan:disk0`
+
+With LIO (`targetcli`) create a fileio or block backstore, an iqn, a LUN and a portal, and either disable authentication for the TPG or set `userid`/`password` (and `mutual_userid`/`mutual_password`) to match the CHAP fields here.
+
+**Windows** installs and boots from iSCSI through iPXE's SAN hook: boot the Windows installer from the menu while the client has a target assigned, and the installer sees the iSCSI disk as a local drive. After installation set **Boot from SAN by default** so the machine returns to it on every boot. Windows needs the network driver for the NIC it booted from; most modern Intel and Realtek NICs are covered by the installer.
+
+### Caveats
+
+- CHAP credentials are placed in the iPXE script, which is fetched over plain HTTP by the booting client. Treat the boot network as trusted, as you already do for auto-install answer files.
+- iPXE's `sanboot` requires a bootloader on the SAN disk; it does not install anything.
+- Read-only users see the targets but not the CHAP passwords.
+
 ## Wake-on-LAN
 
 Send a WOL magic packet to wake a client remotely. Combine with **Next Boot** to wake a machine and have it boot into a specific image.
@@ -387,6 +481,72 @@ curl -H "Authorization: Bearer $TOKEN" -X POST "http://localhost:8081/api/client
 curl -H "Authorization: Bearer $TOKEN" -X POST "http://localhost:8081/api/clients/wake?mac=00:11:22:33:44:55" \
   -H "Content-Type: application/json" \
   -d '{"broadcast_addr":"192.168.1.255"}'
+```
+
+## BMC Power Control
+
+Clients with a baseboard management controller can be powered on, off and restarted from the client edit dialog, from the client group bulk actions and from scheduled tasks. Two protocols are supported:
+
+| Protocol | Typical hardware | Default port | Notes |
+|---|---|---|---|
+| **Redfish** (default) | Servers with iDRAC, iLO, XClarity, OpenBMC or any other DMTF Redfish BMC | 443 | HTTPS with basic authentication |
+| **Intel AMT** | Business desktops and mini PCs with Intel vPro, such as the Dell OptiPlex Micro range | 16992 (16993 with TLS) | HTTP digest authentication; AMT must be provisioned in the firmware setup (MEBx) first |
+
+The BMC host is always set per client, because every BMC has its own address. The protocol, port, username, password and *Skip TLS verify* flag can be set per client or inherited from the client group, so a fleet of identical machines only needs the credentials entered once.
+
+For Intel AMT the port chooses the transport: leave it blank or set 16992 for plain HTTP, or set 16993 for TLS. Tick *Skip TLS verify* when the machine uses its self-signed certificate.
+
+### Power actions
+
+The same action names work for both protocols:
+
+| Action | Redfish | Intel AMT |
+|---|---|---|
+| `On` | On | Power On |
+| `ForceOff` | ForceOff | Power Off (Soft) |
+| `ForceRestart` | ForceRestart | Master Bus Reset |
+| `GracefulShutdown` | GracefulShutdown | Power Off (Soft, Graceful) |
+| `GracefulRestart` | GracefulRestart | Master Bus Reset (Graceful) |
+
+On Intel AMT the graceful actions are only offered while the machine is on and the [Intel Local Manageability Service](https://github.com/intel/lms) is running in the operating system. Bootimus checks the states the machine currently advertises and reports a clear error rather than falling back to a hard power-off.
+
+### Via API
+
+```bash
+# Set the protocol and credentials on a client
+curl -H "Authorization: Bearer $TOKEN" -X PUT "http://localhost:8081/api/clients/update?mac=00:11:22:33:44:55" \
+  -H "Content-Type: application/json" \
+  -d '{"bmc_protocol":"amt","ipmi_host":"192.168.1.50","ipmi_username":"admin","ipmi_password":"secret"}'
+
+# Query the power state
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8081/api/clients/power/status?mac=00:11:22:33:44:55"
+
+# Send a power action
+curl -H "Authorization: Bearer $TOKEN" -X POST "http://localhost:8081/api/clients/power?mac=00:11:22:33:44:55&action=On"
+```
+
+`bmc_protocol` accepts `redfish` or `amt`. Leave it empty on a client to inherit the group's protocol; an empty protocol everywhere means Redfish.
+
+## Remote Console
+
+Clients with a BMC host configured get an **Open Console** button in the client edit dialog and a **Console** button in the client list. It opens an interactive serial console in the browser, streamed through Bootimus over a WebSocket, so a machine can be watched through POST, firmware setup and the installer without a monitor attached. The console is for administrators only, one session per client at a time, and closes after 30 minutes without activity.
+
+| Protocol | Transport | Requirements |
+|---|---|---|
+| **Intel AMT** | Serial-over-LAN through the AMT redirection service, implemented natively by Bootimus on port 16994 (16995 when the client uses the TLS management port 16993) | SOL and the redirection listener enabled in MEBx under *Remote Control*, or in the AMT web UI under *Remote Control* → *Redirection*; the same user and password as power control |
+| **Redfish** | IPMI Serial-over-LAN by running `ipmitool sol activate` on the Bootimus host | `ipmitool` on `PATH` (the Docker image includes it), UDP port 623 reachable on the BMC, and SOL enabled for the BMC user. The Redfish port is not used for the console |
+
+The serial console only shows what the firmware or operating system writes to the serial port. On most servers that means enabling *Console Redirection* in the BIOS or UEFI setup, and on Linux adding `console=ttyS0,115200` (or `ttyS1`, depending on the board) to the kernel command line. Intel AMT machines redirect COM1 at 115200 baud once SOL is enabled. If the screen stays blank, press Enter; if nothing appears during boot, console redirection is not switched on in the firmware.
+
+Keystrokes are sent as typed, so the usual terminal shortcuts work. Closing the dialog or clicking **Disconnect** ends the session and, for IPMI, deactivates the SOL payload on the BMC so the next connection starts cleanly.
+
+### Via API
+
+The endpoint is a WebSocket at `/api/clients/console?mac=...` on the admin port. Browsers cannot send an `Authorization` header on a WebSocket, so the JWT is passed either as the second `Sec-WebSocket-Protocol` entry after `bearer`, or as a `token` query parameter. Binary frames carry console output and keystrokes; text frames from Bootimus are JSON status messages such as `{"type":"connected","message":"..."}`.
+
+```bash
+# websocat example: interactive console for a client
+websocat --binary "ws://localhost:8081/api/clients/console?mac=00:11:22:33:44:55&token=$TOKEN"
 ```
 
 ## Hardware Inventory

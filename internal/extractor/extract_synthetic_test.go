@@ -243,3 +243,57 @@ func TestExtractSystemRescueLayout(t *testing.T) {
 		t.Errorf("extracted initrd content = %q, want the sysresccd initramfs", got)
 	}
 }
+
+func TestExtractProxmoxLayout(t *testing.T) {
+	files := map[string]string{
+		"/boot/linux26":    "proxmox-kernel",
+		"/boot/initrd.img": "proxmox-initrd",
+		"/.disk/info":      "Proxmox VE 9.1",
+	}
+
+	bootFiles, _ := extractTestISO(t, "proxmox-ve_9.1-1.iso", files)
+
+	if bootFiles.Distro != "proxmox" {
+		t.Errorf("distro = %q, want proxmox", bootFiles.Distro)
+	}
+	if got := readFileString(t, bootFiles.Kernel); got != "proxmox-kernel" {
+		t.Errorf("extracted kernel content = %q, want the proxmox kernel", got)
+	}
+	if got := readFileString(t, bootFiles.Initrd); got != "proxmox-initrd" {
+		t.Errorf("extracted initrd content = %q, want the proxmox initrd", got)
+	}
+}
+
+func TestExtractFedoraCoreOSLayoutIsNotMistakenForFedora(t *testing.T) {
+	files := map[string]string{
+		"/images/pxeboot/vmlinuz":    "coreos-kernel",
+		"/images/pxeboot/initrd.img": "coreos-initrd",
+		"/images/pxeboot/rootfs.img": "coreos-rootfs",
+	}
+
+	bootFiles, _ := extractTestISO(t, "fedora-coreos-44.20260928.3.2-live-iso.x86_64.iso", files)
+
+	if bootFiles.Distro != "coreos" {
+		t.Errorf("distro = %q, want coreos", bootFiles.Distro)
+	}
+	if got := readFileString(t, bootFiles.Kernel); got != "coreos-kernel" {
+		t.Errorf("extracted kernel content = %q, want the coreos kernel", got)
+	}
+}
+
+func TestExtractFlatcarLayout(t *testing.T) {
+	files := map[string]string{
+		"/flatcar/vmlinuz":       "flatcar-kernel",
+		"/flatcar/cpio.gz":       "flatcar-initrd",
+		"/syslinux/syslinux.cfg": "kernel /flatcar/vmlinuz",
+	}
+
+	bootFiles, _ := extractTestISO(t, "flatcar_production_iso_image.iso", files)
+
+	if bootFiles.Distro != "flatcar" {
+		t.Errorf("distro = %q, want flatcar", bootFiles.Distro)
+	}
+	if got := readFileString(t, bootFiles.Initrd); got != "flatcar-initrd" {
+		t.Errorf("extracted initrd content = %q, want the flatcar cpio", got)
+	}
+}

@@ -163,6 +163,45 @@ header {
     border-color: var(--accent-hover);
 }
 
+.login-sso-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 16px 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.login-sso-divider::before,
+.login-sso-divider::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid var(--border);
+}
+.login-sso-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 44px;
+    margin-bottom: 8px;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    text-decoration: none;
+    box-sizing: border-box;
+    transition: background 0.15s, color 0.15s;
+}
+.login-sso-button:hover {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+
 .lang-select {
     width: auto;
     min-width: 160px;
@@ -553,6 +592,12 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .alert-error { background: var(--alert-error-bg); }
 .alert-info { background: var(--alert-info-bg); }
 
+/* Key/value editors for client and group variables */
+.kv-editor:not(:empty) { margin-bottom: 8px; }
+.kv-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.kv-row input { flex: 1; min-width: 0; margin: 0; }
+.kv-row .kv-name { font-family: monospace; }
+
 /* Inline guidance warnings inside forms / modals */
 .guide-warning {
     padding: 12px 14px; border-radius: var(--radius-sm);
@@ -728,4 +773,40 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
     .res-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
     .info-grid { grid-template-columns: 1fr; }
     .rs-grid { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+}
+
+.read-only-banner {
+    display: none;
+    margin: 0 0 16px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+body.read-only .read-only-banner {
+    display: block;
+}
+.replica-banner {
+    display: none;
+    margin: 0 0 16px;
+    padding: 10px 14px;
+    border: 1px solid var(--warning, #e0a400);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 13px;
+}
+body.replica .replica-banner {
+    display: block;
+}
+body.replica .read-only-banner {
+    display: none;
+}
+body.read-only .admin-only {
+    display: none !important;
+}
+body.read-only :is(.main-content, .modal) .btn:not(.read-ok):not(.modal-close):not([onclick^="closeModal("]):not([onclick^="load"]):not([onclick^="switch"]):not([onclick^="copy"]) {
+    display: none !important;
 }

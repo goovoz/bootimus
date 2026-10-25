@@ -8,7 +8,7 @@ export default {
       'Download bootimus binaries, Docker images, the USB appliance, and mirrored PXE tools.',
     docsTitle: 'Docs — Bootimus',
     docsDescription:
-      'Bootimus documentation: deployment, image management, DHCP, authentication, client ACLs, distro profiles.',
+      'Bootimus documentation: deployment, image management, DHCP, authentication, client ACLs, disk imaging, multi-site, distro profiles.',
   },
 
   nav: {
@@ -60,13 +60,16 @@ export default {
     items: {
       '01': { title: 'Single binary', body: 'Go binary with embedded iPXE, web UI, SQLite, and all assets. No runtime deps. Scp it and run.' },
       '02': { title: 'Built-in proxyDHCP', body: 'Answers PXE on UDP/67 without touching your existing DHCP. Zero router reconfig. Drop in on any LAN.' },
-      '03': { title: '50+ distros', body: 'Automatic kernel/initrd extraction for Ubuntu, Debian, Arch, Fedora, NixOS, Alpine, FreeBSD, Windows (wimboot), and more.' },
+      '03': { title: '50+ distros', body: 'Automatic kernel/initrd extraction for Ubuntu, Debian, Arch, Fedora, NixOS, Alpine, FreeBSD, Windows (wimboot) and more. OpenBSD and NetBSD netboot and WinPE rescue media too.' },
       '04': { title: 'MAC-based ACL', body: 'Assign specific images per MAC. Auto-discover new clients on first PXE. Promote leases to static when ready.' },
       '05': { title: 'One-click tools', body: 'GParted, Clonezilla, Memtest86+, SystemRescue, ShredOS, netboot.xyz. Enable from the UI, they show up in the menu.' },
-      '06': { title: 'JWT + LDAP', body: 'Token auth with bcrypt. Optional LDAP/AD backend with group-based admin. Local accounts stay as fallback.' },
-      '07': { title: 'REST API', body: 'Everything the UI does is an API call. Script boot assignments, scans, WOL triggers. Live log stream over SSE.' },
+      '06': { title: 'JWT + LDAP + OIDC + 2FA', body: 'Token auth with bcrypt, TOTP two-factor and lockout on repeated failures. Optional LDAP/AD or OpenID Connect sign-in with group-based admin. Scoped API tokens for scripts.' },
+      '07': { title: 'REST API + OpenAPI', body: 'Everything the UI does is an API call, described in a generated OpenAPI document. Script boot assignments, scans, WOL triggers. Live log stream over SSE. Every admin change lands in an audit log.' },
       '08': { title: 'Runs anywhere', body: 'Multi-arch Docker (amd64/arm64), static binary, or a 2GB Alpine-based appliance image you can flash to USB.' },
       '09': { title: 'Unattended installs', body: 'Drop autounattend.xml, kickstart, preseed, or cloud-init in. Attach to an image as the default, override per client. Bootimus stages it at boot — no clicks, no setup wizard.' },
+      '10': { title: 'Disk imaging', body: 'Capture a client\'s disk with the bundled Clonezilla and deploy it to one machine or a whole group on their next PXE boot. Jobs report back when they finish.' },
+      '11': { title: 'Lights-out control', body: 'Power on, off and restart over Redfish or Intel AMT, open an AMT Serial-over-LAN or IPMI console in the browser, and watch every PXE request on the Debug page.' },
+      '12': { title: 'Multi-site', body: 'Run a primary where you manage everything and read-only replicas at branch sites that mirror it and boot local clients from local copies.' },
     },
   },
 

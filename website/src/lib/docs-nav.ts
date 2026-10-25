@@ -15,6 +15,7 @@ export const docsNav: DocSection[] = [
     items: [
       { slug: 'deployment', title: 'Deployment', description: 'Docker, binary, networking, and storage.' },
       { slug: 'appliance',  title: 'USB Appliance', description: 'Flashable Alpine + bootimus image for portable PXE servers.' },
+      { slug: 'multi-site', title: 'Multi-Site',    description: 'Read-only branch replicas that mirror a primary.' },
     ],
   },
   {
@@ -23,7 +24,7 @@ export const docsNav: DocSection[] = [
       { slug: 'dhcp',           title: 'DHCP',           description: 'proxyDHCP and external DHCP server config (ISC, Dnsmasq, MikroTik, etc.).' },
       { slug: 'secure-boot',    title: 'Secure Boot',    description: 'Netboot UEFI Secure Boot machines with the built-in signed bootloader chain.' },
       { slug: 'raspberry-pi',   title: 'Raspberry Pi',   description: 'SD-card-free netboot for Pi 3 and Pi 4 boards via the embedded UEFI firmware.' },
-      { slug: 'authentication', title: 'Authentication', description: 'JWT, LDAP/Active Directory, group-based admin.' },
+      { slug: 'authentication', title: 'Authentication', description: 'JWT, LDAP/Active Directory, OIDC, two-factor, API tokens.' },
     ],
   },
   {
@@ -31,7 +32,8 @@ export const docsNav: DocSection[] = [
     items: [
       { slug: 'admin',           title: 'Admin Console',   description: 'Web UI tour and REST API reference.' },
       { slug: 'images',          title: 'Image Management', description: 'Upload ISOs, extract kernels, netboot support.' },
-      { slug: 'clients',         title: 'Client Management', description: 'MAC ACLs, auto-discovery, next boot, WoL.' },
+      { slug: 'clients',         title: 'Client Management', description: 'MAC ACLs, auto-discovery, next boot, WoL, SAN boot, remote console.' },
+      { slug: 'disk-imaging',    title: 'Disk Imaging',      description: 'Capture a client disk with Clonezilla and deploy it to one client or a group.' },
       { slug: 'auto-install',    title: 'Auto-Install',     description: 'Unattended Windows / Ubuntu / Debian / kickstart installs.' },
       { slug: 'distro-profiles', title: 'Distro Profiles',  description: 'Data-driven distro detection and boot params.' },
     ],

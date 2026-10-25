@@ -2,7 +2,11 @@ import { defineCollection, z } from 'astro:content';
 import { glob } from 'astro/loaders';
 
 const docs = defineCollection({
-  loader: glob({ pattern: '{en,de,fr,es,ru,zh-CN}/*.md', base: '../docs' }),
+  loader: glob({
+    pattern: '{en,de,fr,es,ru,zh-CN}/*.md',
+    base: '../docs',
+    generateId: ({ entry }) => entry.replace(/\.md$/, ''),
+  }),
   schema: z.object({
     title: z.string().optional(),
     description: z.string().optional(),

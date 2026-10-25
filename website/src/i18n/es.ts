@@ -68,7 +68,7 @@ const es = {
       },
       '03': {
         title: '50+ distros',
-        body: 'Extracción automática de kernel/initrd para Ubuntu, Debian, Arch, Fedora, NixOS, Alpine, FreeBSD, Windows (wimboot) y más.',
+        body: 'Extracción automática de kernel/initrd para Ubuntu, Debian, Arch, Fedora, NixOS, Alpine, FreeBSD, Windows (wimboot) y más. También netboot de OpenBSD y NetBSD y medios de rescate WinPE.',
       },
       '04': {
         title: 'ACL por MAC',
@@ -79,12 +79,12 @@ const es = {
         body: 'GParted, Clonezilla, Memtest86+, SystemRescue, ShredOS, netboot.xyz. Actívalos desde la UI y aparecen en el menú.',
       },
       '06': {
-        title: 'JWT + LDAP',
-        body: 'Auth por token con bcrypt. Backend LDAP/AD opcional con admin basado en grupos. Las cuentas locales siguen como fallback.',
+        title: 'JWT + LDAP + OIDC + 2FA',
+        body: 'Auth por token con bcrypt, doble factor TOTP y bloqueo tras intentos fallidos repetidos. Inicio de sesión opcional por LDAP/AD u OpenID Connect con admin basado en grupos. Tokens de API con alcance para scripts.',
       },
       '07': {
-        title: 'API REST',
-        body: 'Todo lo que hace la UI es una llamada a la API. Asignaciones de arranque scripteables, scans, triggers WoL. Stream de logs en vivo por SSE.',
+        title: 'API REST + OpenAPI',
+        body: 'Todo lo que hace la UI es una llamada a la API, descrita en un documento OpenAPI generado. Asignaciones de arranque scripteables, scans, triggers WoL. Stream de logs en vivo por SSE. Cada cambio de admin queda en el registro de auditoría.',
       },
       '08': {
         title: 'Corre en todos lados',
@@ -93,6 +93,18 @@ const es = {
       '09': {
         title: 'Instalaciones desatendidas',
         body: 'Suelta autounattend.xml, kickstart, preseed o cloud-init. Adjúntalo a una imagen por defecto, sobreescríbelo por cliente. Bootimus lo inyecta al arrancar — sin clics, sin asistente.',
+      },
+      '10': {
+        title: 'Imágenes de disco',
+        body: 'Captura el disco de un cliente con el Clonezilla incluido y despliégalo en una máquina o en todo un grupo en su próximo arranque PXE. Los trabajos avisan al terminar.',
+      },
+      '11': {
+        title: 'Control lights-out',
+        body: 'Enciende, apaga y reinicia por Redfish o Intel AMT, abre una consola Serial-over-LAN de AMT o IPMI en el navegador, y mira cada petición PXE en la página de depuración.',
+      },
+      '12': {
+        title: 'Multi-sitio',
+        body: 'Un primario donde lo gestionas todo y réplicas de solo lectura en cada sede que lo espejan y arrancan clientes locales desde copias locales.',
       },
     },
   },

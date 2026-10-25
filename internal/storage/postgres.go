@@ -95,8 +95,20 @@ func (s *PostgresStore) AutoMigrate() error {
 		&models.BootTool{},
 		&models.HardwareInventory{},
 		&models.DistroProfile{},
+<<<<<<< HEAD
 		&models.WebhookConfig{}, &models.ProxyConfig{},
+=======
+		&models.WebhookConfig{},
+		&models.HousekeepingSettings{},
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 		&models.ScheduledTask{},
+		&models.AuditLog{},
+		&models.DiskImage{},
+		&models.DiskJob{},
+		&models.APIToken{},
+		&models.InstallRecord{},
+		&models.ReplicaState{},
+		&models.SANTarget{},
 	); err != nil {
 		return err
 	}
@@ -230,14 +242,18 @@ func (s *PostgresStore) GetClient(mac string) (*models.Client, error) {
 	return &client, nil
 }
 
+func (s *PostgresStore) GetClientBootloaderSets(mac string) (clientSet, groupSet string, err error) {
+	return getClientBootloaderSets(s.db, mac)
+}
+
 func (s *PostgresStore) CreateClient(client *models.Client) error {
-	return s.db.Create(client).Error
+	return createClient(s.db, client)
 }
 
 func (s *PostgresStore) UpdateClient(mac string, client *models.Client) error {
 	return s.db.Model(&models.Client{}).Where("mac_address = ?", mac).
 		Select("Name", "Description", "Enabled", "ShowPublicImages", "BootloaderSet", "Static", "ClientGroupID",
-			"IPMIHost", "IPMIPort", "IPMIUsername", "IPMIPassword", "IPMIInsecure", "AutoInstallFile", "UpdatedAt").
+			"BMCProtocol", "IPMIHost", "IPMIPort", "IPMIUsername", "IPMIPassword", "IPMIInsecure", "AutoInstallFile", "Variables", "ProxyDHCPNoVendorOption", "SANTargetID", "BootFromSAN", "UpdatedAt").
 		Updates(client).Error
 }
 
@@ -304,6 +320,10 @@ func (s *PostgresStore) SyncImages(isoFiles []models.SyncFile) error {
 				Enabled:  true,
 				Public:   true,
 				GroupID:  groupID,
+			}
+			if iso.BootMethod != "" {
+				image.BootMethod = iso.BootMethod
+				image.BootParams = iso.BootParams
 			}
 			if err := s.db.Create(&image).Error; err != nil {
 				return fmt.Errorf("failed to create image %s: %w", iso.Name, err)
@@ -537,7 +557,7 @@ func (s *PostgresStore) CreateUser(user *models.User) error {
 }
 
 func (s *PostgresStore) UpdateUser(username string, user *models.User) error {
-	return s.db.Model(&models.User{}).Where("username = ?", username).Updates(user).Error
+	return s.db.Model(&models.User{}).Where("username = ?", username).Select("*").Updates(user).Error
 }
 
 func (s *PostgresStore) DeleteUser(username string) error {
@@ -905,7 +925,7 @@ func (s *PostgresStore) RecordScheduledTaskRun(id uint, status, errorMsg string)
 func (s *PostgresStore) GetWebhookConfig() (*models.WebhookConfig, error) {
 	var cfg models.WebhookConfig
 	if err := s.db.First(&cfg, 1).Error; err != nil {
-		return &models.WebhookConfig{ID: 1, OnBootStarted: true, OnClientDiscovered: true}, nil
+		return &models.WebhookConfig{ID: 1, OnBootStarted: true, OnClientDiscovered: true, OnEnrollment: true, OnInstall: true}, nil
 	}
 	return &cfg, nil
 }
@@ -963,6 +983,7 @@ func (s *PostgresStore) CreateClientGroup(group *models.ClientGroup) error {
 		existing.BootloaderSet = group.BootloaderSet
 		existing.WOLBroadcastAddr = group.WOLBroadcastAddr
 		existing.StaggerDelayMillis = group.StaggerDelayMillis
+		existing.Variables = group.Variables
 		if err := s.db.Unscoped().Save(&existing).Error; err != nil {
 			return err
 		}
@@ -975,7 +996,7 @@ func (s *PostgresStore) CreateClientGroup(group *models.ClientGroup) error {
 func (s *PostgresStore) UpdateClientGroup(id uint, group *models.ClientGroup) error {
 	return s.db.Model(&models.ClientGroup{}).Where("id = ?", id).
 		Select("Name", "Description", "Enabled", "AllowedImages", "BootloaderSet", "WOLBroadcastAddr", "StaggerDelayMillis",
-			"IPMIPort", "IPMIUsername", "IPMIPassword", "IPMIInsecure", "AutoInstallFile", "UpdatedAt").
+			"BMCProtocol", "IPMIPort", "IPMIUsername", "IPMIPassword", "IPMIInsecure", "AutoInstallFile", "Variables", "SANTargetID", "BootFromSAN", "UpdatedAt").
 		Updates(group).Error
 }
 
@@ -997,4 +1018,28 @@ func (s *PostgresStore) ListClientsInGroup(groupID uint) ([]*models.Client, erro
 func (s *PostgresStore) SetClientGroup(mac string, groupID *uint) error {
 	return s.db.Model(&models.Client{}).Where("mac_address = ?", mac).
 		Update("client_group_id", groupID).Error
+}
+
+func (s *PostgresStore) GetHousekeepingSettings() (*models.HousekeepingSettings, error) {
+	return getHousekeepingSettings(s.db)
+}
+
+func (s *PostgresStore) UpdateHousekeepingSettings(settings *models.HousekeepingSettings) error {
+	return updateHousekeepingSettings(s.db, settings)
+}
+
+func (s *PostgresStore) RecordHousekeepingRun(status, report string) error {
+	return recordHousekeepingRun(s.db, status, report)
+}
+
+func (s *PostgresStore) DeleteBootLogsBefore(cutoff time.Time) (int64, error) {
+	return deleteBootLogsBefore(s.db, cutoff)
+}
+
+func (s *PostgresStore) DeleteInventoryHistoryBefore(cutoff time.Time) (int64, error) {
+	return deleteInventoryHistoryBefore(s.db, cutoff)
+}
+
+func (s *PostgresStore) DeleteDiscoveredClientsNotSeenSince(cutoff time.Time) (int64, error) {
+	return deleteDiscoveredClientsNotSeenSince(s.db, cutoff)
 }

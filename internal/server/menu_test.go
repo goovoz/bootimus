@@ -73,7 +73,9 @@ func TestBuildKernelBootSectionAutoInstallParams(t *testing.T) {
 		{"kickstart", "inst.ks=http://10.0.0.1:8080/autoinstall/test.iso?mac=aa:bb:cc:dd:ee:ff"},
 		{"preseed", "auto=true priority=critical url=http://10.0.0.1:8080/autoinstall/test.iso?mac=aa:bb:cc:dd:ee:ff"},
 		{"autoinstall", "autoinstall ds=nocloud-net;s=http://10.0.0.1:8080/autoinstall/test.iso/mac/aa:bb:cc:dd:ee:ff/"},
-		{"generic", "autoinstall=http://10.0.0.1:8080/autoinstall/test.iso?mac=aa:bb:cc:dd:ee:ff"},
+		{"autoyast", "autoyast=http://10.0.0.1:8080/autoinstall/test.iso?mac=aa:bb:cc:dd:ee:ff"},
+		{"agama", "inst.auto=http://10.0.0.1:8080/autoinstall/test.iso?mac=aa:bb:cc:dd:ee:ff"},
+		{"ignition", "ignition.config.url=http://10.0.0.1:8080/autoinstall/test.iso?mac=aa:bb:cc:dd:ee:ff ignition.firstboot ignition.platform.id=metal"},
 	}
 
 	for _, c := range cases {
@@ -85,15 +87,41 @@ func TestBuildKernelBootSectionAutoInstallParams(t *testing.T) {
 	}
 }
 
+func TestBuildKernelBootSectionFlatcarIgnitionParams(t *testing.T) {
+	img := &models.Image{ID: 7, Filename: "flatcar.iso", Enabled: true, BootMethod: "kernel", Distro: "flatcar", BootParams: "initrd=initrd"}
+	mb := testMenuBuilder(map[uint]string{7: "ignition"})
+
+	out := mb.buildKernelBootSection(img, "flatcar.iso", "flatcar")
+	if !strings.Contains(out, "flatcar.first_boot=1 ignition.config.url=http://10.0.0.1:8080/autoinstall/flatcar.iso?mac=aa:bb:cc:dd:ee:ff") {
+		t.Errorf("expected flatcar ignition params, got:\n%s", out)
+	}
+	if strings.Contains(out, "ignition.platform.id") {
+		t.Errorf("flatcar must not receive the fedora coreos platform id, got:\n%s", out)
+	}
+}
+
 func TestBuildKernelBootSectionNoAutoInstall(t *testing.T) {
 	img := &models.Image{ID: 7, Filename: "test.iso", Enabled: true, BootMethod: "kernel", BootParams: "ip=dhcp"}
 
-	for _, types := range []map[uint]string{nil, {7: "autounattend"}} {
+	for _, types := range []map[uint]string{nil, {7: "autounattend"}, {7: "generic"}, {7: "proxmox"}} {
 		mb := testMenuBuilder(types)
 		out := mb.buildKernelBootSection(img, "test.iso", "test")
 		if strings.Contains(out, "autoinstall") || strings.Contains(out, "inst.ks") {
 			t.Errorf("expected no auto-install params for types=%v, got:\n%s", types, out)
 		}
+	}
+}
+
+func TestBuildKernelBootSectionProxmoxLoadsISOAsSecondInitrd(t *testing.T) {
+	img := &models.Image{ID: 7, Filename: "proxmox-ve_9.1-1.iso", Enabled: true, BootMethod: "kernel", Distro: "proxmox", BootParams: "initrd=initrd ramdisk_size=16777216 rw quiet"}
+	mb := testMenuBuilder(map[uint]string{7: "proxmox"})
+
+	out := mb.buildKernelBootSection(img, "proxmox-ve_9.1-1.iso", "proxmox-ve_9.1-1")
+	if !strings.Contains(out, "initrd http://10.0.0.1:8080/boot/proxmox-ve_9.1-1/initrd\n") {
+		t.Errorf("expected the installer initrd line, got:\n%s", out)
+	}
+	if !strings.Contains(out, "initrd http://10.0.0.1:8080/isos/proxmox-ve_9.1-1.iso?mac=aa:bb:cc:dd:ee:ff proxmox.iso\n") {
+		t.Errorf("expected the ISO to be loaded as proxmox.iso, got:\n%s", out)
 	}
 }
 
@@ -242,5 +270,130 @@ func TestBuildFooterToolKernelGetsInitrdName(t *testing.T) {
 	}
 	if strings.Contains(out, "memtest64.bin initrd=") {
 		t.Errorf("tools without an initrd must not get initrd=, got:\n%s", out)
+	}
+}
+
+func TestBuildImageBootSectionsUKI(t *testing.T) {
+	mb := testMenuBuilder(nil)
+	mb.images = []models.Image{
+		{ID: 21, Name: "Hello World", Filename: "hello-world.efi", Enabled: true, BootMethod: "uki", BootParams: "audit=0"},
+		{ID: 22, Name: "Bare", Filename: "lab/bare.efi", Enabled: true, BootMethod: "uki"},
+	}
+
+	out := mb.buildImageBootSections()
+	for _, want := range []string{
+		":iso21\n",
+		"iseq ${platform} efi || goto uki_needs_uefi\n",
+		"kernel http://10.0.0.1:8080/isos/hello-world.efi?mac=aa:bb:cc:dd:ee:ff audit=0\n",
+		"kernel http://10.0.0.1:8080/isos/lab/bare.efi?mac=aa:bb:cc:dd:ee:ff\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "iso-url=") || strings.Contains(out, "sanboot") {
+		t.Errorf("UKI sections must not fall back to ISO parameters or sanboot:\n%s", out)
+	}
+	if !strings.Contains(mb.buildFooter(), ":uki_needs_uefi\n") {
+		t.Error("footer must define the uki_needs_uefi label")
+	}
+}
+
+func TestBuildKernelBootSectionBSDChainsTFTPHook(t *testing.T) {
+	mb := testMenuBuilder(nil)
+	for _, distro := range []string{"openbsd", "netbsd"} {
+		img := &models.Image{ID: 31, Name: "BSD", Filename: "lab/install77.iso", Enabled: true, BootMethod: "kernel", Distro: distro, BootParams: "stty com0 115200"}
+		out := mb.buildKernelBootSection(img, "lab/install77.iso", "lab/install77")
+		want := "chain http://10.0.0.1:8080/bsd/lab/install77/boot.ipxe?mac=aa:bb:cc:dd:ee:ff&platform=${platform}&buildarch=${buildarch} || goto failed\n"
+		if !strings.Contains(out, want) {
+			t.Errorf("%s: expected %q in:\n%s", distro, want, out)
+		}
+		if strings.Contains(out, "vmlinuz") || strings.Contains(out, "initrd") || strings.Contains(out, "stty") {
+			t.Errorf("%s: BSD entries must not emit Linux kernel lines or raw boot params:\n%s", distro, out)
+		}
+	}
+}
+
+func TestBuildWinPEBootSectionUsesSelectedWIM(t *testing.T) {
+	mb := testMenuBuilder(nil)
+	img := &models.Image{
+		ID:         12,
+		Filename:   "WinPE_Strelec.iso",
+		Enabled:    true,
+		BootMethod: "kernel",
+		Distro:     "winpe",
+		WIMPath:    "SSTR/strelec10x64 Eng.wim",
+		WIMIndex:   2,
+	}
+
+	out := mb.buildKernelBootSection(img, "WinPE_Strelec.iso", "WinPE_Strelec")
+	if !strings.Contains(out, "kernel http://10.0.0.1:8080/wimboot index=2\n") {
+		t.Errorf("expected the WIM index on the wimboot line, got:\n%s", out)
+	}
+	if !strings.Contains(out, "initrd http://10.0.0.1:8080/boot/WinPE_Strelec/iso/SSTR/strelec10x64%20Eng.wim boot.wim\n") {
+		t.Errorf("expected the selected WIM as the initrd, got:\n%s", out)
+	}
+	if strings.Contains(out, "iso-url=") || strings.Contains(out, "sources/boot.wim") {
+		t.Errorf("WinPE section must not fall back to Linux or installer defaults:\n%s", out)
+	}
+}
+
+func TestBuildWinPEBootSectionKeepsExplicitIndex(t *testing.T) {
+	mb := testMenuBuilder(nil)
+	img := &models.Image{
+		ID:         13,
+		Filename:   "WinPE_Strelec.iso",
+		Enabled:    true,
+		BootMethod: "kernel",
+		Distro:     "winpe",
+		BootParams: "index=3 gui",
+		WIMPath:    "boot/rescue.wim",
+		WIMIndex:   2,
+	}
+
+	out := mb.buildKernelBootSection(img, "WinPE_Strelec.iso", "WinPE_Strelec")
+	if !strings.Contains(out, "kernel http://10.0.0.1:8080/wimboot index=3 gui\n") {
+		t.Errorf("explicit index parameter should win, got:\n%s", out)
+	}
+}
+
+func TestBuildWindowsBootSectionAutoUnattendInitrd(t *testing.T) {
+	img := &models.Image{
+		ID:         9,
+		Filename:   "Win11_25H2.iso",
+		Enabled:    true,
+		BootMethod: "kernel",
+		Distro:     "windows",
+	}
+	unattendLine := "initrd http://10.0.0.1:8080/autoinstall/Win11_25H2.iso?mac=aa:bb:cc:dd:ee:ff AutoUnattend.xml\n"
+
+	cases := []struct {
+		name  string
+		types map[uint]string
+		want  bool
+	}{
+		{"no auto-install", nil, false},
+		{"autounattend", map[uint]string{9: "autounattend"}, true},
+		{"other image autounattend", map[uint]string{3: "autounattend"}, false},
+		{"non-windows type", map[uint]string{9: "kickstart"}, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mb := testMenuBuilder(c.types)
+			out := mb.buildKernelBootSection(img, "Win11_25H2.iso", "Win11_25H2")
+			if got := strings.Contains(out, unattendLine); got != c.want {
+				t.Errorf("AutoUnattend initrd present=%v, want %v:\n%s", got, c.want, out)
+			}
+			if !c.want {
+				return
+			}
+			kernelAt := strings.Index(out, "kernel http://10.0.0.1:8080/wimboot\n")
+			unattendAt := strings.Index(out, unattendLine)
+			wimAt := strings.Index(out, "initrd http://10.0.0.1:8080/boot/Win11_25H2/iso/sources/boot.wim boot.wim")
+			if !(kernelAt >= 0 && kernelAt < unattendAt && unattendAt < wimAt) {
+				t.Errorf("expected wimboot, then AutoUnattend.xml, then boot.wim:\n%s", out)
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package smb
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,5 +56,55 @@ func TestWriteConfigBinding(t *testing.T) {
 		if !strings.Contains(conf, "log file = ") || !strings.Contains(conf, "\nsmb ports = 445\n") {
 			t.Errorf("interfaces %q: surrounding config lines malformed\n%s", c.interfaces, conf)
 		}
+	}
+}
+
+func TestCheckPermissionSupport(t *testing.T) {
+	dir := t.TempDir()
+	if err := checkPermissionSupport(dir); err != nil {
+		t.Fatalf("expected a native filesystem to pass: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".permcheck")); !os.IsNotExist(err) {
+		t.Errorf("probe directory left behind: %v", err)
+	}
+}
+
+func fakeSMBD(t *testing.T, script string) {
+	t.Helper()
+	bin := t.TempDir()
+	path := filepath.Join(bin, "smbd")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestStartReportsImmediateExit(t *testing.T) {
+	fakeSMBD(t, `mkdir -p "$(dirname "$4")/log"; echo "invalid permissions on directory msg.lock: has 0777 should be 0755" >> "$(dirname "$4")/log/smbd.log"; exit 1`)
+	m := &Manager{dataDir: t.TempDir(), port: 44599, shares: map[string]string{}}
+	err := m.Start()
+	if err == nil {
+		t.Fatal("expected Start to fail when smbd exits immediately")
+	}
+	if !strings.Contains(err.Error(), "exited immediately") || !strings.Contains(err.Error(), "has 0777 should be 0755") {
+		t.Errorf("error should describe the early exit and include the smbd log tail: %v", err)
+	}
+	if m.Running() {
+		t.Error("manager should not report running after smbd exits")
+	}
+	if m.Err() == nil {
+		t.Error("Err should be set after a failed start")
+	}
+}
+
+func TestStartKeepsRunningSMBD(t *testing.T) {
+	fakeSMBD(t, `exec sleep 30`)
+	m := &Manager{dataDir: t.TempDir(), port: 44599, shares: map[string]string{}}
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer m.Stop()
+	if !m.Running() || m.Err() != nil {
+		t.Errorf("expected running manager with no error, got running=%v err=%v", m.Running(), m.Err())
 	}
 }

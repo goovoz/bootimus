@@ -94,12 +94,24 @@
       "boot_method": "kernel"
     },
     {
+      "id": "proxmox",
+      "display_name": "Proxmox VE",
+      "family": "debian",
+      "filename_patterns": ["proxmox-ve", "proxmox"],
+      "kernel_paths": ["/boot/linux26"],
+      "initrd_paths": ["/boot/initrd.img"],
+      "squashfs_paths": [],
+      "default_boot_params": "initrd=initrd ramdisk_size=16777216 rw quiet",
+      "auto_install_type": "proxmox",
+      "boot_method": "kernel"
+    },
+    {
       "id": "debian",
       "display_name": "Debian",
       "family": "debian",
-      "filename_patterns": ["debian", "truenas", "proxmox", "devuan", "antix", "mx-", "mxlinux", "pureos", "deepin", "lmde", "sparky", "bunsenlabs"],
-      "kernel_paths": ["/live/vmlinuz", "/live/vmlinuz1", "/vmlinuz", "/install/vmlinuz", "/install.amd/vmlinuz", "/boot/linux26"],
-      "initrd_paths": ["/live/initrd.img", "/live/initrd1.img", "/initrd.img", "/install/initrd.gz", "/install.amd/initrd.gz", "/boot/initrd.img"],
+      "filename_patterns": ["debian", "truenas", "devuan", "antix", "mx-", "mxlinux", "pureos", "deepin", "lmde", "sparky", "bunsenlabs"],
+      "kernel_paths": ["/live/vmlinuz", "/live/vmlinuz1", "/vmlinuz", "/install/vmlinuz", "/install.amd/vmlinuz"],
+      "initrd_paths": ["/live/initrd.img", "/live/initrd1.img", "/initrd.img", "/install/initrd.gz", "/install.amd/initrd.gz"],
       "squashfs_paths": ["/live/filesystem.squashfs"],
       "default_boot_params": "initrd=initrd boot=live priority=critical",
       "boot_params_with_squashfs": "initrd=initrd boot=live priority=critical fetch={{SQUASHFS}}",
@@ -182,6 +194,42 @@
       "default_boot_params": "initrd=initrd root=live:{{BASE_URL}}/isos/{{FILENAME}} rd.live.image inst.repo={{BASE_URL}}/boot/{{CACHE_DIR}}/iso/ inst.stage2={{BASE_URL}}/boot/{{CACHE_DIR}}/iso/ rd.neednet=1",
       "auto_install_type": "kickstart",
       "boot_method": "kernel"
+    },
+    {
+      "id": "coreos",
+      "display_name": "Fedora CoreOS",
+      "family": "coreos",
+      "filename_patterns": ["fedora-coreos", "coreos"],
+      "kernel_paths": ["/images/pxeboot/vmlinuz"],
+      "initrd_paths": ["/images/pxeboot/initrd.img"],
+      "squashfs_paths": [],
+      "default_boot_params": "initrd=initrd coreos.live.rootfs_url={{BASE_URL}}/boot/{{CACHE_DIR}}/iso/images/pxeboot/rootfs.img",
+      "auto_install_type": "ignition",
+      "boot_method": "kernel",
+      "mirrors": [
+        {"region": "Global (Fedora)", "base": "https://builds.coreos.fedoraproject.org/prod/streams/stable/builds"}
+      ],
+      "releases": [
+        {"label": "Stable live ISO (x86_64)", "path": "/44.20260928.3.2/x86_64/fedora-coreos-44.20260928.3.2-live-iso.x86_64.iso"}
+      ]
+    },
+    {
+      "id": "flatcar",
+      "display_name": "Flatcar Container Linux",
+      "family": "flatcar",
+      "filename_patterns": ["flatcar"],
+      "kernel_paths": ["/flatcar/vmlinuz"],
+      "initrd_paths": ["/flatcar/cpio.gz"],
+      "squashfs_paths": [],
+      "default_boot_params": "initrd=initrd",
+      "auto_install_type": "ignition",
+      "boot_method": "kernel",
+      "mirrors": [
+        {"region": "Global (Flatcar)", "base": "https://stable.release.flatcar-linux.net/amd64-usr/current"}
+      ],
+      "releases": [
+        {"label": "Stable ISO (amd64)", "path": "/flatcar_production_iso_image.iso"}
+      ]
     },
     {
       "id": "fedora",
@@ -375,7 +423,7 @@
       "display_name": "NetBSD",
       "family": "bsd",
       "filename_patterns": ["netbsd"],
-      "kernel_paths": ["/netbsd"],
+      "kernel_paths": ["/amd64/binary/kernel/netbsd-INSTALL.gz", "/i386/binary/kernel/netbsd-INSTALL.gz", "/netbsd"],
       "initrd_paths": [],
       "squashfs_paths": [],
       "default_boot_params": "",
@@ -386,8 +434,8 @@
       "id": "openbsd",
       "display_name": "OpenBSD",
       "family": "bsd",
-      "filename_patterns": ["openbsd"],
-      "kernel_paths": ["/bsd", "/bsd.rd"],
+      "filename_patterns": ["openbsd", "install7", "install8", "cd7", "cd8"],
+      "kernel_paths": ["/<version>/amd64/bsd.rd", "/<version>/arm64/bsd.rd", "/<version>/i386/bsd.rd"],
       "initrd_paths": [],
       "squashfs_paths": [],
       "default_boot_params": "",
@@ -475,6 +523,18 @@
       "squashfs_paths": [],
       "default_boot_params": "rawbcd",
       "auto_install_type": "autounattend",
+      "boot_method": "kernel"
+    },
+    {
+      "id": "winpe",
+      "display_name": "WinPE / Rescue Media",
+      "family": "windows",
+      "filename_patterns": ["winpe", "strelec", "activeboot", "active_boot", "active-boot", "hbcd", "hirens"],
+      "kernel_paths": [],
+      "initrd_paths": [],
+      "squashfs_paths": [],
+      "default_boot_params": "",
+      "auto_install_type": "",
       "boot_method": "kernel"
     },
     {

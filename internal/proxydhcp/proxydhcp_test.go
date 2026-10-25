@@ -245,3 +245,78 @@ func TestReplyAddr(t *testing.T) {
 		t.Errorf("port 4011 reply went to %v, want the requester %v", got, src)
 	}
 }
+
+func TestVendorOptionCanBeOmitted(t *testing.T) {
+	uefi := func() *dhcpv4.DHCPv4 {
+		return discover(t, "00:23:24:c2:9f:c8", "PXEClient:Arch:00007:UNDI:003016",
+			dhcpv4.WithOption(dhcpv4.OptClientArch(iana.EFI_X86_64)))
+	}
+	hasVendorOption := func(s *Server, req *dhcpv4.DHCPv4) bool {
+		resp, _, ok := s.buildReply(req)
+		if !ok {
+			t.Fatal("expected a reply")
+		}
+		return resp.GetOneOption(dhcpv4.OptionVendorSpecificInformation) != nil
+	}
+
+	s := testServer(t)
+	if !hasVendorOption(s, uefi()) {
+		t.Error("option 43 should be sent by default")
+	}
+
+	s.cfg.NoVendorOption = true
+	if hasVendorOption(s, uefi()) {
+		t.Error("option 43 should be omitted when disabled globally")
+	}
+
+	s = testServer(t)
+	s.cfg.OmitVendorOption = func(mac net.HardwareAddr) bool {
+		return mac.String() == "00:23:24:c2:9f:c8"
+	}
+	if hasVendorOption(s, uefi()) {
+		t.Error("option 43 should be omitted for a client that opts out")
+	}
+	other := discover(t, "00:11:22:33:44:55", "PXEClient:Arch:00007:UNDI:003016",
+		dhcpv4.WithOption(dhcpv4.OptClientArch(iana.EFI_X86_64)))
+	if !hasVendorOption(s, other) {
+		t.Error("option 43 should still be sent to other clients")
+	}
+
+	s = testServer(t)
+	s.cfg.NoVendorOption = true
+	pi := discover(t, "dc:a6:32:12:34:56", "PXEClient:Arch:00000:UNDI:002001",
+		dhcpv4.WithOption(dhcpv4.OptClientArch(iana.INTEL_X86PC)))
+	if !hasVendorOption(s, pi) {
+		t.Error("Raspberry Pi firmware must keep its vendor option even when option 43 is disabled")
+	}
+}
+
+func TestBootfileForPassesClientHardwareAddress(t *testing.T) {
+	mac, err := net.ParseMAC("02:00:00:00:00:01")
+	if err != nil {
+		t.Fatalf("ParseMAC: %v", err)
+	}
+	request, err := dhcpv4.New(
+		dhcpv4.WithHwAddr(mac),
+		dhcpv4.WithOption(dhcpv4.OptClientArch(iana.EFI_X86_64)),
+	)
+	if err != nil {
+		t.Fatalf("New DHCP request: %v", err)
+	}
+
+	server := &Server{cfg: Config{
+		BootfileBIOS:  DefaultBootfileBIOS,
+		BootfileUEFI:  DefaultBootfileUEFI,
+		BootfileARM64: DefaultBootfileARM64,
+		Bootfiles: func(clientHWAddr net.HardwareAddr) (string, string, string) {
+			if clientHWAddr.String() != mac.String() {
+				t.Fatalf("callback MAC = %q, want %q", clientHWAddr, mac)
+			}
+			return "custom/legacy.kpxe", "custom/client.efi", "custom/client-arm64.efi"
+		},
+	}}
+
+	if got := server.bootfileFor(request); got != "custom/client.efi" {
+		t.Fatalf("bootfileFor = %q, want custom/client.efi", got)
+	}
+}

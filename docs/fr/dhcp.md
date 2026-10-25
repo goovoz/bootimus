@@ -47,6 +47,7 @@ proxy_dhcp:
   bootfile_uefi: bootimus.efi            # UEFI x64
   bootfile_arm64: bootimus-arm64.efi     # UEFI ARM64
   no_bootfile_option: false              # true : omet l'option 67 pour les firmwares qui la rejettent
+  no_vendor_option: false                # true : omet l'option 43 pour les firmwares qui ignorent les offers qui la contiennent
 ```
 
 Désactivé par défaut pour que les installs existantes qui font déjà tourner dnsmasq/ISC-DHCP/etc. ne soient pas surprises.
@@ -55,7 +56,7 @@ Désactivé par défaut pour que les installs existantes qui font déjà tourner
 
 - **Bind sur UDP/67 et UDP/4011.** UDP/67 nécessite `CAP_NET_BIND_SERVICE` ou root ; UDP/4011 est le port de découverte du PXE boot-server que certains ROMs UEFI (notamment AMI/Supermicro) recontactent après l'offer initial. Dans Docker, l'image par défaut tourne déjà en root donc pas besoin de capability supplémentaire ; ajoute `--cap-add NET_BIND_SERVICE` uniquement pour les setups rootless.
 - **Même broadcast domain.** Le proxyDHCP s'appuie sur le fait de voir les broadcasts DHCP des clients. Ça marche sur un LAN à plat ou un seul VLAN. Si ton réseau utilise un relais DHCP (`ip helper-address`) pour faire passer le DHCP entre VLANs, le relais forwarde vers ton DHCP principal mais pas vers Bootimus — ajoute Bootimus comme cible de relais supplémentaire, ou garde les cibles sur le même VLAN que Bootimus. Bootimus répond aux requêtes relayées en unicast vers l'adresse du relais (`giaddr`), comme l'exige la RFC 2131, pour que le relais puisse les renvoyer au client.
-- **Tous les firmwares ne mergent pas les deux offers.** Certains PXE ROM UEFI ignorent l'offer de Bootimus, ou rejettent l'option bootfile qu'il contient, et renvoient `DHCPDISCOVER` en boucle sans jamais envoyer de `DHCPREQUEST`. Essaie d'abord `--proxy-dhcp-no-bootfile-option` (`BOOTIMUS_PROXY_DHCP_NO_BOOTFILE_OPTION=true`, ou `no_bootfile_option: true` sous `proxy_dhcp`) : l'option 67 est omise et le bootfile n'est envoyé que dans le champ BOOTP historique `file`, que les firmwares anciens ou bogués gèrent mieux. Si le client boucle toujours, désactive le proxyDHCP et configure `next-server` et le bootfile (options 66/67) sur ton DHCP principal, comme décrit dans les sections par serveur ci-dessous.
+- **Tous les firmwares ne mergent pas les deux offers.** Certains PXE ROM UEFI ignorent l'offer de Bootimus, ou rejettent l'option bootfile qu'il contient, et renvoient `DHCPDISCOVER` en boucle sans jamais envoyer de `DHCPREQUEST`. Essaie d'abord `--proxy-dhcp-no-bootfile-option` (`BOOTIMUS_PROXY_DHCP_NO_BOOTFILE_OPTION=true`, ou `no_bootfile_option: true` sous `proxy_dhcp`) : l'option 67 est omise et le bootfile n'est envoyé que dans le champ BOOTP historique `file`, que les firmwares anciens ou bogués gèrent mieux. Certains firmwares, comme le PXE UEFI de l'Intel I219-V, ignorent au contraire toute offer contenant l'option 43 : active `--proxy-dhcp-no-vendor-option` (`BOOTIMUS_PROXY_DHCP_NO_VENDOR_OPTION=true`, ou `no_vendor_option: true` sous `proxy_dhcp`) pour l'omettre pour tous les clients, ou coche **Omit PXE vendor option (43)** uniquement sur le client concerné. Si le client boucle toujours, désactive le proxyDHCP et configure `next-server` et le bootfile (options 66/67) sur ton DHCP principal, comme décrit dans les sections par serveur ci-dessous.
 - **Réseau Docker.** Utilise `macvlan`, `ipvlan`, ou `network_mode: host` pour que le conteneur soit un participant de première classe sur le broadcast domain. Un réseau bridge par défaut ne marchera pas — les broadcasts restent coincés dans `docker0`.
 - **Deux serveurs proxyDHCP sur le même LAN, c'est légal, mais le debug est un cauchemar.** Si tu actives le proxyDHCP intégré de Bootimus, désactive tout proxyDHCP dnsmasq existant qui annonce du PXE sur le même réseau.
 
@@ -508,6 +509,18 @@ Set-DhcpServerv4OptionValue -PolicyName "BIOS" -OptionId 67 -Value "undionly.kpx
 
 ## Dépannage
 
+### Page PXE Debug
+
+Avant de capturer des paquets, ouvre **PXE Debug** dans la barre latérale admin. Quand le proxyDHCP intégré est activé, Bootimus enregistre chaque paquet DHCP reçu sur UDP/67 et UDP/4011 et montre ce qu'il en a fait :
+
+- **Replied** : le bootfile proposé (BIOS, UEFI ou ARM64, choisi d'après l'option 93 ou la vendor class), s'il a envoyé un OFFER ou un ACK, et où la réponse est partie (broadcast, adresse du relais, ou directement le client).
+- **Ignored** : la vendor class n'était pas `PXEClient` ni `HTTPClient`, le paquet était donc une requête DHCP ordinaire d'une machine déjà démarrée, ou le type de message est un de ceux auxquels le proxyDHCP ne répond jamais.
+- **Failed** : la réponse n'a pas pu être construite ou envoyée, avec l'erreur.
+
+Chaque ligne indique aussi l'adresse source, le relais (`giaddr`) quand un relais DHCP a transmis la requête, l'architecture du client, la vendor class brute, si l'option 43 a été omise pour ce client, et si l'étape firmware Raspberry Pi a été détectée. Les clients découverts sont associés à leur nom. **Start Live** rafraîchit la table toutes les deux secondes ; **Clear** vide l'historique. Les mêmes données sont disponibles via `GET /api/proxydhcp/events`.
+
+Si un client n'apparaît jamais sur cette page, ses broadcasts n'atteignent pas du tout Bootimus : vérifie l'interface à laquelle il est lié (`--bind-interface`), les VLAN et la configuration du relais DHCP. S'il apparaît avec une réponse mais ne boote toujours pas, c'est le firmware qui n'accepte pas l'offer ; voir la section suivante.
+
 ### Le client ne reçoit pas d'offer DHCP
 
 ```bash
@@ -528,7 +541,7 @@ sudo tcpdump -i eth0 port 67 or port 68
 
 ### DISCOVER répétés sans DHCPREQUEST (proxyDHCP)
 
-Si une capture réseau montre que le client renvoie `DHCPDISCOVER` encore et encore, reçoit les offers de ton serveur DHCP et de Bootimus, mais n'envoie jamais de `DHCPREQUEST` (et que rien n'arrive sur UDP/4011), le firmware ne merge pas les deux offers. Essaie `--proxy-dhcp-no-bootfile-option` ; si ça ne suffit pas, désactive le proxyDHCP et configure les options 66/67 sur ton DHCP principal.
+Si une capture réseau montre que le client renvoie `DHCPDISCOVER` encore et encore, reçoit les offers de ton serveur DHCP et de Bootimus, mais n'envoie jamais de `DHCPREQUEST` (et que rien n'arrive sur UDP/4011), le firmware ne merge pas les deux offers. Essaie `--proxy-dhcp-no-bootfile-option`, puis `--proxy-dhcp-no-vendor-option` (ou **Omit PXE vendor option (43)** sur le client) ; si ça ne suffit pas, désactive le proxyDHCP et configure les options 66/67 sur ton DHCP principal.
 
 ```bash
 sudo tcpdump -i eth0 -n port 67 or port 68 or port 4011

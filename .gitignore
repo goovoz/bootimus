@@ -17,7 +17,7 @@ bootimus-*
 boot/
 
 # Data directory (contains ISOs)
-data/
+/data/
 
 # Configuration file (may contain secrets)
 bootimus.yaml

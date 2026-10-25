@@ -21,7 +21,7 @@ Los perfiles de distro definen:
 - **Cómo detectar** qué distro es un ISO (match de patrones de filename)
 - **Dónde encontrar** el kernel, initrd y squashfs dentro del ISO
 - **Qué parámetros de arranque** usar al arrancar por PXE
-- **Qué tipo de auto-instalación** se soporta (preseed, kickstart, autoinstall, etc.)
+- **Qué tipo de auto-instalación** se soporta (preseed, kickstart, autoinstall, autoyast, agama, ignition, proxmox, etc.)
 
 ### Tipos de perfil
 
@@ -182,7 +182,7 @@ curl -H "Authorization: Bearer $TOKEN" -X DELETE "http://localhost:8081/api/prof
 | `squashfs_paths` | No | Paths a probar para el filesystem root squashfs |
 | `default_boot_params` | No | Parámetros de arranque del kernel por defecto (con soporte de placeholders) |
 | `boot_params_with_squashfs` | No | Boot params alternativos usados cuando se detecta squashfs |
-| `auto_install_type` | No | Formato de auto-instalación: `preseed`, `kickstart`, `autoinstall`, `autounattend` |
+| `auto_install_type` | No | Formato de auto-instalación: `preseed`, `kickstart`, `autoinstall`, `autounattend`, `autoyast`, `agama`, `ignition`, `proxmox` (mira [Auto-instalación](auto-install.md#formatos-soportados)) |
 | `boot_method` | No | Override del método de arranque (p. ej., `wimboot` para Windows) |
 
 ## Placeholders

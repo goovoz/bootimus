@@ -9,9 +9,12 @@ Guía completa para desplegar Bootimus en varios entornos con configuraciones de
 - [Despliegue con binario](#despliegue-con-binario)
 - [Configuración de red](#configuración-de-red)
 - [Configuración de almacenamiento](#configuración-de-almacenamiento)
+- [Copia de seguridad y restauración](#copia-de-seguridad-y-restauración)
+- [Proteger la interfaz admin](#proteger-la-interfaz-admin)
 - [Opciones de base de datos](#opciones-de-base-de-datos)
 - [Actualizaciones remotas y privacidad](#actualizaciones-remotas-y-privacidad)
 - [Despliegue en producción](#despliegue-en-producción)
+- [Multi-sitio](#multi-sitio)
 
 ## Inicio rápido
 
@@ -286,6 +289,88 @@ sudo journalctl -u bootimus -f
 3. **Monitoriza el espacio en disco**: Configura alertas de poco espacio
 4. **Limpia ISOs antiguos**: Elimina ISOs sin usar para liberar espacio
 
+## Copia de seguridad y restauración
+
+### Hacer una copia de seguridad
+
+**Settings → Backup → Download Backup** (o `GET /api/backup/export`) genera un `.tar.gz` con una instantánea consistente de la base de datos (`bootimus.db` para SQLite, un `pg_dump` como `bootimus.sql` para PostgreSQL) más todo lo demás del directorio de datos excepto las carpetas `isos/` y `tools/`, que son descargas reproducibles.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -o bootimus-backup.tar.gz \
+  http://localhost:8081/api/backup/export
+```
+
+### Restaurar una copia de seguridad
+
+Sube una copia de seguridad desde **Settings → Backup → Upload and Restore**, o con la API:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -F backup=@bootimus-backup.tar.gz \
+  http://localhost:8081/api/backup/import
+```
+
+El archivo se valida (tar gzip, sin rutas absolutas ni `..`, sin enlaces simbólicos, una base de datos en el nivel superior, límite de 2 GiB) y se desempaqueta en `<data_dir>/.restore-pending/`. Nada cambia mientras Bootimus está en ejecución: la base de datos en uso no se puede sustituir bajo un servidor activo. La restauración se aplica la próxima vez que Bootimus arranca, antes de abrir la base de datos:
+
+1. **SQLite**: el `bootimus.db` actual se renombra a `bootimus.db.pre-restore` (sustituyendo cualquier copia anterior), se eliminan los archivos WAL y journal, y la base de datos restaurada ocupa su lugar.
+2. **PostgreSQL**: el volcado se reproduce con `psql` contra la base de datos configurada. `psql` debe estar en el `PATH`; la imagen Docker incluye `postgresql-client`, las instalaciones standalone lo necesitan junto a `pg_dump`. El tipo de copia debe coincidir con la base de datos configurada, así que una copia SQLite no se puede restaurar en un despliegue PostgreSQL.
+3. El resto de archivos (sets de bootloaders, archivos de autoinstalación, archivos personalizados, paquetes de drivers) se copian sobre el directorio de datos. Los archivos existentes con el mismo nombre se sustituyen; los archivos que no están en la copia se dejan como están.
+
+Si algún paso falla, Bootimus registra el error y sale sin arrancar, y la restauración preparada se deja en su sitio para que puedas corregir la causa (por ejemplo un `psql` ausente) y arrancar de nuevo. Elimina `<data_dir>/.restore-pending/` a mano, o usa **Cancel** en la página Settings antes de reiniciar, para abandonar una restauración.
+
+La página Settings muestra un aviso **Restore staged** hasta que se produce el reinicio. `GET /api/backup/import` informa de lo mismo, y `DELETE /api/backup/import` la descarta.
+
+## Proteger la interfaz admin
+
+La interfaz admin habla HTTP plano por defecto, así que los tokens de login, las contraseñas de BMC y las copias de seguridad cruzan la red sin cifrar. Activa TLS para cualquier cosa que vaya más allá de un laboratorio en tu escritorio.
+
+### Certificado autofirmado
+
+```bash
+./bootimus serve --admin-tls
+```
+
+En el primer arranque Bootimus genera un certificado ECDSA P-256 válido durante diez años, lo guarda como `<data_dir>/tls/admin.crt` y `admin.key` (modo 0600) y lo reutiliza en cada arranque posterior. Los subject alternative names cubren la dirección del servidor, el nombre de host, `localhost` y las direcciones de loopback. La huella SHA-256 se registra en el arranque y se muestra en **Server Info** para que puedas compararla con la que indica tu navegador.
+
+Los navegadores avisarán sobre el certificado hasta que confíes en él:
+
+- **Firefox**: abre la URL admin, elige *Advanced* → *Accept the Risk and Continue*.
+- **Chrome / Edge**: abre la URL admin, haz click en *Advanced* → *Proceed*, o importa `admin.crt` en el almacén de confianza del sistema para silenciar el aviso de forma permanente.
+- **curl**: pasa `--cacert data/tls/admin.crt`, o `-k` para omitir la verificación.
+
+Borra los dos archivos y reinicia para generar un certificado nuevo, por ejemplo tras cambiar la dirección del servidor.
+
+### Tu propio certificado
+
+```bash
+./bootimus serve --admin-tls --admin-tls-cert /etc/bootimus/admin.pem --admin-tls-key /etc/bootimus/admin-key.pem
+```
+
+Ambos archivos deben ser PEM. El archivo del certificado puede contener la cadena completa. Bootimus requiere TLS 1.2 o superior. Tras renovar los archivos, envía `SIGHUP` al proceso y el nuevo certificado se carga sin reiniciar:
+
+```bash
+kill -HUP $(pidof bootimus)
+```
+
+Si la recarga falla, el certificado anterior sigue en uso y el error se registra.
+
+Equivalente en el archivo de configuración:
+
+```yaml
+admin_tls:
+  enabled: true
+  cert_file: /etc/bootimus/admin.pem
+  key_file: /etc/bootimus/admin-key.pem
+  redirect_port: 8082   # optional: plain HTTP here redirects to HTTPS
+```
+
+Variables de entorno: `BOOTIMUS_ADMIN_TLS_ENABLED`, `BOOTIMUS_ADMIN_TLS_CERT_FILE`, `BOOTIMUS_ADMIN_TLS_KEY_FILE`, `BOOTIMUS_ADMIN_TLS_SELF_SIGNED`, `BOOTIMUS_ADMIN_TLS_REDIRECT_PORT`.
+
+### Notas
+
+- Solo cambia el puerto admin. El puerto de arranque sigue en HTTP porque los clientes iPXE descargan de él los kernels y los menús, y por esa razón la UI admin sigue construyendo los enlaces a ISOs y archivos con `http://`.
+- El inicio de sesión OIDC establece su cookie de estado con el flag `Secure` siempre que la petición llegó por TLS, así que pon en `oidc.redirect_url` la dirección `https://` de la interfaz admin.
+- Un reverse proxy como Caddy, nginx o Traefik delante del puerto admin sigue siendo una buena alternativa cuando ya tienes uno; en ese caso deja `admin_tls.enabled` desactivado y termina TLS en el proxy.
+
 ## Opciones de base de datos
 
 ### Modo SQLite (por defecto)
@@ -461,6 +546,7 @@ db:
 export BOOTIMUS_TFTP_PORT=69
 export BOOTIMUS_HTTP_PORT=8080
 export BOOTIMUS_ADMIN_PORT=8081
+export BOOTIMUS_ADMIN_TLS_ENABLED=true          # HTTPS admin interface, self-signed unless cert and key are set
 export BOOTIMUS_DATA_DIR=/var/lib/bootimus/data
 export BOOTIMUS_SERVER_ADDR=192.168.1.100
 
@@ -534,6 +620,10 @@ rm /opt/bootimus/data/isos/old-image.iso
 # Scan for new ISOs to update database
 curl -u admin:password -X POST http://localhost:8081/api/scan
 ```
+
+## Multi-sitio
+
+Las sucursales pueden ejecutar una réplica de solo lectura que refleja esta instancia y arranca los clientes locales desde copias locales. Consulta la [guía multi-sitio](multi-site.md).
 
 ## Siguientes pasos
 

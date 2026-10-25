@@ -41,17 +41,29 @@ async function showLoginScreen() {
     try {
         const res = await fetch(`${API_BASE}/auth-info`);
         const data = await res.json();
-        if (data.success && data.data && data.data.length > 1) {
+        const backends = (data.success && data.data) || [];
+        const passwordBackends = backends.filter(b => b.type !== 'redirect');
+        const redirectBackends = backends.filter(b => b.type === 'redirect');
+        if (passwordBackends.length > 1) {
             const select = document.getElementById('login-auth-method');
-            select.innerHTML = data.data.map(b =>
-                `<option value="${b.id}">${b.name}</option>`
+            select.innerHTML = passwordBackends.map(b =>
+                `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}</option>`
             ).join('');
             document.getElementById('login-auth-selector').style.display = 'block';
         } else {
             document.getElementById('login-auth-selector').style.display = 'none';
         }
+        renderSSOButtons(redirectBackends);
     } catch (e) {
         document.getElementById('login-auth-selector').style.display = 'none';
+        renderSSOButtons([]);
+    }
+
+    if (pendingLoginError) {
+        const errorDiv = document.getElementById('login-error');
+        errorDiv.textContent = pendingLoginError;
+        errorDiv.style.display = 'block';
+        pendingLoginError = null;
     }
 
     // Only auto-focus the username field if the user isn't already
@@ -64,7 +76,41 @@ async function showLoginScreen() {
     }
 }
 
+function renderSSOButtons(backends) {
+    const container = document.getElementById('login-sso-buttons');
+    container.innerHTML = backends.map(b =>
+        `<a class="login-sso-button" href="${escapeHtml(b.url)}">${escapeHtml(t('login.signin_with', { name: b.name }))}</a>`
+    ).join('');
+    document.getElementById('login-sso').style.display = backends.length ? 'block' : 'none';
+}
+
+let pendingLoginError = null;
+
+function decodeTokenClaims(token) {
+    try {
+        const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        return JSON.parse(atob(payload.padEnd(payload.length + (4 - payload.length % 4) % 4, '=')));
+    } catch {
+        return {};
+    }
+}
+
+function consumeOIDCRedirect() {
+    if (!location.hash.startsWith('#oidc_')) return;
+    const params = new URLSearchParams(location.hash.slice(1));
+    history.replaceState(null, '', location.pathname + location.search);
+    const token = params.get('oidc_token');
+    if (token) {
+        const claims = decodeTokenClaims(token);
+        setToken(token);
+        localStorage.setItem('bootimus_username', claims.username || '');
+        localStorage.setItem('bootimus_is_admin', claims.is_admin === true);
+    }
+    pendingLoginError = params.get('oidc_error');
+}
+
 function showApp() {
+    applyRole();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-header').style.display = '';
     document.getElementById('main-app').style.display = '';
@@ -75,13 +121,16 @@ async function handleLogin(e) {
     const username = document.getElementById('login-username').value;
     const password = document.getElementById('login-password').value;
     const authMethod = document.getElementById('login-auth-method').value || 'local';
+    const totpGroup = document.getElementById('login-totp-group');
+    const codeInput = document.getElementById('login-totp-code');
+    const code = totpGroup.style.display !== 'none' ? codeInput.value.trim() : '';
     const errorDiv = document.getElementById('login-error');
 
     try {
         const res = await fetch(`${API_BASE}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password, auth_method: authMethod })
+            body: JSON.stringify({ username, password, auth_method: authMethod, code })
         });
         const data = await res.json();
 
@@ -89,11 +138,19 @@ async function handleLogin(e) {
             setToken(data.data.token);
             localStorage.setItem('bootimus_username', data.data.username);
             localStorage.setItem('bootimus_is_admin', data.data.is_admin);
+            totpGroup.style.display = 'none';
+            codeInput.value = '';
             showApp();
             initApp();
+        } else if (data.totp_required) {
+            totpGroup.style.display = 'block';
+            errorDiv.textContent = data.message || 'Enter your two-factor code';
+            errorDiv.style.display = 'block';
+            codeInput.focus();
         } else {
             errorDiv.textContent = data.error || 'Login failed';
             errorDiv.style.display = 'block';
+            if (totpGroup.style.display !== 'none') codeInput.select();
         }
     } catch (err) {
         errorDiv.textContent = 'Connection error';
@@ -105,6 +162,7 @@ function logout() {
     clearToken();
     showLoginScreen();
     document.getElementById('login-form').reset();
+    document.getElementById('login-totp-group').style.display = 'none';
 }
 
 async function checkAuth() {
@@ -181,12 +239,15 @@ function escapeHtml(text) {
 }
 
 function openModal(modalId) {
-    document.getElementById(modalId).classList.add('active');
+    const modal = document.getElementById(modalId);
+    applyReadOnlyToModal(modal);
+    modal.classList.add('active');
 }
 
 function closeModal(modalId) {
     document.getElementById(modalId).classList.remove('active');
     if (modalId === 'get-images-modal' && typeof clearGetISOPolling === 'function') clearGetISOPolling();
+    if (modalId === 'console-modal') disconnectClientConsole();
 }
 
 function injectModalCloseButtons() {
@@ -234,9 +295,80 @@ document.addEventListener('click', (e) => {
 
 function loadCurrentUser() {
     const username = localStorage.getItem('bootimus_username') || 'admin';
-    const isAdmin = localStorage.getItem('bootimus_is_admin') === 'true';
     document.getElementById('current-username').textContent = username;
-    document.getElementById('current-user-role').textContent = isAdmin ? 'Administrator' : 'User';
+    const admin = localStorage.getItem('bootimus_is_admin') === 'true';
+    document.getElementById('current-user-role').textContent = admin ? (isReplica() ? 'Administrator (replica)' : 'Administrator') : 'Read-only';
+}
+
+function isReadOnly() {
+    return localStorage.getItem('bootimus_is_admin') !== 'true' || isReplica();
+}
+
+function isReplica() {
+    return !!replicaInfo();
+}
+
+function replicaInfo() {
+    try {
+        const raw = localStorage.getItem('bootimus_replica');
+        return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function renderReplicaBanner() {
+    const banner = document.getElementById('replica-banner');
+    const info = replicaInfo();
+    document.body.classList.toggle('replica', !!info);
+    if (!banner || !info) return;
+    const last = info.last_sync ? new Date(info.last_sync).toLocaleString() : 'never';
+    let text = `Replica of ${escapeHtml(info.primary_url || '')}. Last successful sync: ${escapeHtml(last)}. Make changes on the primary.`;
+    if (info.last_error) text += ` Last sync error: ${escapeHtml(info.last_error)}`;
+    banner.innerHTML = text;
+}
+
+function applyRole() {
+    const readOnly = isReadOnly();
+    document.body.classList.toggle('read-only', readOnly);
+    renderReplicaBanner();
+    loadCurrentUser();
+    const active = document.querySelector('.sidebar-nav .nav-item.active');
+    if (readOnly && active && active.classList.contains('admin-only')) {
+        document.querySelector('.sidebar-nav .nav-item[data-tab="server"]').click();
+    }
+}
+
+async function refreshRole() {
+    try {
+        const res = await authFetch(`${API_BASE}/me`);
+        const data = await res.json();
+        if (data.success) {
+            localStorage.setItem('bootimus_username', data.data.username);
+            localStorage.setItem('bootimus_is_admin', data.data.is_admin);
+            if (data.data.replica) {
+                localStorage.setItem('bootimus_replica', JSON.stringify(data.data.replica));
+            } else {
+                localStorage.removeItem('bootimus_replica');
+            }
+            applyRole();
+        }
+    } catch (err) {
+        console.error('Failed to refresh role:', err);
+    }
+}
+
+function applyReadOnlyToModal(modal) {
+    const readOnly = isReadOnly();
+    modal.querySelectorAll('form input, form select, form textarea').forEach(el => {
+        if (readOnly && !el.disabled) {
+            el.disabled = true;
+            el.dataset.readOnlyDisabled = '1';
+        } else if (!readOnly && el.dataset.readOnlyDisabled) {
+            el.disabled = false;
+            delete el.dataset.readOnlyDisabled;
+        }
+    });
 }
 
 function showNotification(message, type = 'info') {
@@ -311,15 +443,17 @@ function initApp() {
     if (appInitialised) return;
     appInitialised = true;
 
-    loadCurrentUser();
+    refreshRole();
     loadStats();
     loadServerInfo();
+    loadReplicaStatus();
     loadProfileCache();
     loadClients();
     loadImages();
     loadPublicFiles();
     loadLogs();
-    loadUsers();
+    if (!isReadOnly()) { loadUsers(); loadAPITokens(); }
+    loadTOTPStatus();
     loadActiveSessions();
 
     // Refresh every 30 seconds
@@ -331,13 +465,13 @@ function initApp() {
         if (activeTab === 'images') loadImages();
         if (activeTab === 'public-files') loadPublicFiles();
         if (activeTab === 'logs') loadLogs();
-        if (activeTab === 'users') loadUsers();
+        if (activeTab === 'users' && !isReadOnly()) loadUsers();
     }, 30000);
 
     // Refresh server info more frequently for live stats (every 5 seconds)
     setInterval(() => {
         const activeTab = (document.querySelector('.nav-item.active') || document.querySelector('.tab.active')).dataset.tab;
-        if (activeTab === 'server') loadServerInfo();
+        if (activeTab === 'server') { loadServerInfo(); loadReplicaStatus(); }
     }, 5000);
 
     // Refresh active sessions more frequently (every 3 seconds)
@@ -351,6 +485,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupForms();
     setupUpload();
     document.getElementById('login-form').addEventListener('submit', handleLogin);
+    consumeOIDCRedirect();
     checkAuth();
 });
 
@@ -379,9 +514,17 @@ function setupTabs() {
             if (item.dataset.tab === 'profiles') loadProfiles();
             if (item.dataset.tab === 'autoinstall') loadAutoInstallFiles();
             if (item.dataset.tab === 'clusters') loadClustersTab();
+<<<<<<< HEAD
             if (item.dataset.tab === 'boot-menu') loadTheme();
             if (item.dataset.tab === 'settings') { loadUSBImages(); loadWebhookConfig(); loadProxyConfig(); }
+=======
+            if (item.dataset.tab === 'boot-menu') { loadTheme(); populateMenuPreviewMACs(); }
+            if (item.dataset.tab === 'settings') { loadUSBImages(); loadWebhookConfig(); loadRestoreStatus(); loadHousekeeping(); }
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
             if (item.dataset.tab === 'api-reference') showAPIReference();
+            if (item.dataset.tab === 'audit') loadAuditLog();
+            if (item.dataset.tab === 'pxe-debug') loadPXEDebug();
+            if (item.dataset.tab === 'disk-images') loadDiskImages();
         });
     });
 
@@ -403,6 +546,8 @@ async function loadStats() {
             document.getElementById('stat-images').textContent = data.data.total_images;
             document.getElementById('stat-enabled-images').textContent = data.data.enabled_images;
             document.getElementById('stat-boots').textContent = data.data.total_boots;
+            const updates = document.getElementById('stat-updates');
+            if (updates) updates.textContent = data.data.updates_available ?? 0;
         }
     } catch (err) {
         console.error('Failed to load stats:', err);
@@ -522,6 +667,109 @@ async function powerClient(action) {
     }
 }
 
+let consoleSocket = null;
+let consoleTerm = null;
+let consoleFit = null;
+
+function consoleSetStatus(text, colour) {
+    const el = document.getElementById('console-status');
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = colour || 'var(--text-secondary)';
+}
+
+function openClientConsole(mac) {
+    if (!mac) {
+        const form = document.getElementById('edit-client-form');
+        mac = form ? form.querySelector('[name="mac_address"]').value : '';
+    }
+    if (!mac) return;
+    disconnectClientConsole();
+    document.getElementById('console-title').textContent = mac;
+    showModal('console-modal');
+
+    const host = document.getElementById('console-terminal');
+    host.innerHTML = '';
+    consoleTerm = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        theme: { background: '#000000' },
+    });
+    consoleFit = new FitAddon.FitAddon();
+    consoleTerm.loadAddon(consoleFit);
+    consoleTerm.open(host);
+    consoleFit.fit();
+
+    const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = `${scheme}://${window.location.host}${API_BASE}/clients/console?mac=${encodeURIComponent(mac)}`;
+    const token = getToken();
+    const socket = token ? new WebSocket(url, ['bearer', token]) : new WebSocket(url);
+    socket.binaryType = 'arraybuffer';
+    consoleSocket = socket;
+    consoleSetStatus('Connecting…');
+
+    const encoder = new TextEncoder();
+    socket.onopen = () => {
+        consoleSetStatus('Opening console…');
+        socket.send(JSON.stringify({ type: 'resize', cols: consoleTerm.cols, rows: consoleTerm.rows }));
+    };
+    socket.onmessage = (ev) => {
+        if (!consoleTerm) return;
+        if (typeof ev.data === 'string') {
+            let msg = null;
+            try { msg = JSON.parse(ev.data); } catch (_) { }
+            if (!msg || !msg.type) {
+                consoleTerm.write(ev.data);
+                return;
+            }
+            const failed = msg.type === 'error' || msg.type === 'closed';
+            consoleSetStatus(msg.message || msg.type, failed ? 'var(--danger)' : 'var(--teal, green)');
+            if (failed) consoleTerm.writeln(`\r\n[${msg.message || msg.type}]`);
+            return;
+        }
+        consoleTerm.write(new Uint8Array(ev.data));
+    };
+    socket.onclose = () => {
+        if (consoleSocket === socket) {
+            consoleSocket = null;
+            const status = document.getElementById('console-status');
+            if (status && !status.textContent.startsWith('Console closed') && !status.textContent.startsWith('Intel') && status.style.color !== 'var(--danger)') {
+                consoleSetStatus('Disconnected');
+            }
+        }
+    };
+    socket.onerror = () => consoleSetStatus('Connection error', 'var(--danger)');
+    consoleTerm.onData((data) => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(encoder.encode(data));
+    });
+    consoleTerm.focus();
+}
+
+function disconnectClientConsole() {
+    if (consoleSocket) {
+        const socket = consoleSocket;
+        consoleSocket = null;
+        socket.close();
+        consoleSetStatus('Disconnected');
+    }
+    if (consoleTerm) {
+        consoleTerm.dispose();
+        consoleTerm = null;
+        consoleFit = null;
+    }
+}
+
+window.addEventListener('resize', () => {
+    if (consoleFit) consoleFit.fit();
+});
+
+function updateBMCPortPlaceholder(select) {
+    const port = select.form.querySelector('[name="ipmi_port"]');
+    if (!port) return;
+    port.placeholder = select.value === 'amt' ? '16992 (16993 with TLS)' : '443';
+}
+
 async function powerStatusClient() {
     const form = document.getElementById('edit-client-form');
     const mac = form.querySelector('[name="mac_address"]').value;
@@ -559,7 +807,7 @@ function updateScheduleActionHint() {
     switch (action) {
         case 'power':
             wrap.style.display = '';
-            label.textContent = 'Redfish Action';
+            label.textContent = 'Power Action';
             input.placeholder = 'On';
             hint.textContent = 'On / ForceOff / ForceRestart / GracefulShutdown / GracefulRestart';
             break;
@@ -700,6 +948,9 @@ async function loadWebhookConfig() {
         document.getElementById('webhook-on-boot-started').checked = !!c.on_boot_started;
         document.getElementById('webhook-on-client-discovered').checked = !!c.on_client_discovered;
         document.getElementById('webhook-on-inventory-updated').checked = !!c.on_inventory_updated;
+        document.getElementById('webhook-on-admin-action').checked = !!c.on_admin_action;
+        document.getElementById('webhook-on-disk-imaging').checked = c.on_disk_imaging !== false;
+        document.getElementById('webhook-on-install').checked = !!c.on_install;
     } catch (err) {
         console.error('Failed to load webhook config:', err);
     }
@@ -713,6 +964,9 @@ async function saveWebhookConfig(e) {
         on_boot_started: document.getElementById('webhook-on-boot-started').checked,
         on_client_discovered: document.getElementById('webhook-on-client-discovered').checked,
         on_inventory_updated: document.getElementById('webhook-on-inventory-updated').checked,
+        on_admin_action: document.getElementById('webhook-on-admin-action').checked,
+        on_disk_imaging: document.getElementById('webhook-on-disk-imaging').checked,
+        on_install: document.getElementById('webhook-on-install').checked,
     };
     try {
         const res = await authFetch(`${API_BASE}/webhook`, {
@@ -790,6 +1044,148 @@ async function testWebhook() {
     }
 }
 
+const HOUSEKEEPING_TASK_LABELS = {
+    boot_logs: 'Boot logs',
+    inventory_history: 'Inventory history',
+    discovered_clients: 'Discovered clients',
+    audit_logs: 'Audit log',
+    catalogue_check: 'Catalogue check',
+};
+
+function renderHousekeeping(view) {
+    const settings = view.settings || {};
+    document.getElementById('housekeeping-boot-log-days').value = settings.boot_log_days ?? 0;
+    document.getElementById('housekeeping-inventory-days').value = settings.inventory_history_days ?? 0;
+    document.getElementById('housekeeping-discovered-days').value = settings.discovered_client_days ?? 0;
+    document.getElementById('housekeeping-audit-days').value = settings.audit_log_days ?? 0;
+    document.getElementById('housekeeping-catalogue-check').checked = !settings.catalogue_check_off;
+
+    const lastRun = document.getElementById('housekeeping-last-run');
+    if (settings.last_run) {
+        const status = settings.last_status || 'ok';
+        const badge = status === 'ok' ? 'badge-success' : (status === 'partial' ? 'badge-warning' : 'badge-danger');
+        lastRun.innerHTML = `Last run ${new Date(settings.last_run).toLocaleString()} <span class="badge ${badge}">${escapeHtml(status)}</span>`;
+    } else {
+        lastRun.textContent = 'Not run yet';
+    }
+
+    const reportEl = document.getElementById('housekeeping-report');
+    const report = view.last_report;
+    if (report && Array.isArray(report.tasks) && report.tasks.length) {
+        let html = '<div class="table-scroll"><table><thead><tr><th>Task</th><th>Result</th></tr></thead><tbody>';
+        for (const t of report.tasks) {
+            const label = HOUSEKEEPING_TASK_LABELS[t.name] || t.name;
+            let result;
+            if (t.error) result = `<span style="color: var(--danger);">${escapeHtml(t.error)}</span>`;
+            else if (t.skipped) result = '<span style="color: var(--text-muted);">Disabled</span>';
+            else if (t.name === 'catalogue_check') result = `${t.affected} update${t.affected === 1 ? '' : 's'} available`;
+            else result = `${t.affected} removed`;
+            html += `<tr><td>${escapeHtml(label)}</td><td>${result}</td></tr>`;
+        }
+        html += '</tbody></table></div>';
+        reportEl.innerHTML = html;
+    } else {
+        reportEl.innerHTML = '';
+    }
+
+    const usageEl = document.getElementById('housekeeping-usage');
+    if (view.usage && Array.isArray(view.usage.entries)) {
+        let html = `<div class="table-scroll"><table><thead><tr><th>Entry</th><th>Files</th><th>Size</th></tr></thead><tbody>`;
+        for (const e of view.usage.entries) {
+            html += `<tr><td><code>${escapeHtml(e.name)}${e.dir ? '/' : ''}</code></td><td>${e.files}</td><td>${formatBytes(e.bytes)}</td></tr>`;
+        }
+        html += `<tr><td><strong>Total</strong></td><td></td><td><strong>${formatBytes(view.usage.total_bytes)}</strong></td></tr>`;
+        html += '</tbody></table></div>';
+        html += `<div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">${escapeHtml(view.usage.data_dir)} · measured ${new Date(view.usage.measured_at).toLocaleTimeString()}</div>`;
+        usageEl.innerHTML = html;
+    } else {
+        usageEl.textContent = view.usage_error ? 'Could not measure data directory: ' + view.usage_error : 'No usage information available.';
+    }
+}
+
+async function checkCatalogueNow() {
+    const btn = document.getElementById('catalogue-check-btn');
+    const out = document.getElementById('catalogue-check-result');
+    btn.disabled = true;
+    out.textContent = 'Checking the catalogue…';
+    try {
+        const res = await authFetch(`${API_BASE}/catalogue/check`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) {
+            out.innerHTML = `<span style="color: var(--danger);">${escapeHtml(data.error || 'Check failed')}</span>`;
+            return;
+        }
+        const r = data.data;
+        const parts = [];
+        for (const i of (r.images || [])) parts.push(`${escapeHtml(i.name)} → ${escapeHtml(i.version || i.filename)}`);
+        for (const t of (r.tools || [])) parts.push(`${escapeHtml(t.display_name || t.name)} (tool)`);
+        const source = r.remote ? 'online catalogue' : 'built-in catalogue';
+        out.innerHTML = parts.length
+            ? `${parts.length} update${parts.length === 1 ? '' : 's'} available (${source}): ${parts.join(', ')}`
+            : `Everything is current against the ${source}.`;
+        loadImages();
+        loadTools();
+        loadStats();
+    } catch (err) {
+        out.innerHTML = `<span style="color: var(--danger);">Check failed: ${escapeHtml(err.message)}</span>`;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function loadHousekeeping() {
+    if (!document.getElementById('housekeeping-form')) return;
+    try {
+        const res = await authFetch(`${API_BASE}/housekeeping`);
+        const data = await res.json();
+        if (data.success && data.data) renderHousekeeping(data.data);
+    } catch (err) {
+        console.error('Failed to load housekeeping settings:', err);
+    }
+}
+
+async function saveHousekeeping(e) {
+    if (e) e.preventDefault();
+    const body = {
+        boot_log_days: parseInt(document.getElementById('housekeeping-boot-log-days').value, 10) || 0,
+        inventory_history_days: parseInt(document.getElementById('housekeeping-inventory-days').value, 10) || 0,
+        discovered_client_days: parseInt(document.getElementById('housekeeping-discovered-days').value, 10) || 0,
+        audit_log_days: parseInt(document.getElementById('housekeeping-audit-days').value, 10) || 0,
+        catalogue_check_off: !document.getElementById('housekeeping-catalogue-check').checked,
+    };
+    try {
+        const res = await authFetch(`${API_BASE}/housekeeping`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.success) {
+            showAlert('Housekeeping settings saved', 'success');
+            loadHousekeeping();
+        } else {
+            showAlert(data.error || 'Save failed', 'error');
+        }
+    } catch (err) {
+        showAlert('Save failed: ' + err.message, 'error');
+    }
+}
+
+async function runHousekeeping() {
+    const btn = document.getElementById('housekeeping-run-btn');
+    btn.disabled = true;
+    try {
+        const res = await authFetch(`${API_BASE}/housekeeping/run`, { method: 'POST' });
+        const data = await res.json();
+        if (data.data) renderHousekeeping(data.data);
+        showAlert(data.message || data.error || 'Housekeeping finished', data.success ? 'success' : 'error');
+    } catch (err) {
+        showAlert('Housekeeping failed: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 async function downloadBackup() {
     try {
         const res = await authFetch(`${API_BASE}/backup/export`);
@@ -814,10 +1210,75 @@ async function downloadBackup() {
     }
 }
 
+function setRestorePendingNotice(pending) {
+    const notice = document.getElementById('restore-pending-notice');
+    if (notice) notice.style.display = pending ? 'flex' : 'none';
+}
+
+async function loadRestoreStatus() {
+    try {
+        const res = await authFetch(`${API_BASE}/backup/import`);
+        const data = await res.json();
+        setRestorePendingNotice(!!(data.success && data.data && data.data.pending));
+    } catch (err) {
+        console.error('Failed to load restore status:', err);
+    }
+}
+
+async function uploadRestore() {
+    const input = document.getElementById('restore-file');
+    const status = document.getElementById('restore-status');
+    const btn = document.getElementById('restore-upload-btn');
+    const file = input && input.files && input.files[0];
+    if (!file) {
+        showAlert('Choose a backup file first', 'error');
+        return;
+    }
+    if (!confirm(`Restore "${file.name}"?\n\nThe current database, bootloader configuration and settings will be replaced the next time Bootimus restarts. ISOs are not affected.`)) return;
+    const form = new FormData();
+    form.append('backup', file);
+    btn.disabled = true;
+    status.textContent = 'Uploading…';
+    try {
+        const res = await authFetch(`${API_BASE}/backup/import`, { method: 'POST', body: form });
+        const data = await res.json();
+        if (data.success) {
+            status.textContent = '';
+            input.value = '';
+            setRestorePendingNotice(true);
+            showAlert(data.message || 'Restore staged. Restart Bootimus to apply it.', 'success');
+        } else {
+            status.textContent = '';
+            showAlert(data.error || 'Restore upload failed', 'error');
+        }
+    } catch (err) {
+        status.textContent = '';
+        showAlert('Restore upload failed: ' + err.message, 'error');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function cancelRestore() {
+    if (!confirm('Discard the staged restore?')) return;
+    try {
+        const res = await authFetch(`${API_BASE}/backup/import`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+            setRestorePendingNotice(false);
+            showAlert('Staged restore cancelled', 'success');
+        } else {
+            showAlert(data.error || 'Failed to cancel restore', 'error');
+        }
+    } catch (err) {
+        showAlert('Failed to cancel restore: ' + err.message, 'error');
+    }
+}
+
 function downloadISOFromProperties() {
     const filename = document.getElementById('image-props-filename').value;
     if (!filename) return;
-    const url = `${window.location.protocol}//${window.location.hostname}:${cachedHTTPPort}/isos/${encodeURIComponent(filename)}`;
+    const url = `http://${window.location.hostname}:${cachedHTTPPort}/isos/${encodeURIComponent(filename)}`;
     const a = document.createElement('a');
     a.href = url;
     a.download = filename;
@@ -1215,12 +1676,17 @@ function clientRowHTML(client, includeGroupCell) {
                         <td>${client.boot_count || 0}</td>
                         <td>
                             ${client.last_boot ? new Date(client.last_boot).toLocaleString() : 'Never'}
-                            ${client.next_boot_image ? '<br><span class="badge badge-info" title="' + escapeHtml(client.next_boot_image) + '">Next: ' + escapeHtml(client.next_boot_image) + '</span>' : ''}
+                            ${client.next_boot_image ? '<br><span class="badge badge-info" title="' + escapeHtml(client.next_boot_image) + '">Next: ' + escapeHtml(nextBootLabel(client.next_boot_image)) + '</span>' : ''}
                         </td>
+                        <td>${installStateBadge(client)}</td>
                         <td onclick="event.stopPropagation()">
                             ${!client.static ? '<button class="btn btn-success btn-sm" onclick="promoteClient(\'' + client.mac_address + '\')">Make Static</button>' : ''}
                             <button class="btn btn-success btn-sm" onclick="wakeClient('${client.mac_address}')">Wake</button>
                             <button class="btn btn-primary btn-sm" onclick="showNextBoot('${client.mac_address}')">Next Boot</button>
+                            ${client.ipmi_host ? '<button class="btn btn-sm" onclick="openClientConsole(\'' + client.mac_address + '\')">Console</button>' : ''}
+                            <button class="btn btn-sm" onclick="previewBootMenu('${client.mac_address}')">Preview Menu</button>
+                            <button class="btn btn-sm" onclick="showCaptureDiskModal('${client.mac_address}')">Capture Disk</button>
+                            <button class="btn btn-sm" onclick="showDeployDiskModal({ mac: '${client.mac_address}' })">Deploy Image</button>
                         </td>
                     </tr>`;
 }
@@ -1244,7 +1710,7 @@ function renderClientsTable() {
     let colspan;
 
     if (!clientGroupedView) {
-        colspan = 11;
+        colspan = 12;
         theadHtml = `
                 <tr>
                     <th class="col-check"><input type="checkbox" id="clients-select-all" onchange="toggleClientsSelectAll(this.checked)" title="Select all"></th>
@@ -1257,11 +1723,12 @@ function renderClientsTable() {
                     <th>Assigned Images</th>
                     <th>Boot Count</th>
                     <th>Last Boot</th>
+                    <th>Install</th>
                     <th>Quick Actions</th>
                 </tr>`;
         bodyHtml = filteredClients.map(c => clientRowHTML(c, true)).join('');
     } else {
-        colspan = 10;
+        colspan = 11;
         theadHtml = `
                 <tr>
                     <th class="col-check"><input type="checkbox" id="clients-select-all" onchange="toggleClientsSelectAll(this.checked)" title="Select all"></th>
@@ -1273,6 +1740,7 @@ function renderClientsTable() {
                     <th>Assigned Images</th>
                     <th>Boot Count</th>
                     <th>Last Boot</th>
+                    <th>Install</th>
                     <th>Quick Actions</th>
                 </tr>`;
 
@@ -1360,15 +1828,23 @@ async function editClient(mac) {
             form.querySelector('[name="description"]').value = currentClient.description || '';
             form.querySelector('[name="enabled"]').checked = currentClient.enabled || false;
             form.querySelector('[name="show_public_images"]').checked = currentClient.show_public_images !== false;
+            form.querySelector('[name="proxy_dhcp_no_vendor_option"]').checked = !!currentClient.proxy_dhcp_no_vendor_option;
 
             // BMC / Redfish
+            form.querySelector('[name="bmc_protocol"]').value = currentClient.bmc_protocol || '';
+            updateBMCPortPlaceholder(form.querySelector('[name="bmc_protocol"]'));
             form.querySelector('[name="ipmi_host"]').value = currentClient.ipmi_host || '';
             form.querySelector('[name="ipmi_port"]').value = currentClient.ipmi_port || '';
             form.querySelector('[name="ipmi_username"]').value = currentClient.ipmi_username || '';
             form.querySelector('[name="ipmi_password"]').value = currentClient.ipmi_password || '';
             form.querySelector('[name="ipmi_insecure"]').checked = !!currentClient.ipmi_insecure;
+            await populateSANTargetSelect('edit-client-san-select', currentClient.san_target_id, '(inherit from group, or none)');
+            form.querySelector('[name="boot_from_san"]').checked = !!currentClient.boot_from_san;
             const powerResult = document.getElementById('power-client-result');
             if (powerResult) powerResult.textContent = '';
+            const consoleBtn = document.getElementById('open-console-btn');
+            if (consoleBtn) consoleBtn.style.display = currentClient.ipmi_host ? '' : 'none';
+            loadClientInstallHistory(currentClient.mac_address || mac);
 
             // Populate bootloader set dropdown
             try {
@@ -1403,6 +1879,7 @@ async function editClient(mac) {
             }
 
             await populateAutoInstallFileDropdown('edit-client-autoinstall-select', currentClient.auto_install_file);
+            renderVariableRows('edit-client-variables', currentClient.variables);
 
             // Populate images select using allowed_images (persisted filename list)
             const select = document.getElementById('edit-images-select');
@@ -1430,20 +1907,20 @@ async function loadClientBootHistory(mac) {
     if (!container) return;
     container.innerHTML = '<p style="color: var(--text-secondary); margin: 0;">Loading…</p>';
     try {
-        const res = await authFetch(`${API_BASE}/boot-logs?mac=${encodeURIComponent(mac)}&limit=50`);
+        const res = await authFetch(`${API_BASE}/logs?mac=${encodeURIComponent(mac)}&limit=50`);
         const data = await res.json();
         if (!data.success || !data.data || data.data.length === 0) {
             container.innerHTML = '<p style="color: var(--text-secondary); margin: 0;">No boot history for this client yet.</p>';
             return;
         }
         const rows = data.data.map(entry => {
-            const when = entry.CreatedAt ? new Date(entry.CreatedAt).toLocaleString() : '-';
-            const img = entry.ImageName || '(unknown)';
-            const ok = entry.Success
+            const when = entry.created_at ? new Date(entry.created_at).toLocaleString() : '-';
+            const img = entry.image_name || '(unknown)';
+            const ok = entry.success
                 ? '<span class="status-dot on" title="Success"></span>'
                 : '<span class="status-dot off" title="Failed"></span>';
-            const err = entry.ErrorMsg ? `<div style="color: var(--danger); font-size: 12px;">${escapeHtml(entry.ErrorMsg)}</div>` : '';
-            const ip = entry.IPAddress ? `<span style="color: var(--text-muted); font-size: 12px;">${escapeHtml(entry.IPAddress)}</span>` : '';
+            const err = entry.error_msg ? `<div style="color: var(--danger); font-size: 12px;">${escapeHtml(entry.error_msg)}</div>` : '';
+            const ip = entry.ip_address ? `<span style="color: var(--text-muted); font-size: 12px;">${escapeHtml(entry.ip_address)}</span>` : '';
             return `
                 <div style="padding: 8px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: center;">
                     <div style="width: 14px;">${ok}</div>
@@ -1623,14 +2100,16 @@ async function showNextBoot(mac) {
     document.getElementById('next-boot-mac').dataset.mac = mac;
 
     const select = document.getElementById('next-boot-image-select');
+    await loadSANTargets(true);
     select.innerHTML = images.map(img =>
         `<option value="${img.filename}">${img.name}</option>`
+    ).join('') + sanTargets.map(t =>
+        `<option value="san:${t.id}">Boot from SAN: ${escapeHtml(t.name)}</option>`
     ).join('');
 
     const currentDiv = document.getElementById('next-boot-current');
     if (client && client.next_boot_image) {
-        const img = images.find(i => i.filename === client.next_boot_image);
-        document.getElementById('next-boot-current-image').textContent = img ? img.name : client.next_boot_image;
+        document.getElementById('next-boot-current-image').textContent = nextBootLabel(client.next_boot_image);
         currentDiv.style.display = 'block';
     } else {
         currentDiv.style.display = 'none';
@@ -2157,10 +2636,12 @@ function imageRowHTML(img, includeGroupCell, depth = 0) {
                         <td>${formatBytes(img.size)}</td>
                         <td>
                             ${img.extracted ?
-                                (img.distro ? '<span class="badge badge-info">'+img.distro+'</span>' : '<span class="badge badge-success">✓ Extracted</span>') :
+                                (img.distro ? '<span class="badge badge-info">'+(img.distro === 'winpe' ? 'WinPE' : img.distro)+'</span>' : '<span class="badge badge-success">✓ Extracted</span>') :
                                 (img.extraction_error ? '<span class="badge badge-danger" title="'+img.extraction_error+'">Error</span>' : '')
                             }
                             ${img.smb_install_enabled ? ' <span class="badge badge-warning" title="boot.wim patched to auto-mount SMB share and launch setup.exe">SMB</span>' : ''}
+                            ${img.update_available ? ' <span class="badge badge-warning" title="' + escapeHtml(img.update_filename || img.update_url || '') + '">Update available: ' + escapeHtml(img.update_version || 'newer release') + '</span>' : ''}
+                            ${img.checksum_verified ? ' <span class="badge badge-success" title="SHA-256 ' + escapeHtml(img.checksum || '') + '">✓ Verified</span>' : ''}
                         </td>${groupCell}
                         <td class="col-dot">
                             <span class="status-dot ${img.enabled ? 'on' : 'off'}" title="${img.enabled ? 'Enabled' : 'Disabled'}"></span>
@@ -2171,6 +2652,8 @@ function imageRowHTML(img, includeGroupCell, depth = 0) {
                         <td style="white-space: nowrap;">
                             ${img.boot_method === 'kernel' ?
                                 '<span class="badge badge-success">Kernel</span>' :
+                                img.boot_method === 'uki' ?
+                                '<span class="badge badge-success">UKI</span>' :
                                 img.boot_method === 'nbd' ?
                                 '<span class="badge badge-warning">NBD</span>' :
                                 img.boot_method === 'nfs' ?
@@ -2726,14 +3209,24 @@ function setupForms() {
             enabled: formData.get('enabled') === 'on',
             show_public_images: formData.get('show_public_images') === 'on',
             bootloader_set: formData.get('bootloader_set') || '',
+            proxy_dhcp_no_vendor_option: formData.get('proxy_dhcp_no_vendor_option') === 'on',
             client_group_id: groupIdRaw ? parseInt(groupIdRaw, 10) : null,
+            bmc_protocol: formData.get('bmc_protocol') || '',
             ipmi_host: formData.get('ipmi_host') || '',
             ipmi_port: ipmiPortRaw ? parseInt(ipmiPortRaw, 10) : 0,
             ipmi_username: formData.get('ipmi_username') || '',
             ipmi_password: formData.get('ipmi_password') || '',
             ipmi_insecure: formData.get('ipmi_insecure') === 'on',
             auto_install_file: formData.get('auto_install_file') || '',
+            san_target_id: formData.get('san_target_id') ? parseInt(formData.get('san_target_id'), 10) : null,
+            boot_from_san: formData.get('boot_from_san') === 'on',
         };
+        try {
+            updates.variables = collectVariables('edit-client-variables');
+        } catch (err) {
+            showAlert(err.message, 'error');
+            return;
+        }
         console.log('Updating client:', mac, updates);
 
         try {
@@ -2777,6 +3270,7 @@ function setupForms() {
     document.getElementById('add-profile-form').addEventListener('submit', createProfile);
     const wf = document.getElementById('webhook-form');
     if (wf) wf.addEventListener('submit', saveWebhookConfig);
+<<<<<<< HEAD
     const pf = document.getElementById('proxy-form');
     if (pf) pf.addEventListener('submit', saveProxyConfig);
 }
@@ -2938,12 +3432,64 @@ const API_REFERENCE = [
         { method: 'GET',    path: '/bootenv/{filename}',           desc: 'NBD boot environment kernel/initrd.', publicAccess: true },
     ]},
 ];
+=======
+    const hf = document.getElementById('housekeeping-form');
+    if (hf) hf.addEventListener('submit', saveHousekeeping);
+}
+
+let apiReferenceSpec = null;
+
+async function loadAPIReferenceSpec() {
+    if (apiReferenceSpec) return apiReferenceSpec;
+    const res = await fetch(`${API_BASE}/openapi.json`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    apiReferenceSpec = await res.json();
+    return apiReferenceSpec;
+}
+
+function apiReferenceSections(spec) {
+    const byTag = new Map();
+    for (const tag of (spec.tags || [])) byTag.set(tag.name, { category: tag.name, description: tag.description || '', endpoints: [] });
+    for (const [path, ops] of Object.entries(spec.paths || {})) {
+        for (const [method, op] of Object.entries(ops)) {
+            const tag = (op.tags && op.tags[0]) || 'Other';
+            if (!byTag.has(tag)) byTag.set(tag, { category: tag, description: '', endpoints: [] });
+            const params = op.parameters || [];
+            const required = params.filter(p => p.in === 'query' && p.required).map(p => `${p.name}={${p.name}}`);
+            const optional = params.filter(p => p.in === 'query' && !p.required);
+            const body = op.requestBody || null;
+            const contentType = body ? Object.keys(body.content || {})[0] || '' : '';
+            byTag.get(tag).endpoints.push({
+                method: method.toUpperCase(),
+                path: required.length ? `${path}?${required.join('&')}` : path,
+                desc: op.summary || '',
+                optional,
+                body: body ? body.description || '' : '',
+                multipart: contentType === 'multipart/form-data',
+                publicAccess: !!op['x-bootimus-public'],
+                readOnly: !!op['x-bootimus-readonly'],
+                order: op['x-bootimus-order'] || 0,
+            });
+        }
+    }
+    const sections = [...byTag.values()].filter(s => s.endpoints.length);
+    for (const s of sections) s.endpoints.sort((a, b) => a.order - b.order);
+    return sections;
+}
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 
 let apiRefImage = '';
 let apiRefMac = '';
 let apiRefServer = '';
 
 async function showAPIReference() {
+    const container = document.getElementById('api-reference-content');
+    try {
+        await loadAPIReferenceSpec();
+    } catch (err) {
+        if (container) container.innerHTML = `<p class="alert alert-error">Failed to load the OpenAPI document: ${escapeHtml(err.message)}</p>`;
+        return;
+    }
     if (!images || images.length === 0) {
         try { await loadImages(); } catch (_) {}
     }
@@ -3005,12 +3551,14 @@ function fillAPIRefPath(path) {
         .replace(/\{filename\}/g, fnEnc);
 }
 
-function buildAPIRefCurl(method, path, isPublic) {
+function buildAPIRefCurl(method, path, isPublic, multipart) {
     const base = (apiRefServer || window.location.origin).replace(/\/+$/, '');
     const url = base + fillAPIRefPath(path);
     const parts = [`curl -X ${method} '${url}'`];
     if (!isPublic) parts.push(`-H 'Authorization: Bearer $BOOTIMUS_TOKEN'`);
-    if (method === 'POST' || method === 'PUT') {
+    if (multipart) {
+        parts.push(`-F 'file=@/path/to/file'`);
+    } else if (method === 'POST' || method === 'PUT') {
         parts.push(`-H 'Content-Type: application/json' -d '{}'`);
     }
     return parts.join(' ');
@@ -3037,21 +3585,29 @@ function renderAPIReference(filter) {
     const q = (filter || '').trim().toLowerCase();
     const copyIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     let html = '';
-    for (const section of API_REFERENCE) {
+    if (!apiReferenceSpec) {
+        container.innerHTML = '<p style="color: var(--text-secondary); padding: 20px;">Loading the OpenAPI document…</p>';
+        return;
+    }
+    for (const section of apiReferenceSections(apiReferenceSpec)) {
         const matching = section.endpoints.filter(e =>
-            !q || e.path.toLowerCase().includes(q) || e.desc.toLowerCase().includes(q) || section.category.toLowerCase().includes(q) || e.method.toLowerCase().includes(q)
+            !q || e.path.toLowerCase().includes(q) || e.desc.toLowerCase().includes(q) || e.body.toLowerCase().includes(q) || section.category.toLowerCase().includes(q) || e.method.toLowerCase().includes(q)
         );
         if (matching.length === 0) continue;
         html += `<div class="api-section"><h3>${escapeHtml(section.category)}</h3>`;
         for (const e of matching) {
             const filledPath = fillAPIRefPath(e.path);
             const noAuthBadge = e.publicAccess ? ' <span style="color: #ffb000; font-family: ui-monospace, monospace; font-size: 10px; font-weight: 700; letter-spacing: 0.5px;">NO AUTH</span>' : '';
-            const curl = buildAPIRefCurl(e.method, e.path, !!e.publicAccess);
+            const readOnlyBadge = !e.publicAccess && e.readOnly ? ' <span style="color: #3498db; font-family: ui-monospace, monospace; font-size: 10px; font-weight: 700; letter-spacing: 0.5px;" title="Available to read-only users">READ-ONLY OK</span>' : '';
+            const curl = buildAPIRefCurl(e.method, e.path, !!e.publicAccess, !!e.multipart);
+            let detail = escapeHtml(e.desc);
+            if (e.body) detail += ` ${e.multipart ? 'Multipart' : 'Body'}: <code>${escapeHtml(e.body)}</code>`;
+            if (e.optional.length) detail += ` Optional: ${e.optional.map(p => `<code>${escapeHtml(p.name)}</code>${p.description ? ' (' + escapeHtml(p.description) + ')' : ''}`).join(', ')}.`;
             html += `<div class="api-row">
                 <div class="api-row-head">
                     <span class="api-method ${e.method.toLowerCase()}">${e.method}</span>
-                    <code class="api-path">${escapeHtml(filledPath)}${noAuthBadge}</code>
-                    <span class="api-detail">${e.desc}</span>
+                    <code class="api-path">${escapeHtml(filledPath)}${noAuthBadge}${readOnlyBadge}</code>
+                    <span class="api-detail">${detail}</span>
                 </div>
                 <div class="api-curl">
                     <code>${escapeHtml(curl)}</code>
@@ -3266,6 +3822,7 @@ async function loadTools() {
             if (tool.custom) html += `<span class="badge badge-warning">Custom</span>`;
             if (tool.enabled) html += `<span class="badge badge-success">Enabled</span>`;
             if (tool.downloaded) html += `<span class="badge badge-info">Downloaded</span>`;
+            if (tool.update_available) html += `<span class="badge badge-warning" title="${escapeHtml(tool.update_url || '')}">Update available</span>`;
             html += `</div>`;
             html += `<p style="color: var(--text-secondary); font-size: 14px; margin: 0;">${escapeHtml(tool.description)}</p>`;
             html += `</div>`;
@@ -3286,6 +3843,9 @@ async function loadTools() {
                     html += `<button class="btn btn-success" onclick="toggleTool('${tool.name}', true)">Enable</button>`;
                 }
                 html += `<button class="btn btn-danger" onclick="deleteTool('${tool.name}')">Delete Files</button>`;
+                if (tool.update_available && tool.update_url) {
+                    html += `<button class="btn btn-primary" onclick="downloadNewerTool('${tool.name}', '${escapeHtml(tool.update_url)}')">Download newer</button>`;
+                }
             }
             if (tool.custom) {
                 html += `<button class="btn btn-danger" onclick="deleteCustomTool('${tool.name}')">Remove</button>`;
@@ -3314,6 +3874,25 @@ async function loadTools() {
 }
 
 const toolProgressIntervals = new Map();
+
+async function downloadNewerTool(name, url) {
+    try {
+        const res = await authFetch(`${API_BASE}/tools/url?name=${encodeURIComponent(name)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showNotification(data.error || 'Could not switch to the newer URL', 'error');
+            return;
+        }
+        await loadTools();
+        await downloadTool(name);
+    } catch (err) {
+        showNotification('Could not start the update: ' + err.message, 'error');
+    }
+}
 
 async function downloadTool(name) {
     try {
@@ -3448,6 +4027,10 @@ async function createCustomTool(e) {
         showNotification('Name, display name, and download URL are required', 'error');
         return;
     }
+    if (!isToolDownloadURL(data.download_url)) {
+        showNotification(t('tools.notify.invalid_download_url'), 'error');
+        return;
+    }
 
     try {
         const res = await authFetch(`${API_BASE}/tools/custom`, {
@@ -3467,6 +4050,10 @@ async function createCustomTool(e) {
     } catch (err) {
         showNotification('Failed to create tool', 'error');
     }
+}
+
+function isToolDownloadURL(value) {
+    return /^(https?:\/\/|\{\{HTTP_URL\}\})/i.test(value);
 }
 
 async function deleteCustomTool(name) {
@@ -3541,7 +4128,7 @@ async function loadBootloaders() {
             // Header row
             html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">`;
             html += `<div style="display: flex; align-items: center; gap: 12px;">`;
-            html += `<input type="radio" name="active-bootloader-set" value="${escapedName}" ${isActive ? 'checked' : ''} onchange="selectBootloaderSet('${escapedName}')" style="width: auto; accent-color: var(--success); transform: scale(1.3);">`;
+            html += `<input type="radio" name="active-bootloader-set" value="${escapedName}" ${isActive ? 'checked' : ''} ${isReadOnly() ? 'disabled' : ''} onchange="selectBootloaderSet('${escapedName}')" style="width: auto; accent-color: var(--success); transform: scale(1.3);">`;
             html += `<div>`;
             html += `<strong style="font-size: 16px;">${escapedName}</strong>`;
             if (isActive) html += ` <span class="badge badge-success">Active</span>`;
@@ -3810,7 +4397,7 @@ function setupUpload() {
         }
         pendingUploads.set(filename, {
             filename,
-            name: filename.replace(/\.iso$/i, ''),
+            name: filename.replace(/\.(iso|efi)$/i, ''),
             size: file.size,
             progress: 0,
             status: 'Starting…',
@@ -3888,7 +4475,9 @@ function showUploadModal() {
 
 // Utilities
 function showModal(id) {
-    document.getElementById(id).classList.add('active');
+    const modal = document.getElementById(id);
+    applyReadOnlyToModal(modal);
+    modal.classList.add('active');
 }
 
 function closeModal(id) {
@@ -4029,6 +4618,118 @@ function clearLiveLogs() {
     document.getElementById('live-logs').innerHTML = '<div style="color: var(--text-secondary);">Click "Refresh" to load logs...</div>';
 }
 
+// ==================== PXE Debug ====================
+
+let pxeDebugEvents = [];
+let pxeDebugEnabled = false;
+let pxeDebugInterval = null;
+
+async function loadPXEDebug() {
+    try {
+        const res = await authFetch(`${API_BASE}/proxydhcp/events`);
+        const data = await res.json();
+        if (!data.success) return;
+        pxeDebugEvents = data.events || [];
+        pxeDebugEnabled = !!data.enabled;
+        const banner = document.getElementById('pxe-debug-disabled');
+        if (banner) banner.style.display = pxeDebugEnabled ? 'none' : 'block';
+        const summary = document.getElementById('pxe-debug-summary');
+        if (summary) {
+            const bf = data.bootfiles || {};
+            summary.innerHTML = pxeDebugEnabled
+                ? `Advertising next-server <code>${escapeHtml(data.server_ip || '')}</code> with bootfiles BIOS <code>${escapeHtml(bf.bios || '')}</code>, UEFI <code>${escapeHtml(bf.uefi || '')}</code>, ARM64 <code>${escapeHtml(bf.arm64 || '')}</code>. Showing the last ${pxeDebugEvents.length} requests.`
+                : '';
+        }
+        if (!clients || clients.length === 0) {
+            try { await loadClients(); } catch (_) {}
+        }
+        renderPXEDebug();
+    } catch (err) {
+        console.error('Failed to load PXE debug events:', err);
+    }
+}
+
+function pxeDebugClientName(mac) {
+    const match = (clients || []).find(c => c.mac_address && c.mac_address.toLowerCase() === (mac || '').toLowerCase());
+    return match && match.name ? match.name : '';
+}
+
+function renderPXEDebug() {
+    const container = document.getElementById('pxe-debug-table');
+    if (!container) return;
+    const filterInput = document.getElementById('pxe-debug-filter');
+    const q = filterInput ? filterInput.value.trim().toLowerCase() : '';
+    const rows = pxeDebugEvents
+        .map(ev => ({ ev, name: pxeDebugClientName(ev.mac) }))
+        .filter(({ ev, name }) => !q || [ev.mac, name, ev.decision, ev.vendor_class, ev.source, ev.relay, ev.bootfile].some(v => (v || '').toLowerCase().includes(q)))
+        .reverse();
+    if (rows.length === 0) {
+        container.innerHTML = `<p style="color: var(--text-secondary); padding: 20px;">${pxeDebugEvents.length === 0 ? 'No PXE requests recorded yet.' : 'No requests match the filter.'}</p>`;
+        return;
+    }
+    const colours = { replied: 'var(--success)', ignored: 'var(--text-secondary)', failed: 'var(--danger)' };
+    let html = '<div class="table-scroll"><table><thead><tr><th>Time</th><th>MAC</th><th>Client</th><th>Source</th><th>Relay</th><th>Type</th><th>Arch</th><th>Vendor class</th><th>Decision</th><th>Bootfile</th></tr></thead><tbody>';
+    for (const { ev, name } of rows) {
+        const flags = [];
+        if (ev.raspberry_pi) flags.push('<span class="badge badge-info" title="Raspberry Pi firmware stage">Pi</span>');
+        if (ev.vendor_option_omitted) flags.push('<span class="badge badge-warning" title="PXE vendor option 43 omitted">no opt 43</span>');
+        if (ev.client_guid) flags.push(`<span style="color: var(--text-muted); font-size: 11px;" title="Client machine identifier">${escapeHtml(ev.client_guid)}</span>`);
+        html += `<tr>
+            <td style="white-space: nowrap;">${new Date(ev.time).toLocaleTimeString()}</td>
+            <td><code>${escapeHtml(ev.mac || '')}</code></td>
+            <td>${name ? escapeHtml(name) : '<span style="color: var(--text-secondary);">unknown</span>'}</td>
+            <td><code>${escapeHtml(ev.source || '')}</code><br><span style="color: var(--text-muted); font-size: 11px;">port ${ev.port}</span></td>
+            <td>${ev.relay ? '<code>' + escapeHtml(ev.relay) + '</code>' : '<span style="color: var(--text-secondary);">—</span>'}</td>
+            <td>${escapeHtml(ev.message_type || '')}</td>
+            <td title="${escapeHtml(ev.arch_name || '')}">${ev.arch}<br><span style="color: var(--text-muted); font-size: 11px;">${escapeHtml(ev.arch_name || '')}</span></td>
+            <td><code style="font-size: 11px;">${escapeHtml(ev.vendor_class || '')}</code></td>
+            <td style="color: ${colours[ev.outcome] || 'inherit'}; max-width: 420px;">${escapeHtml(ev.decision || '')}${flags.length ? '<br>' + flags.join(' ') : ''}</td>
+            <td>${ev.bootfile ? '<code>' + escapeHtml(ev.bootfile) + '</code>' : ''}</td>
+        </tr>`;
+    }
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+function startPXEDebugLive() {
+    loadPXEDebug();
+    if (!pxeDebugInterval) {
+        pxeDebugInterval = setInterval(loadPXEDebug, 2000);
+    }
+    const status = document.getElementById('pxe-debug-status');
+    status.textContent = 'Live (refreshing every 2s)';
+    status.style.color = 'var(--success)';
+    document.getElementById('pxe-debug-live-btn').style.display = 'none';
+    document.getElementById('pxe-debug-stop-btn').style.display = 'inline-block';
+}
+
+function stopPXEDebugLive() {
+    if (pxeDebugInterval) {
+        clearInterval(pxeDebugInterval);
+        pxeDebugInterval = null;
+    }
+    const status = document.getElementById('pxe-debug-status');
+    status.textContent = 'Stopped';
+    status.style.color = 'var(--text-secondary)';
+    document.getElementById('pxe-debug-live-btn').style.display = 'inline-block';
+    document.getElementById('pxe-debug-stop-btn').style.display = 'none';
+}
+
+async function clearPXEDebug() {
+    try {
+        const res = await authFetch(`${API_BASE}/proxydhcp/events/clear`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            pxeDebugEvents = [];
+            renderPXEDebug();
+        } else {
+            showAlert(data.error || 'Failed to clear PXE request history', 'error');
+        }
+    } catch (err) {
+        showAlert('Failed to clear PXE request history: ' + err.message, 'error');
+    }
+}
+
 // ==================== User Management ====================
 
 function loadUsers() {
@@ -4066,7 +4767,9 @@ function renderUsersTable(users) {
                 <tr>
                     <th>Username</th>
                     <th>Role</th>
+                    <th>Source</th>
                     <th>Status</th>
+                    <th>2FA</th>
                     <th>Last Login</th>
                     <th>Created</th>
                     <th>Actions</th>
@@ -4076,7 +4779,10 @@ function renderUsersTable(users) {
     `;
 
     users.forEach(user => {
-        const role = user.is_admin ? '<span class="badge badge-info">Admin</span>' : '<span class="badge badge-success">User</span>';
+        const twoFactor = user.totp_enabled ? '<span class="badge badge-success">On</span>' : '<span style="color: var(--text-secondary);">Off</span>';
+        const role = user.is_admin ? '<span class="badge badge-info">Admin</span>' : '<span class="badge badge-success">Read-only</span>';
+        const source = { local: 'Local', ldap: 'LDAP', oidc: 'OIDC' }[user.source || 'local'] || user.source;
+        const isLocal = !user.source || user.source === 'local';
         const status = user.enabled ? '<span class="badge badge-success">Enabled</span>' : '<span class="badge badge-danger">Disabled</span>';
         const lastLogin = user.last_login ? new Date(user.last_login).toLocaleString() : 'Never';
         const created = new Date(user.created_at).toLocaleString();
@@ -4085,12 +4791,15 @@ function renderUsersTable(users) {
             <tr>
                 <td><strong>${escapeHtml(user.username)}</strong></td>
                 <td>${role}</td>
+                <td>${escapeHtml(source)}</td>
                 <td>${status}</td>
+                <td>${twoFactor}</td>
                 <td>${lastLogin}</td>
                 <td>${created}</td>
                 <td>
                     <button class="btn btn-info btn-sm" onclick='editUser(${JSON.stringify(user)})'>Edit</button>
-                    <button class="btn btn-sm" onclick='showResetPasswordModal(${JSON.stringify(user)})'>Reset Password</button>
+                    ${isLocal ? `<button class="btn btn-sm" onclick='showResetPasswordModal(${JSON.stringify(user)})'>Reset Password</button>` : ''}
+                    ${isLocal && user.totp_enabled ? `<button class="btn btn-sm" onclick="resetUserTOTP(${user.id}, '${escapeHtml(user.username).replace(/'/g, "\\'")}')">Reset 2FA</button>` : ''}
                     ${user.username !== 'admin' ? `<button class="btn btn-danger btn-sm" onclick="deleteUser('${user.username}')">Delete</button>` : ''}
                 </td>
             </tr>
@@ -4124,6 +4833,14 @@ function editUser(user) {
     form.elements['is_admin'].title = lockTitle;
     form.elements['enabled'].disabled = lockOut;
     form.elements['enabled'].title = lockTitle;
+
+    const note = document.getElementById('edit-user-external-note');
+    if (user.source && user.source !== 'local') {
+        note.textContent = `This user signs in via ${user.source.toUpperCase()}. Administrator rights are reset from their groups at each sign-in.`;
+        note.style.display = 'block';
+    } else {
+        note.style.display = 'none';
+    }
 
     openModal('edit-user-modal');
 }
@@ -4369,7 +5086,7 @@ function renderGetImagesList(filter) {
                 <select class="get-iso-mirror-sel" data-row="${escapeHtml(rowKey)}" data-path="${escapeHtml(r.path)}" onchange="updateGetISORowURL(this)">${mirrorOpts}</select>
                 <input type="text" id="get-iso-url-${escapeHtml(rowKey)}" class="get-iso-url" value="${escapeHtml(defaultURL)}">
                 <div id="get-iso-actions-${escapeHtml(rowKey)}" class="get-iso-actions">
-                    <button type="button" class="btn btn-sm" onclick="downloadFromGetISO('${escapeHtml(rowKey)}', '${escapeHtml(distro.name)}', '${escapeHtml(r.label)}')">
+                    <button type="button" class="btn btn-sm" onclick="downloadFromGetISO('${escapeHtml(rowKey)}', '${escapeHtml(distro.name)}', '${escapeHtml(r.label)}', '${escapeHtml(distro.id)}', '${escapeHtml(r.sha256 || '')}', '${escapeHtml(r.checksum_path || '')}')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         Download
                     </button>
@@ -4396,7 +5113,7 @@ function jsAttrEscape(s) {
     return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-async function downloadFromGetISO(rowKey, distroName, releaseLabel) {
+async function downloadFromGetISO(rowKey, distroName, releaseLabel, catalogueId, sha256, checksumPath) {
     const input = document.getElementById('get-iso-url-' + rowKey);
     if (!input) return;
     const url = input.value.trim();
@@ -4426,10 +5143,20 @@ async function downloadFromGetISO(rowKey, distroName, releaseLabel) {
     const useProxyEl = document.getElementById('get-iso-use-proxy');
     const useProxy = !!(useProxyEl && useProxyEl.checked);
     try {
+        const body = { url, description: `${distroName} ${releaseLabel}` };
+        if (!catalogueId) catalogueId = (rowKey || '').replace(/-\d+$/, '');
+        body.catalogue_id = catalogueId;
+        body.catalogue_release = releaseLabel;
+        if (sha256) body.sha256 = sha256;
+        if (checksumPath) body.checksum_url = checksumPath;
         const res = await authFetch(`${API_BASE}/images/download`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+<<<<<<< HEAD
             body: JSON.stringify({ url: targetURL, description: `${distroName} ${releaseLabel}`, use_proxy: useProxy }),
+=======
+            body: JSON.stringify(body),
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
         });
         const data = await res.json();
         if (res.status === 409 && data.data && data.data.filename) {
@@ -4484,11 +5211,11 @@ function startGetISOProgressPolling(rowKey, filename, distroName, releaseLabel) 
                 const fill = document.getElementById('get-iso-bar-fill-' + rowKey);
                 const status = document.getElementById('get-iso-status-' + rowKey);
                 if (fill) fill.style.width = pct + '%';
-                if (status) status.textContent = `${pct}% · ${p.speed || ''}`;
+                if (status) status.textContent = `${pct}% · ${p.speed || ''}${p.verification === 'pending' ? ' · verifying SHA-256' : ''}`;
 
                 if (p.status === 'completed') {
                     stop();
-                    renderGetISOComplete(rowKey, distroName, releaseLabel);
+                    renderGetISOComplete(rowKey, distroName, releaseLabel, p.verification === 'verified');
                     loadImages();
                 } else if (p.status === 'error') {
                     stop();
@@ -4516,12 +5243,12 @@ function renderGetISOError(rowKey, errorMsg, distroName, releaseLabel) {
         </div>`;
 }
 
-function renderGetISOComplete(rowKey, distroName, releaseLabel) {
+function renderGetISOComplete(rowKey, distroName, releaseLabel, verified) {
     const el = document.getElementById('get-iso-actions-' + rowKey);
     if (!el) return;
     el.innerHTML = `
         <div class="get-iso-progress">
-            <span class="get-iso-status-text" style="color: var(--success);">✓ Downloaded</span>
+            <span class="get-iso-status-text" style="color: var(--success);" title="${verified ? 'SHA-256 matched the published checksum' : 'No published checksum was found, so the file was not verified'}">✓ Downloaded${verified ? ' and verified' : ' (unverified)'}</span>
             <button type="button" class="btn btn-sm" onclick="downloadFromGetISO('${jsAttrEscape(rowKey)}', '${jsAttrEscape(distroName)}', '${jsAttrEscape(releaseLabel)}')">Again</button>
         </div>`;
 }
@@ -5243,11 +5970,113 @@ function getDefaultBootParams(img) {
             return 'initrd=initrd ip=dhcp url={{BASE_URL}}/isos/{{FILENAME}}';
         case 'freebsd':
             return 'vfs.root.mountfrom=cd9660:/dev/md0 kernelname=/boot/kernel/kernel';
+        case 'openbsd':
+        case 'netbsd':
+            return '';
         case 'windows':
         case 'windows7':
+        case 'winpe':
             return '';
         default:
             return 'iso-url={{BASE_URL}}/isos/{{FILENAME}} ip=dhcp';
+    }
+}
+
+function renderImageIntegrity(img) {
+    const status = document.getElementById('image-props-checksum-status');
+    const input = document.getElementById('image-props-checksum-input');
+    const update = document.getElementById('image-props-update');
+    const updateText = document.getElementById('image-props-update-text');
+    if (!status) return;
+    input.value = '';
+    if (img.checksum_verified && img.checksum) {
+        status.innerHTML = `<span class="badge badge-success">✓ Verified</span> <code title="${escapeHtml(img.checksum)}">sha256 ${escapeHtml(img.checksum.slice(0, 16))}…</code>${img.checksum_checked_at ? ' · ' + new Date(img.checksum_checked_at).toLocaleString() : ''}`;
+        input.placeholder = 'Re-verify against the recorded checksum, or paste another';
+    } else if (img.checksum) {
+        status.innerHTML = `<span class="badge badge-warning">Unverified</span> <code title="${escapeHtml(img.checksum)}">sha256 ${escapeHtml(img.checksum.slice(0, 16))}…</code>`;
+        input.placeholder = 'SHA-256 or URL of a SHA256SUMS file to verify against';
+    } else {
+        status.innerHTML = '<span class="badge badge-warning">Unverified</span> No checksum recorded';
+        input.placeholder = 'SHA-256 or URL of a SHA256SUMS file to verify against';
+    }
+    if (img.update_available) {
+        update.style.display = 'flex';
+        updateText.textContent = `A newer release is in the catalogue: ${img.update_version || ''} (${img.update_filename || img.update_url}).`;
+    } else {
+        update.style.display = 'none';
+    }
+}
+
+async function verifyImageFromProperties() {
+    const filename = document.getElementById('image-props-filename').value;
+    const value = document.getElementById('image-props-checksum-input').value.trim();
+    const body = {};
+    if (/^https?:\/\//i.test(value)) body.checksum_url = value;
+    else if (value) body.sha256 = value;
+    const status = document.getElementById('image-props-checksum-status');
+    const btn = document.getElementById('image-props-verify-btn');
+    try {
+        const res = await authFetch(`${API_BASE}/images/verify?filename=${encodeURIComponent(filename)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Verification could not start', 'error');
+            return;
+        }
+        btn.disabled = true;
+        const poll = setInterval(async () => {
+            try {
+                const pr = await authFetch(`${API_BASE}/images/verify?filename=${encodeURIComponent(filename)}`);
+                const pd = await pr.json();
+                if (!pd.success) { clearInterval(poll); btn.disabled = false; return; }
+                const p = pd.data;
+                if (p.status === 'running') {
+                    status.textContent = `Hashing… ${(p.percent || 0).toFixed(0)}%`;
+                    return;
+                }
+                clearInterval(poll);
+                btn.disabled = false;
+                if (p.status === 'completed' && p.verified) {
+                    showAlert('Checksum verified', 'success');
+                } else {
+                    showAlert(p.error || 'Checksum mismatch', 'error');
+                }
+                await loadImages();
+                const img = images.find(i => i.filename === filename);
+                if (img && document.getElementById('image-props-filename').value === filename) renderImageIntegrity(img);
+            } catch (_) {
+                clearInterval(poll);
+                btn.disabled = false;
+            }
+        }, 1000);
+    } catch (err) {
+        showAlert('Verification could not start: ' + err.message, 'error');
+    }
+}
+
+async function downloadNewerImage() {
+    const filename = document.getElementById('image-props-filename').value;
+    const img = images.find(i => i.filename === filename);
+    if (!img || !img.update_url) return;
+    try {
+        const res = await authFetch(`${API_BASE}/images/download`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: img.update_url, description: img.description || '', catalogue_id: img.catalogue_id || '', catalogue_release: img.catalogue_release || '' }),
+        });
+        const data = await res.json();
+        if (data.success || res.status === 409) {
+            showAlert(`Downloading ${data.data && data.data.filename ? data.data.filename : 'newer release'} – progress is shown in the downloads list`, 'success');
+            closeModal('image-properties-modal');
+            if (typeof loadDownloads === 'function') loadDownloads();
+        } else {
+            showAlert(data.error || 'Download failed to start', 'error');
+        }
+    } catch (err) {
+        showAlert('Download failed to start: ' + err.message, 'error');
     }
 }
 
@@ -5269,7 +6098,11 @@ async function showImagePropertiesModal(filename, opts) {
     document.getElementById('image-props-display-name').value = img.name || '';
     document.getElementById('image-props-description').value = img.description || '';
     document.getElementById('image-props-order').value = img.order || 0;
-    document.getElementById('image-props-boot-method').value = img.boot_method || 'sanboot';
+    const bootMethodSelect = document.getElementById('image-props-boot-method');
+    const isUKI = img.boot_method === 'uki';
+    bootMethodSelect.querySelector('option[value="uki"]').hidden = !isUKI;
+    bootMethodSelect.disabled = isUKI;
+    bootMethodSelect.value = img.boot_method || 'sanboot';
 
     // Populate distro profile dropdown
     const distroSelect = document.getElementById('image-props-distro');
@@ -5289,8 +6122,10 @@ async function showImagePropertiesModal(filename, opts) {
     document.getElementById('image-props-redetect-btn').style.display = img.extracted ? '' : 'none';
     document.getElementById('image-props-enabled').checked = img.enabled;
     document.getElementById('image-props-public').checked = img.public;
+    renderImageIntegrity(img);
 
     await populateBootFileOverrides(img);
+    populateWIMSelector(img);
 
     applyBootParamsWindowsLock(distroSelect.value);
     distroSelect.onchange = () => applyBootParamsWindowsLock(distroSelect.value);
@@ -5312,7 +6147,10 @@ async function showImagePropertiesModal(filename, opts) {
     // Toggle action buttons based on image state
     const extractBtn = document.getElementById('image-props-extract-btn');
     const netbootBtn = document.getElementById('image-props-netboot-btn');
-    if (extractionProgress[filename]) {
+    if (isUKI) {
+        extractBtn.style.display = 'none';
+        netbootBtn.style.display = 'none';
+    } else if (extractionProgress[filename]) {
         extractBtn.style.display = 'inline-block';
         extractBtn.disabled = true;
         extractBtn.style.opacity = '0.5';
@@ -5371,7 +6209,7 @@ async function populateBootFileOverrides(img) {
     kernelSelect.innerHTML = autoOption;
     initrdSelect.innerHTML = autoOption;
 
-    if (!img.extracted || img.distro === 'windows') {
+    if (!img.extracted || isWindowsFamily(img.distro)) {
         row.style.display = 'none';
         return;
     }
@@ -5401,7 +6239,7 @@ function updateImagePropsWarnings() {
     if (!_imagePropsState) return;
     const img = _imagePropsState.img;
     const fname = img.filename || '';
-    const looksWindows = img.distro === 'windows' || filenameLooksWindows(fname);
+    const looksWindows = isWindowsFamily(img.distro) || filenameLooksWindows(fname);
 
     // 1. Not extracted but probably needs to be.
     const needsExtract = !img.extracted && filenameLikelyNeedsExtraction(fname);
@@ -5443,10 +6281,56 @@ async function saveAndRepatchFromProperties() {
     await patchSmbFromProperties();
 }
 
+function isWindowsFamily(distro) {
+    return distro === 'windows' || distro === 'windows7' || distro === 'winpe';
+}
+
+function populateWIMSelector(img) {
+    const row = document.getElementById('image-props-wim-row');
+    const select = document.getElementById('image-props-wim-path');
+    const index = document.getElementById('image-props-wim-index');
+    if (!row || !select || !index) return;
+    const wims = img.wim_files || [];
+    if (!img.extracted || !isWindowsFamily(img.distro) || wims.length === 0) {
+        row.style.display = 'none';
+        return;
+    }
+    select.innerHTML = wims.map(w =>
+        `<option value="${escapeHtml(w.path)}" ${w.path === img.wim_path ? 'selected' : ''}>${escapeHtml(w.path)} (${formatBytes(w.size || 0)})</option>`
+    ).join('');
+    if (img.wim_path && !wims.some(w => w.path === img.wim_path)) {
+        select.innerHTML += `<option value="${escapeHtml(img.wim_path)}" selected>${escapeHtml(img.wim_path)}</option>`;
+    }
+    index.value = img.wim_index || 1;
+    row.dataset.path = img.wim_path || '';
+    row.dataset.index = String(img.wim_index || 0);
+    row.style.display = '';
+}
+
+async function saveWIMSelection(filename) {
+    const row = document.getElementById('image-props-wim-row');
+    if (!row || row.style.display === 'none') return true;
+    const path = document.getElementById('image-props-wim-path').value;
+    const index = parseInt(document.getElementById('image-props-wim-index').value, 10) || 0;
+    const storedIndex = parseInt(row.dataset.index, 10) || 0;
+    if (path === row.dataset.path && (index === storedIndex || (index <= 1 && storedIndex <= 1))) return true;
+    const res = await authFetch(`${API_BASE}/images/winpe?filename=${encodeURIComponent(filename)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wim_path: path, wim_index: index <= 1 ? 0 : index })
+    });
+    const data = await res.json();
+    if (!data.success) {
+        showNotification('Failed to update boot WIM: ' + (data.error || 'Unknown error'), 'error');
+        return false;
+    }
+    return true;
+}
+
 function applyBootParamsWindowsLock(distro) {
     const input = document.getElementById('image-props-boot-params');
     const redetect = document.getElementById('image-props-redetect-btn');
-    const isWindows = distro === 'windows' || distro === 'windows7';
+    const isWindows = isWindowsFamily(distro);
     input.disabled = isWindows;
     input.style.opacity = isWindows ? '0.5' : '';
     input.style.cursor = isWindows ? 'not-allowed' : '';
@@ -5727,6 +6611,8 @@ async function saveImageProperties(opts) {
     }
 
     try {
+        if (!await saveWIMSelection(filename)) return false;
+
         // Update general image properties
         const res = await authFetch(`${API_BASE}/images?filename=${encodeURIComponent(filename)}`, {
             method: 'PUT',
@@ -6113,6 +6999,7 @@ function exportClientsCSV() {
     const header = [
         'mac_address', 'name', 'description', 'enabled', 'show_public_images',
         'static', 'bootloader_set', 'client_group', 'allowed_images', 'next_boot_image',
+        'proxy_dhcp_no_vendor_option',
     ];
     const rows = clients.map(c => [
         c.mac_address,
@@ -6125,6 +7012,7 @@ function exportClientsCSV() {
         c.client_group_id ? (groupsById[c.client_group_id] || '') : '',
         (c.allowed_images || []).join('|'),
         c.next_boot_image || '',
+        c.proxy_dhcp_no_vendor_option ? 'true' : 'false',
     ]);
     const csv = [header, ...rows].map(r => r.map(csvEscape).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -6182,7 +7070,9 @@ function switchClientsSubtab(name) {
     document.querySelectorAll('#clients-tab .subtab').forEach(b => b.classList.toggle('active', b.dataset.subtab === name));
     document.getElementById('clients-subtab').style.display = name === 'clients' ? '' : 'none';
     document.getElementById('client-groups-subtab').style.display = name === 'client-groups' ? '' : 'none';
+    document.getElementById('san-targets-subtab').style.display = name === 'san-targets' ? '' : 'none';
     if (name === 'client-groups') loadClientGroups();
+    if (name === 'san-targets') loadSANTargets();
 }
 
 function switchImagesSubtab(name) {
@@ -6292,12 +7182,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 stagger_delay_millis: parseInt(fd.get('stagger_delay_millis') || '0', 10),
                 bootloader_set: fd.get('bootloader_set') || '',
                 allowed_images: allowed,
+                bmc_protocol: fd.get('bmc_protocol') || '',
                 ipmi_port: parseInt(fd.get('ipmi_port') || '0', 10),
                 ipmi_username: fd.get('ipmi_username') || '',
                 ipmi_password: fd.get('ipmi_password') || '',
                 ipmi_insecure: fd.get('ipmi_insecure') === 'on',
                 auto_install_file: fd.get('auto_install_file') || '',
+                san_target_id: fd.get('san_target_id') ? parseInt(fd.get('san_target_id'), 10) : null,
+                boot_from_san: fd.get('boot_from_san') === 'on',
             };
+            try {
+                body.variables = collectVariables('cg-variables');
+            } catch (err) {
+                showAlert(err.message, 'error');
+                return;
+            }
             try {
                 const res = await authFetch(`${API_BASE}/client-groups/update?id=${id}`, {
                     method: 'PUT',
@@ -6338,6 +7237,64 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+const VARIABLE_NAME_PATTERN = /^[A-Za-z0-9_]+$/;
+
+function renderVariableRows(containerId, vars) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    for (const name of Object.keys(vars || {}).sort()) {
+        addVariableRow(containerId, name, vars[name]);
+    }
+}
+
+function addVariableRow(containerId, name = '', value = '') {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const row = document.createElement('div');
+    row.className = 'kv-row';
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'kv-name';
+    nameInput.placeholder = t('variables.name');
+    nameInput.autocomplete = 'off';
+    nameInput.spellcheck = false;
+    nameInput.value = name;
+
+    const valueInput = document.createElement('input');
+    valueInput.type = 'text';
+    valueInput.className = 'kv-value';
+    valueInput.placeholder = t('variables.value');
+    valueInput.autocomplete = 'off';
+    valueInput.value = value;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn-sm btn-icon';
+    remove.title = t('variables.remove');
+    remove.setAttribute('aria-label', t('variables.remove'));
+    remove.textContent = '×';
+    remove.onclick = () => row.remove();
+
+    row.append(nameInput, valueInput, remove);
+    container.appendChild(row);
+    if (!name) nameInput.focus();
+}
+
+function collectVariables(containerId) {
+    const vars = {};
+    for (const row of document.querySelectorAll(`#${containerId} .kv-row`)) {
+        const name = row.querySelector('.kv-name').value.trim();
+        if (!name) continue;
+        if (!VARIABLE_NAME_PATTERN.test(name)) {
+            throw new Error(t('variables.invalid_name', { name }));
+        }
+        vars[name] = row.querySelector('.kv-value').value;
+    }
+    return vars;
+}
+
 async function fetchGroupMembers(id) {
     try {
         const res = await authFetch(`${API_BASE}/client-groups/get?id=${id}`);
@@ -6363,6 +7320,8 @@ async function showEditClientGroupModal(id) {
         form.elements.enabled.checked = !!g.enabled;
         form.elements.wol_broadcast_addr.value = g.wol_broadcast_addr || '';
         form.elements.stagger_delay_millis.value = g.stagger_delay_millis || 0;
+        form.elements.bmc_protocol.value = g.bmc_protocol || 'redfish';
+        updateBMCPortPlaceholder(form.elements.bmc_protocol);
         form.elements.ipmi_port.value = g.ipmi_port || '';
         form.elements.ipmi_username.value = g.ipmi_username || '';
         form.elements.ipmi_password.value = g.ipmi_password || '';
@@ -6383,6 +7342,9 @@ async function showEditClientGroupModal(id) {
         } catch (err) {}
 
         await populateAutoInstallFileDropdown('cg-autoinstall-select', g.auto_install_file);
+        renderVariableRows('cg-variables', g.variables);
+        await populateSANTargetSelect('cg-san-select', g.san_target_id, '(none)');
+        form.elements.boot_from_san.checked = !!g.boot_from_san;
 
         if (!images || images.length === 0) await loadImages();
         const allowedSel = document.getElementById('cg-allowed-images');
@@ -6772,7 +7734,7 @@ function handleAutoInstallUpload(input) {
     openModal('autoinstall-upload-modal');
 }
 
-async function confirmAutoInstallUpload() {
+async function confirmAutoInstallUpload(force = false) {
     const distro = document.getElementById('autoinstall-upload-distro').value;
     const rename = document.getElementById('autoinstall-upload-rename').value.trim();
     if (!distro) {
@@ -6787,6 +7749,7 @@ async function confirmAutoInstallUpload() {
     fd.append('distro', distro);
     fd.append('file', pendingUploadFile);
     if (rename) fd.append('filename', rename);
+    if (force) fd.append('force', 'true');
     try {
         const token = localStorage.getItem('bootimus_token');
         const res = await fetch(`${API_BASE}/autoinstall-files/upload`, {
@@ -6795,6 +7758,12 @@ async function confirmAutoInstallUpload() {
             body: fd,
         });
         const data = await res.json();
+        if (!data.success && data.data && data.data.validation_failed) {
+            if (confirm(t('autoinstall.upload_anyway_confirm', { error: data.error }))) {
+                return confirmAutoInstallUpload(true);
+            }
+            return;
+        }
         if (!data.success) throw new Error(data.error || 'Upload failed');
         showNotification('Uploaded', 'success');
         closeModal('autoinstall-upload-modal');
@@ -6868,6 +7837,8 @@ async function showAutoInstallFileEditor(file) {
     const delBtn = document.getElementById('autoinstall-editor-delete-btn');
 
     const dlBtn = document.getElementById('autoinstall-editor-download-btn');
+    const previewBtn = document.getElementById('autoinstall-editor-preview-btn');
+    hideAutoInstallEditorError();
     if (file) {
         title.textContent = `Edit ${file.distro}/${file.filename}`;
         distroSel.value = file.distro;
@@ -6876,6 +7847,7 @@ async function showAutoInstallFileEditor(file) {
         filenameInput.disabled = true;
         delBtn.style.display = 'inline-block';
         dlBtn.style.display = 'inline-block';
+        previewBtn.style.display = 'inline-block';
         contentArea.value = 'Loading…';
         try {
             const res = await authFetch(`${API_BASE}/autoinstall-files/get?distro=${encodeURIComponent(file.distro)}&filename=${encodeURIComponent(file.filename)}`);
@@ -6895,12 +7867,25 @@ async function showAutoInstallFileEditor(file) {
         contentArea.value = '';
         delBtn.style.display = 'none';
         dlBtn.style.display = 'none';
+        previewBtn.style.display = 'none';
     }
 
     openModal('autoinstall-editor-modal');
 }
 
-async function saveAutoInstallFile() {
+function hideAutoInstallEditorError() {
+    const box = document.getElementById('autoinstall-editor-error');
+    if (box) box.style.display = 'none';
+}
+
+function showAutoInstallEditorError(message) {
+    const box = document.getElementById('autoinstall-editor-error');
+    if (!box) return;
+    document.getElementById('autoinstall-editor-error-text').textContent = t('autoinstall.validation_failed', { error: message });
+    box.style.display = 'flex';
+}
+
+async function saveAutoInstallFile(force = false) {
     const distro = document.getElementById('autoinstall-editor-distro').value.trim();
     const filename = document.getElementById('autoinstall-editor-filename').value.trim();
     const content = document.getElementById('autoinstall-editor-content').value;
@@ -6912,15 +7897,86 @@ async function saveAutoInstallFile() {
         const res = await authFetch(`${API_BASE}/autoinstall-files/save`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ distro, filename, content }),
+            body: JSON.stringify({ distro, filename, content, force: !!force }),
         });
         const data = await res.json();
+        if (!data.success && data.data && data.data.validation_failed) {
+            showAutoInstallEditorError(data.error);
+            return;
+        }
         if (!data.success) throw new Error(data.error || 'Save failed');
+        hideAutoInstallEditorError();
         showNotification('Saved', 'success');
         closeModal('autoinstall-editor-modal');
         loadAutoInstallFiles();
     } catch (err) {
         showNotification('Save failed: ' + err.message, 'error');
+    }
+}
+
+let autoInstallPreviewFile = null;
+
+async function showAutoInstallPreview() {
+    const distro = document.getElementById('autoinstall-editor-distro').value;
+    const filename = document.getElementById('autoinstall-editor-filename').value;
+    if (!distro || !filename) return;
+    autoInstallPreviewFile = { distro, filename };
+    document.getElementById('autoinstall-preview-title').textContent = t('autoinstall.preview_title', { file: `${distro}/${filename}` });
+
+    if (!clients || clients.length === 0) await loadClients();
+    if (!images || images.length === 0) await loadImages();
+
+    const clientSel = document.getElementById('autoinstall-preview-client');
+    clientSel.innerHTML = `<option value="">${escapeHtml(t('autoinstall.preview_no_client'))}</option>`;
+    const sortedClients = [...clients].sort((a, b) => (a.name || a.mac_address).localeCompare(b.name || b.mac_address));
+    for (const c of sortedClients) {
+        const label = c.name ? `${c.name} (${c.mac_address})` : c.mac_address;
+        clientSel.innerHTML += `<option value="${escapeHtml(c.mac_address)}">${escapeHtml(label)}</option>`;
+    }
+
+    const imageSel = document.getElementById('autoinstall-preview-image');
+    imageSel.innerHTML = `<option value="">${escapeHtml(t('autoinstall.preview_no_image'))}</option>`;
+    const matching = images.filter(img => img.distro === distro);
+    const others = images.filter(img => img.distro !== distro);
+    for (const img of [...matching, ...others]) {
+        imageSel.innerHTML += `<option value="${escapeHtml(img.filename)}">${escapeHtml(img.name || img.filename)}</option>`;
+    }
+    if (matching.length > 0) imageSel.value = matching[0].filename;
+
+    openModal('autoinstall-preview-modal');
+    renderAutoInstallPreview();
+}
+
+async function renderAutoInstallPreview() {
+    if (!autoInstallPreviewFile) return;
+    const mac = document.getElementById('autoinstall-preview-client').value;
+    const image = document.getElementById('autoinstall-preview-image').value;
+    const output = document.getElementById('autoinstall-preview-output');
+    const unresolvedBox = document.getElementById('autoinstall-preview-unresolved');
+    const resolvedBox = document.getElementById('autoinstall-preview-resolved');
+    output.textContent = t('common.loading');
+    unresolvedBox.style.display = 'none';
+    resolvedBox.style.display = 'none';
+
+    let url = `${API_BASE}/autoinstall-files/render?distro=${encodeURIComponent(autoInstallPreviewFile.distro)}&filename=${encodeURIComponent(autoInstallPreviewFile.filename)}`;
+    if (mac) url += `&mac=${encodeURIComponent(mac)}`;
+    if (image) url += `&image=${encodeURIComponent(image)}`;
+    try {
+        const res = await authFetch(url);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Render failed');
+        output.textContent = data.data.content || '';
+        const unresolved = data.data.unresolved || [];
+        if (unresolved.length > 0) {
+            const list = unresolved.map(name => `{{${name}}}`).join(', ');
+            unresolvedBox.innerHTML = `<strong>${escapeHtml(t('autoinstall.preview_unresolved', { list }))}</strong><br><span style="font-size: 12px;">${escapeHtml(t('autoinstall.preview_unresolved_hint'))}</span>`;
+            unresolvedBox.style.display = 'block';
+        } else {
+            resolvedBox.style.display = 'block';
+        }
+    } catch (err) {
+        output.textContent = '';
+        showNotification(t('autoinstall.preview_failed', { error: err.message }), 'error');
     }
 }
 
@@ -6945,6 +8001,64 @@ let clusterNodes = [];
 let nodeImages = [];
 let kubernetesProviders = [];
 let clusterConfigMode = 'edit';
+
+const INSTALL_STATE_LABELS = {
+    booted: ['Booted', 'badge-info'],
+    installing: ['Installing', 'badge-warning'],
+    completed: ['Installed', 'badge-success'],
+    failed: ['Failed', 'badge-danger'],
+};
+
+function relativeTime(iso) {
+    if (!iso) return '';
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.round(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 48) return `${hours} h ago`;
+    return `${Math.round(hours / 24)} d ago`;
+}
+
+function installStateBadge(client) {
+    const entry = INSTALL_STATE_LABELS[client.install_state];
+    if (!entry) return '<span style="color: var(--text-muted);">-</span>';
+    const title = `${escapeHtml(client.install_image || '')} ${client.install_updated_at ? new Date(client.install_updated_at).toLocaleString() : ''}`.trim();
+    return `<span class="badge ${entry[1]}" title="${title}">${entry[0]}</span><br><span style="font-size: 11px; color: var(--text-muted);">${relativeTime(client.install_updated_at)}</span>`;
+}
+
+async function loadClientInstallHistory(mac) {
+    const container = document.getElementById('client-install-history');
+    if (!container) return;
+    container.innerHTML = '<span style="color: var(--text-muted);">Loading…</span>';
+    try {
+        const res = await authFetch(`${API_BASE}/clients/installs?mac=${encodeURIComponent(mac)}&limit=20`);
+        const data = await res.json();
+        if (!data.success) {
+            container.innerHTML = `<span style="color: var(--danger);">${escapeHtml(data.error || 'Failed to load install history')}</span>`;
+            return;
+        }
+        const recs = data.data || [];
+        if (recs.length === 0) {
+            container.innerHTML = '<span style="color: var(--text-muted);">No unattended installs recorded for this client.</span>';
+            return;
+        }
+        container.innerHTML = `<div class="table-scroll"><table>
+            <thead><tr><th>Booted</th><th>Image</th><th>State</th><th>Finished</th><th>Message</th></tr></thead>
+            <tbody>${recs.map(r => {
+                const entry = INSTALL_STATE_LABELS[r.state] || [r.state, 'badge-info'];
+                return `<tr>
+                    <td style="white-space: nowrap;">${new Date(r.booted_at).toLocaleString()}</td>
+                    <td>${escapeHtml(r.image_name || r.image_filename || '')}</td>
+                    <td><span class="badge ${entry[1]}">${escapeHtml(entry[0])}</span></td>
+                    <td style="white-space: nowrap;">${r.finished_at ? new Date(r.finished_at).toLocaleString() : '-'}</td>
+                    <td>${escapeHtml(r.message || '')}</td>
+                </tr>`;
+            }).join('')}</tbody></table></div>`;
+    } catch (err) {
+        container.innerHTML = '<span style="color: var(--danger);">Failed to load install history</span>';
+    }
+}
 
 function enrollmentStateBadge(state) {
     const classes = {
@@ -7541,4 +8655,907 @@ function unassignNode(mac) {
 
 function markNodeInstalled(mac) {
     clusterNodeAction('mark-installed', mac, 'Node marked installed');
+}
+
+const AUDIT_PAGE_SIZE = 100;
+let auditOffset = 0;
+let auditEntries = [];
+
+function auditFilterQuery() {
+    const params = new URLSearchParams();
+    const user = document.getElementById('audit-filter-user').value.trim();
+    const path = document.getElementById('audit-filter-path').value.trim();
+    const since = document.getElementById('audit-filter-since').value;
+    if (user) params.set('username', user);
+    if (path) params.set('path', path);
+    if (since) params.set('since', new Date(since).toISOString());
+    params.set('limit', AUDIT_PAGE_SIZE);
+    params.set('offset', auditOffset);
+    return params.toString();
+}
+
+async function loadAuditLog() {
+    auditOffset = 0;
+    auditEntries = [];
+    await fetchAuditPage();
+}
+
+async function loadMoreAuditLog() {
+    auditOffset = auditEntries.length;
+    await fetchAuditPage();
+}
+
+async function fetchAuditPage() {
+    const status = document.getElementById('audit-status');
+    const more = document.getElementById('audit-load-more');
+    try {
+        const res = await authFetch(`${API_BASE}/audit?${auditFilterQuery()}`);
+        const data = await res.json();
+        if (!data.success) {
+            document.getElementById('audit-table').innerHTML = `<p class="alert alert-error">${escapeHtml(data.error || 'Failed to load audit log')}</p>`;
+            return;
+        }
+        auditEntries = auditEntries.concat(data.data.entries || []);
+        renderAuditTable();
+        status.textContent = `Showing ${auditEntries.length} of ${data.data.total}`;
+        more.style.display = auditEntries.length < data.data.total ? '' : 'none';
+    } catch (err) {
+        document.getElementById('audit-table').innerHTML = '<p class="alert alert-error">Failed to load audit log</p>';
+    }
+}
+
+function clearAuditFilters() {
+    document.getElementById('audit-filter-user').value = '';
+    document.getElementById('audit-filter-path').value = '';
+    document.getElementById('audit-filter-since').value = '';
+    loadAuditLog();
+}
+
+function auditStatusBadge(status) {
+    const cls = status >= 500 ? 'badge-danger' : status >= 400 ? 'badge-warning' : 'badge-success';
+    return `<span class="badge ${cls}">${status}</span>`;
+}
+
+function renderAuditTable() {
+    const container = document.getElementById('audit-table');
+    container.classList.remove('loading');
+    if (auditEntries.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary); padding: 20px;">No audit entries match.</p>';
+        return;
+    }
+    container.innerHTML = `
+        <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>User</th>
+                    <th>Action</th>
+                    <th>Method</th>
+                    <th>Path</th>
+                    <th>Status</th>
+                    <th>IP</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${auditEntries.map(e => `
+                    <tr>
+                        <td style="white-space: nowrap;">${new Date(e.created_at).toLocaleString()}</td>
+                        <td>${escapeHtml(e.username)}</td>
+                        <td>${escapeHtml(e.summary || '')}</td>
+                        <td><span class="api-method ${e.method.toLowerCase()}">${e.method}</span></td>
+                        <td><code>${escapeHtml(e.path)}${e.query ? '?' + escapeHtml(e.query) : ''}</code></td>
+                        <td>${auditStatusBadge(e.status)}</td>
+                        <td>${escapeHtml(e.remote_ip || '-')}</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+        </div>`;
+}
+
+let menuPreviewData = null;
+
+function populateMenuPreviewMACs() {
+    const list = document.getElementById('menu-preview-mac-list');
+    if (!list) return;
+    list.innerHTML = (clients || []).map(c =>
+        `<option value="${escapeHtml(c.mac_address)}">${escapeHtml(c.name || '')}</option>`
+    ).join('');
+}
+
+async function previewBootMenu(mac) {
+    const query = mac && mac.trim() ? `?mac=${encodeURIComponent(mac.trim())}` : '';
+    try {
+        const res = await authFetch(`${API_BASE}/clients/menu-preview${query}`);
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Failed to render boot menu preview', 'error');
+            return;
+        }
+        menuPreviewData = data.data;
+        const parts = [`MAC: ${escapeHtml(menuPreviewData.mac)}`];
+        parts.push(menuPreviewData.known_client
+            ? `Client: ${escapeHtml(menuPreviewData.client_name || '(unnamed)')}`
+            : 'Client: not registered (anonymous menu)');
+        parts.push(menuPreviewData.kind === 'install' ? 'Kind: cluster install boot' : 'Kind: boot menu');
+        if (menuPreviewData.next_boot_image) {
+            parts.push(`Next boot: ${escapeHtml(menuPreviewData.next_boot_image)}`);
+        }
+        document.getElementById('menu-preview-summary').innerHTML = parts.join(' &nbsp;·&nbsp; ');
+        document.getElementById('menu-preview-script').textContent = menuPreviewData.script || '';
+        showModal('menu-preview-modal');
+    } catch (err) {
+        showAlert('Failed to render boot menu preview: ' + err.message, 'error');
+    }
+}
+
+async function copyMenuPreview() {
+    if (!menuPreviewData) return;
+    try {
+        await navigator.clipboard.writeText(menuPreviewData.script || '');
+        showAlert('Boot menu script copied', 'success');
+    } catch (err) {
+        showAlert('Copy failed: ' + err.message, 'error');
+    }
+}
+
+function downloadMenuPreview() {
+    if (!menuPreviewData) return;
+    const blob = new Blob([menuPreviewData.script || ''], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `menu-${(menuPreviewData.mac || 'unknown').replace(/:/g, '')}.ipxe`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+}
+
+let sanTargets = [];
+let sanTargetsLoaded = false;
+
+function nextBootLabel(value) {
+    if (!value) return '';
+    if (value.startsWith('san:')) {
+        const t = sanTargets.find(x => String(x.id) === value.slice(4));
+        return 'SAN: ' + (t ? t.name : value.slice(4));
+    }
+    const img = images.find(i => i.filename === value);
+    return img ? img.name : value;
+}
+
+async function loadSANTargets(quiet) {
+    try {
+        const res = await authFetch(`${API_BASE}/san-targets`);
+        const data = await res.json();
+        if (!data.success) {
+            if (!quiet) document.getElementById('san-targets-table').innerHTML = `<p class="alert alert-error">${escapeHtml(data.error || 'Failed to load SAN targets')}</p>`;
+            return;
+        }
+        sanTargets = data.data || [];
+        sanTargetsLoaded = true;
+        if (!quiet) renderSANTargetsTable();
+    } catch (err) {
+        console.error('Failed to load SAN targets:', err);
+    }
+}
+
+async function populateSANTargetSelect(selectId, selectedId, emptyLabel) {
+    if (!sanTargetsLoaded) await loadSANTargets(true);
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.innerHTML = `<option value="">${escapeHtml(emptyLabel)}</option>` + sanTargets.map(t =>
+        `<option value="${t.id}" ${selectedId === t.id ? 'selected' : ''}>${escapeHtml(t.name)} — ${escapeHtml(t.uri)}</option>`
+    ).join('');
+}
+
+function renderSANTargetsTable() {
+    const container = document.getElementById('san-targets-table');
+    container.classList.remove('loading');
+    if (sanTargets.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary); padding: 20px;">No SAN targets yet. Click "Add SAN Target" to define an iSCSI, AoE or HTTP disk.</p>';
+        return;
+    }
+    const rows = sanTargets
+        .filter(t => rowMatchesFilter('san-targets', [t.name, t.description, t.uri, t.initiator_iqn]))
+        .map(t => `
+        <tr>
+            <td><strong>${escapeHtml(t.name)}</strong>${t.description ? '<br><span style="color: var(--text-secondary); font-size: 12px;">' + escapeHtml(t.description) + '</span>' : ''}</td>
+            <td><code>${escapeHtml(t.uri)}</code></td>
+            <td>${t.initiator_iqn ? '<code>' + escapeHtml(t.initiator_iqn) + '</code>' : '<span style="color: var(--text-secondary);">iPXE default</span>'}</td>
+            <td>${t.chap_username ? '<span class="badge badge-info">CHAP</span>' : '<span style="color: var(--text-secondary);">None</span>'}${t.reverse_chap_username ? ' <span class="badge badge-info">Mutual</span>' : ''}</td>
+            <td>${t.client_count || 0} client${t.client_count === 1 ? '' : 's'}, ${t.group_count || 0} group${t.group_count === 1 ? '' : 's'}</td>
+            <td>
+                <button type="button" class="btn btn-sm read-ok" onclick="previewSANTarget(${t.id})">Preview Menu</button>
+                <button type="button" class="btn btn-sm admin-only" onclick="showSANTargetModal(${t.id})">Edit</button>
+                <button type="button" class="btn btn-sm btn-danger admin-only" onclick="deleteSANTarget(${t.id})">Delete</button>
+            </td>
+        </tr>`).join('');
+    container.innerHTML = `
+        <div class="table-scroll">
+        <table>
+            <thead><tr><th>Name</th><th>URI</th><th>Initiator IQN</th><th>Auth</th><th>Used by</th><th>Actions</th></tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+        </div>`;
+}
+
+function showSANTargetModal(id) {
+    const form = document.getElementById('san-target-form');
+    form.reset();
+    const target = id ? sanTargets.find(t => t.id === id) : null;
+    form.elements.id.value = target ? target.id : '';
+    document.getElementById('san-target-modal-title').textContent = target ? 'Edit SAN Target' : 'Add SAN Target';
+    if (target) {
+        for (const key of ['name', 'description', 'uri', 'initiator_iqn', 'chap_username', 'chap_password', 'reverse_chap_username', 'reverse_chap_password']) {
+            form.elements[key].value = target[key] || '';
+        }
+    }
+    showModal('san-target-modal');
+}
+
+async function saveSANTarget(e) {
+    e.preventDefault();
+    const form = e.target;
+    const fd = new FormData(form);
+    const id = fd.get('id');
+    const body = {};
+    for (const key of ['name', 'description', 'uri', 'initiator_iqn', 'chap_username', 'chap_password', 'reverse_chap_username', 'reverse_chap_password']) {
+        body[key] = fd.get(key) || '';
+    }
+    try {
+        const res = await authFetch(`${API_BASE}/san-targets${id ? '?id=' + id : ''}`, {
+            method: id ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Failed to save SAN target', 'error');
+            return;
+        }
+        closeModal('san-target-modal');
+        showAlert(data.message || 'SAN target saved', 'success');
+        sanTargetsLoaded = false;
+        await loadSANTargets();
+    } catch (err) {
+        showAlert('Failed to save SAN target: ' + err.message, 'error');
+    }
+}
+
+async function deleteSANTarget(id) {
+    const target = sanTargets.find(t => t.id === id);
+    if (!target) return;
+    const users = (target.client_count || 0) + (target.group_count || 0);
+    if (!confirm(`Delete SAN target "${target.name}"?` + (users ? ` It will be removed from ${users} client(s) and group(s).` : ''))) return;
+    try {
+        const res = await authFetch(`${API_BASE}/san-targets?id=${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Failed to delete SAN target', 'error');
+            return;
+        }
+        showAlert('SAN target deleted', 'success');
+        sanTargetsLoaded = false;
+        await loadSANTargets();
+        if (clients.length) loadClients();
+    } catch (err) {
+        showAlert('Failed to delete SAN target: ' + err.message, 'error');
+    }
+}
+
+async function previewSANTarget(id) {
+    if (!clients || clients.length === 0) {
+        try { await loadClients(); } catch (_) {}
+    }
+    const direct = clients.find(c => c.san_target_id === id);
+    let mac = direct ? direct.mac_address : '';
+    if (!mac) {
+        const groupIds = clientGroups.filter(g => g.san_target_id === id).map(g => g.id);
+        const viaGroup = clients.find(c => !c.san_target_id && groupIds.includes(c.client_group_id));
+        if (viaGroup) mac = viaGroup.mac_address;
+    }
+    if (!mac) {
+        showAlert('Assign this SAN target to a client or client group first, then preview that client\'s menu.', 'info');
+        return;
+    }
+    previewBootMenu(mac);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.getElementById('san-target-form');
+    if (form) form.addEventListener('submit', saveSANTarget);
+});
+let lastLoadedAPITokens = [];
+
+async function loadAPITokens() {
+    const container = document.getElementById('api-tokens-table');
+    if (!container) return;
+    try {
+        const res = await authFetch(`${API_BASE}/tokens`);
+        const data = await res.json();
+        if (!data.success) {
+            container.innerHTML = `<p class="alert alert-error">${escapeHtml(data.error || 'Failed to load tokens')}</p>`;
+            return;
+        }
+        lastLoadedAPITokens = data.data || [];
+        renderAPITokensTable();
+    } catch (err) {
+        container.innerHTML = '<p class="alert alert-error">Failed to load tokens</p>';
+    }
+}
+
+function renderAPITokensTable() {
+    const container = document.getElementById('api-tokens-table');
+    if (!container) return;
+    if (lastLoadedAPITokens.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary);">No API tokens yet.</p>';
+        return;
+    }
+    const now = Date.now();
+    const rows = lastLoadedAPITokens.map(tok => {
+        const expired = tok.expires_at && new Date(tok.expires_at).getTime() <= now;
+        let status = '<span class="badge badge-success">Active</span>';
+        if (tok.revoked) status = '<span class="badge badge-danger">Revoked</span>';
+        else if (expired) status = '<span class="badge badge-warning">Expired</span>';
+        const scope = tok.scope === 'admin' ? '<span class="badge badge-info">Admin</span>' : '<span class="badge badge-success">Read-only</span>';
+        return `<tr>
+            <td><strong>${escapeHtml(tok.name)}</strong></td>
+            <td><code>${escapeHtml(tok.prefix)}…</code></td>
+            <td>${scope}</td>
+            <td>${escapeHtml(tok.created_by || '-')}</td>
+            <td>${new Date(tok.created_at).toLocaleString()}</td>
+            <td>${tok.last_used_at ? new Date(tok.last_used_at).toLocaleString() : 'Never'}</td>
+            <td>${tok.expires_at ? new Date(tok.expires_at).toLocaleDateString() : 'Never'}</td>
+            <td>${status}</td>
+            <td>${tok.revoked ? '' : `<button class="btn btn-danger btn-sm" onclick="revokeAPIToken(${tok.id}, '${escapeHtml(tok.name).replace(/'/g, "\\'")}')">Revoke</button>`}</td>
+        </tr>`;
+    }).join('');
+    container.innerHTML = `<div class="table-scroll"><table>
+        <thead><tr><th>Name</th><th>Prefix</th><th>Scope</th><th>Created by</th><th>Created</th><th>Last used</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+}
+
+async function createAPIToken(e) {
+    if (e) e.preventDefault();
+    const body = {
+        name: document.getElementById('api-token-name').value.trim(),
+        scope: document.getElementById('api-token-scope').value,
+        expires_in_days: parseInt(document.getElementById('api-token-expires').value, 10) || 0,
+    };
+    try {
+        const res = await authFetch(`${API_BASE}/tokens`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Failed to create token', 'error');
+            return;
+        }
+        document.getElementById('api-token-secret-value').textContent = data.data.secret;
+        document.getElementById('api-token-secret').style.display = '';
+        document.getElementById('api-token-name').value = '';
+        showAlert(data.message || 'Token created', 'success');
+        loadAPITokens();
+    } catch (err) {
+        showAlert('Failed to create token: ' + err.message, 'error');
+    }
+}
+
+async function copyAPITokenSecret() {
+    const secret = document.getElementById('api-token-secret-value').textContent;
+    try {
+        await navigator.clipboard.writeText(secret);
+        showAlert('Token copied', 'success');
+    } catch (err) {
+        showAlert('Copy failed: ' + err.message, 'error');
+    }
+}
+
+async function revokeAPIToken(id, name) {
+    if (!confirm(`Revoke the token "${name}"? Anything using it will stop working immediately.`)) return;
+    try {
+        const res = await authFetch(`${API_BASE}/tokens?id=${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Failed to revoke token', 'error');
+            return;
+        }
+        showAlert('Token revoked', 'success');
+        loadAPITokens();
+    } catch (err) {
+        showAlert('Failed to revoke token: ' + err.message, 'error');
+    }
+}
+
+async function loadTOTPStatus() {
+    const card = document.getElementById('totp-card');
+    const status = document.getElementById('totp-status');
+    if (!card || !status) return;
+    try {
+        const res = await authFetch(`${API_BASE}/me`);
+        const data = await res.json();
+        if (!data.success) return;
+        const me = data.data;
+        if (me.principal === 'token' || (me.source && me.source !== 'local')) {
+            card.style.display = 'none';
+            return;
+        }
+        card.style.display = '';
+        if (me.totp_enabled) {
+            status.innerHTML = `<span class="badge badge-success">Enabled</span> Two-factor authentication is on for <strong>${escapeHtml(me.username)}</strong>.
+                <button type="button" class="btn btn-sm" style="margin-left: 10px;" onclick="disableTOTP()">Disable</button>`;
+        } else {
+            status.innerHTML = `<span class="badge badge-warning">Off</span> Two-factor authentication is not enabled for <strong>${escapeHtml(me.username)}</strong>.
+                <button type="button" class="btn btn-sm btn-primary" style="margin-left: 10px;" onclick="startTOTPSetup()">Set up</button>`;
+        }
+    } catch (err) {
+        status.textContent = 'Could not load two-factor status';
+    }
+}
+
+async function startTOTPSetup() {
+    try {
+        const res = await authFetch(`${API_BASE}/me/totp/setup`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Could not start two-factor setup', 'error');
+            return;
+        }
+        document.getElementById('totp-qr').src = data.data.qr_code;
+        document.getElementById('totp-secret').textContent = data.data.secret;
+        document.getElementById('totp-confirm-code').value = '';
+        document.getElementById('totp-setup').style.display = '';
+        document.getElementById('totp-recovery').style.display = 'none';
+        document.getElementById('totp-confirm-code').focus();
+    } catch (err) {
+        showAlert('Could not start two-factor setup: ' + err.message, 'error');
+    }
+}
+
+function cancelTOTPSetup() {
+    document.getElementById('totp-setup').style.display = 'none';
+}
+
+async function enableTOTP() {
+    const code = document.getElementById('totp-confirm-code').value.trim();
+    if (!code) {
+        showAlert('Enter the code shown in your authenticator app', 'error');
+        return;
+    }
+    try {
+        const res = await authFetch(`${API_BASE}/me/totp/enable`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Could not enable two-factor authentication', 'error');
+            return;
+        }
+        document.getElementById('totp-setup').style.display = 'none';
+        document.getElementById('totp-recovery-codes').textContent = (data.data.recovery_codes || []).join('\n');
+        document.getElementById('totp-recovery').style.display = '';
+        showAlert('Two-factor authentication enabled', 'success');
+        loadTOTPStatus();
+        if (!isReadOnly()) loadUsers();
+    } catch (err) {
+        showAlert('Could not enable two-factor authentication: ' + err.message, 'error');
+    }
+}
+
+async function copyTOTPRecoveryCodes() {
+    try {
+        await navigator.clipboard.writeText(document.getElementById('totp-recovery-codes').textContent);
+        showAlert('Recovery codes copied', 'success');
+    } catch (err) {
+        showAlert('Copy failed: ' + err.message, 'error');
+    }
+}
+
+async function disableTOTP() {
+    const password = prompt('Enter your password to turn off two-factor authentication:');
+    if (password === null) return;
+    try {
+        const res = await authFetch(`${API_BASE}/me/totp/disable`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Could not disable two-factor authentication', 'error');
+            return;
+        }
+        showAlert('Two-factor authentication disabled', 'success');
+        loadTOTPStatus();
+        if (!isReadOnly()) loadUsers();
+    } catch (err) {
+        showAlert('Could not disable two-factor authentication: ' + err.message, 'error');
+    }
+}
+
+async function resetUserTOTP(id, username) {
+    if (!confirm(`Remove two-factor authentication from "${username}"? They will be able to sign in with just their password until they set it up again.`)) return;
+    try {
+        const res = await authFetch(`${API_BASE}/users/totp/reset?id=${id}`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Could not reset two-factor authentication', 'error');
+            return;
+        }
+        showAlert(data.message || 'Two-factor authentication removed', 'success');
+        loadUsers();
+        loadTOTPStatus();
+    } catch (err) {
+        showAlert('Could not reset two-factor authentication: ' + err.message, 'error');
+    }
+}
+
+let diskImages = [];
+let diskJobs = [];
+let diskImagingStatus = null;
+
+async function loadDiskImages() {
+    try {
+        const [imgRes, jobRes] = await Promise.all([
+            authFetch(`${API_BASE}/disk-images`),
+            authFetch(`${API_BASE}/disk-images/jobs?limit=100`),
+        ]);
+        const imgData = await imgRes.json();
+        const jobData = await jobRes.json();
+        if (!imgData.success) {
+            document.getElementById('disk-images-table').innerHTML = `<p class="alert alert-error">${escapeHtml(imgData.error || 'Failed to load disk images')}</p>`;
+            return;
+        }
+        diskImagingStatus = imgData.data.status || null;
+        diskImages = imgData.data.images || [];
+        diskJobs = jobData.success ? (jobData.data || []) : [];
+        renderDiskImagingProblems();
+        renderDiskImages();
+        renderDiskJobs();
+    } catch (err) {
+        document.getElementById('disk-images-table').innerHTML = '<p class="alert alert-error">Failed to load disk images</p>';
+    }
+}
+
+function renderDiskImagingProblems() {
+    const banner = document.getElementById('disk-images-problems');
+    if (!banner) return;
+    const problems = (diskImagingStatus && diskImagingStatus.problems) || [];
+    if (problems.length === 0) {
+        banner.style.display = 'none';
+        return;
+    }
+    banner.innerHTML = '<strong>Disk imaging is not ready.</strong> ' + problems.map(escapeHtml).join(' ') +
+        ' Enable the Clonezilla tool under <strong>Tools</strong> and start Bootimus with <code>--nfs-enabled</code>.';
+    banner.style.display = 'block';
+}
+
+function diskImageStateBadge(state) {
+    const cls = state === 'ready' ? 'badge-success' : (state === 'capturing' ? 'badge-info' : 'badge-danger');
+    return `<span class="badge ${cls}">${escapeHtml(state)}</span>`;
+}
+
+function diskJobStateBadge(state) {
+    const cls = { completed: 'badge-success', running: 'badge-info', pending: 'badge-warning', failed: 'badge-danger', cancelled: 'badge-info' }[state] || 'badge-info';
+    return `<span class="badge ${cls}">${escapeHtml(state)}</span>`;
+}
+
+function renderDiskImages() {
+    const container = document.getElementById('disk-images-table');
+    if (!container) return;
+    const filterInput = document.getElementById('disk-images-filter');
+    const q = filterInput ? filterInput.value.trim().toLowerCase() : '';
+    const rows = diskImages.filter(img => !q || [img.name, img.description, img.source_mac, img.source_client_name, img.state].some(v => (v || '').toLowerCase().includes(q)));
+    if (rows.length === 0) {
+        container.innerHTML = `<p style="color: var(--text-secondary); padding: 20px;">${diskImages.length === 0 ? 'No disk images yet. Use Capture Disk to create one from a client.' : 'No images match the filter.'}</p>`;
+        return;
+    }
+    container.innerHTML = `
+        <div class="table-scroll">
+        <table>
+            <thead><tr>
+                <th>Name</th><th>Description</th><th>Source</th><th>Disk</th><th>Size</th><th>State</th><th>Created</th><th>Actions</th>
+            </tr></thead>
+            <tbody>
+                ${rows.map(img => `
+                    <tr>
+                        <td><strong>${escapeHtml(img.name)}</strong></td>
+                        <td>${escapeHtml(img.description || '-')}</td>
+                        <td>${img.source_mac ? `<code>${escapeHtml(img.source_mac)}</code>${img.source_client_name ? ' ' + escapeHtml(img.source_client_name) : ''}` : '-'}</td>
+                        <td>${escapeHtml(img.disk || '-')}</td>
+                        <td>${img.size_bytes ? formatBytes(img.size_bytes) : '-'}</td>
+                        <td>${diskImageStateBadge(img.state)}</td>
+                        <td style="white-space: nowrap;">${new Date(img.created_at).toLocaleString()}</td>
+                        <td style="white-space: nowrap;">
+                            ${img.state === 'ready' ? `<button class="btn btn-sm btn-primary" onclick="showDeployDiskModal({ imageId: ${img.id} })">Deploy</button>` : ''}
+                            <button class="btn btn-sm admin-only" onclick="editDiskImageDescription(${img.id})">Edit</button>
+                            <button class="btn btn-sm btn-danger admin-only" onclick="deleteDiskImage(${img.id}, '${jsAttrEscape(img.name)}')">Delete</button>
+                        </td>
+                    </tr>`).join('')}
+            </tbody>
+        </table>
+        </div>`;
+}
+
+function diskJobDuration(job) {
+    if (!job.started_at) return '-';
+    const end = job.finished_at ? new Date(job.finished_at) : new Date();
+    const secs = Math.max(0, Math.round((end - new Date(job.started_at)) / 1000));
+    if (secs < 60) return `${secs}s`;
+    return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
+function renderDiskJobs() {
+    const container = document.getElementById('disk-jobs-table');
+    if (!container) return;
+    if (diskJobs.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary); padding: 20px;">No capture or deploy jobs yet.</p>';
+        return;
+    }
+    container.innerHTML = `
+        <div class="table-scroll">
+        <table>
+            <thead><tr>
+                <th>Queued</th><th>Client</th><th>Job</th><th>Image</th><th>Disk</th><th>State</th><th>Duration</th><th>Message</th><th></th>
+            </tr></thead>
+            <tbody>
+                ${diskJobs.map(job => `
+                    <tr>
+                        <td style="white-space: nowrap;">${new Date(job.created_at).toLocaleString()}</td>
+                        <td><code>${escapeHtml(job.client_mac)}</code>${job.client_name ? ' ' + escapeHtml(job.client_name) : ''}</td>
+                        <td>${escapeHtml(job.kind)}</td>
+                        <td>${escapeHtml(job.disk_image ? job.disk_image.name : String(job.disk_image_id))}</td>
+                        <td>${escapeHtml(job.disk || '-')}</td>
+                        <td>${diskJobStateBadge(job.state)}</td>
+                        <td>${diskJobDuration(job)}</td>
+                        <td style="font-size: 12px; color: var(--text-secondary);">${escapeHtml(job.message || '')}</td>
+                        <td>${(job.state === 'pending' || job.state === 'running') ? `<button class="btn btn-sm btn-danger admin-only" onclick="cancelDiskJob(${job.id})">Cancel</button>` : ''}</td>
+                    </tr>`).join('')}
+            </tbody>
+        </table>
+        </div>`;
+}
+
+function clientOptionLabel(c) {
+    return `${c.mac_address}${c.name ? ' (' + c.name + ')' : ''}`;
+}
+
+async function ensureClientsLoaded() {
+    if (!clients || clients.length === 0) {
+        try { await loadClients(); } catch (_) {}
+    }
+}
+
+async function showCaptureDiskModal(mac) {
+    await ensureClientsLoaded();
+    const select = document.getElementById('capture-disk-mac');
+    select.innerHTML = (clients || []).map(c => `<option value="${escapeHtml(c.mac_address)}"${c.mac_address === mac ? ' selected' : ''}>${escapeHtml(clientOptionLabel(c))}</option>`).join('');
+    document.getElementById('capture-disk-name').value = '';
+    document.getElementById('capture-disk-description').value = '';
+    document.getElementById('capture-disk-device').value = 'sda';
+    document.getElementById('capture-disk-wake').checked = false;
+    showModal('capture-disk-modal');
+}
+
+async function submitCaptureDisk(e) {
+    if (e) e.preventDefault();
+    const body = {
+        mac_address: document.getElementById('capture-disk-mac').value,
+        name: document.getElementById('capture-disk-name').value.trim(),
+        description: document.getElementById('capture-disk-description').value.trim(),
+        disk: document.getElementById('capture-disk-device').value.trim(),
+        wake: document.getElementById('capture-disk-wake').checked,
+    };
+    try {
+        const res = await authFetch(`${API_BASE}/disk-images/capture`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Failed to queue capture', 'error');
+            return;
+        }
+        showAlert(data.message || 'Capture queued', 'success');
+        closeModal('capture-disk-modal');
+        loadDiskImages();
+    } catch (err) {
+        showAlert('Failed to queue capture: ' + err.message, 'error');
+    }
+}
+
+async function showDeployDiskModal(opts) {
+    opts = opts || {};
+    await ensureClientsLoaded();
+    if (diskImages.length === 0) {
+        try { await loadDiskImages(); } catch (_) {}
+    }
+    const ready = diskImages.filter(img => img.state === 'ready');
+    if (ready.length === 0) {
+        showAlert('No disk images are ready to deploy. Capture one first.', 'error');
+        return;
+    }
+    const imageSelect = document.getElementById('deploy-disk-image');
+    imageSelect.innerHTML = ready.map(img => `<option value="${img.id}"${img.id === opts.imageId ? ' selected' : ''}>${escapeHtml(img.name)}${img.size_bytes ? ' (' + formatBytes(img.size_bytes) + ')' : ''}</option>`).join('');
+    const targetSelect = document.getElementById('deploy-disk-target');
+    const groups = (typeof clientGroups !== 'undefined' && clientGroups) ? clientGroups : [];
+    let html = '<optgroup label="Clients">' + (clients || []).map(c => `<option value="mac:${escapeHtml(c.mac_address)}"${c.mac_address === opts.mac ? ' selected' : ''}>${escapeHtml(clientOptionLabel(c))}</option>`).join('') + '</optgroup>';
+    if (groups.length) {
+        html += '<optgroup label="Client groups (all enabled members)">' + groups.map(g => `<option value="group:${g.id}"${g.id === opts.groupId ? ' selected' : ''}>${escapeHtml(g.name)} (${g.member_count} members)</option>`).join('') + '</optgroup>';
+    }
+    targetSelect.innerHTML = html;
+    document.getElementById('deploy-disk-device').value = 'sda';
+    document.getElementById('deploy-disk-wake').checked = false;
+    showModal('deploy-disk-modal');
+}
+
+async function submitDeployDisk(e) {
+    if (e) e.preventDefault();
+    const target = document.getElementById('deploy-disk-target').value;
+    const body = {
+        image_id: parseInt(document.getElementById('deploy-disk-image').value, 10),
+        disk: document.getElementById('deploy-disk-device').value.trim(),
+        wake: document.getElementById('deploy-disk-wake').checked,
+    };
+    if (target.startsWith('group:')) {
+        body.client_group_id = parseInt(target.slice(6), 10);
+    } else {
+        body.mac_address = target.slice(4);
+    }
+    const imageName = document.getElementById('deploy-disk-image').selectedOptions[0].textContent;
+    if (!confirm(`Deploy ${imageName} and overwrite disk ${body.disk || 'sda'} on the selected target on its next PXE boot?`)) return;
+    try {
+        const res = await authFetch(`${API_BASE}/disk-images/deploy`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Failed to queue deploy', 'error');
+            return;
+        }
+        showAlert(data.message + (data.error ? ' (' + data.error + ')' : ''), data.error ? 'warning' : 'success');
+        closeModal('deploy-disk-modal');
+        loadDiskImages();
+    } catch (err) {
+        showAlert('Failed to queue deploy: ' + err.message, 'error');
+    }
+}
+
+function bulkDeployDiskImageClientGroup() {
+    const id = parseInt(document.getElementById('edit-client-group-form').elements.id.value, 10);
+    if (!id) return;
+    showDeployDiskModal({ groupId: id });
+}
+
+async function cancelDiskJob(id) {
+    if (!confirm('Cancel this job? A capture in progress will be discarded.')) return;
+    try {
+        const res = await authFetch(`${API_BASE}/disk-images/jobs?id=${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        showAlert(data.message || data.error || 'Done', data.success ? 'success' : 'error');
+        loadDiskImages();
+    } catch (err) {
+        showAlert('Failed to cancel job', 'error');
+    }
+}
+
+async function deleteDiskImage(id, name) {
+    if (!confirm(`Delete disk image ${name} and all of its files? This cannot be undone.`)) return;
+    try {
+        const res = await authFetch(`${API_BASE}/disk-images?id=${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        showAlert(data.message || data.error || 'Done', data.success ? 'success' : 'error');
+        loadDiskImages();
+    } catch (err) {
+        showAlert('Failed to delete disk image', 'error');
+    }
+}
+
+async function editDiskImageDescription(id) {
+    const img = diskImages.find(i => i.id === id);
+    if (!img) return;
+    const description = prompt(`Description for ${img.name}`, img.description || '');
+    if (description === null) return;
+    try {
+        const res = await authFetch(`${API_BASE}/disk-images?id=${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description }),
+        });
+        const data = await res.json();
+        showAlert(data.message || data.error || 'Done', data.success ? 'success' : 'error');
+        loadDiskImages();
+    } catch (err) {
+        showAlert('Failed to update disk image', 'error');
+    }
+}
+
+const REPLICA_KIND_LABELS = {
+    san_targets: 'SAN targets',
+    image_groups: 'Image groups',
+    images: 'Images',
+    client_groups: 'Client groups',
+    clients: 'Clients',
+    theme: 'Boot menu theme',
+    profiles: 'Custom distro profiles',
+    tools: 'Boot tools',
+    autoinstall_files: 'Auto-install files',
+    custom_files: 'Custom files',
+    bootloader_set: 'Active bootloader set',
+};
+
+async function loadReplicaStatus() {
+    const card = document.getElementById('replica-card');
+    if (!card) return;
+    try {
+        const res = await authFetch(`${API_BASE}/replica/status`);
+        const data = await res.json();
+        if (!data.success || !data.data.enabled) {
+            card.style.display = 'none';
+            return;
+        }
+        card.style.display = '';
+        renderReplicaStatus(data.data.status);
+    } catch (err) {
+        card.style.display = 'none';
+    }
+}
+
+function renderReplicaStatus(status) {
+    const line = document.getElementById('replica-status-line');
+    const kinds = document.getElementById('replica-kinds');
+    const syncBtn = document.getElementById('replica-sync-btn');
+    if (syncBtn) syncBtn.style.display = localStorage.getItem('bootimus_is_admin') === 'true' ? '' : 'none';
+    const lastRun = status.last_run ? new Date(status.last_run).toLocaleString() : 'never';
+    const lastOk = status.last_success ? new Date(status.last_success).toLocaleString() : 'never';
+    let text = `Primary ${status.primary_url} · every ${status.interval_seconds}s · ISOs ${status.sync_isos ? 'copied locally' : 'served from the primary'} · last run ${lastRun} · last success ${lastOk}`;
+    if (status.running) text += ' · sync in progress';
+    line.textContent = text;
+    if (status.last_error) {
+        line.innerHTML += ` <span style="color: var(--danger);">${escapeHtml(status.last_error)}</span>`;
+    }
+    const rows = (status.kinds || []).map(k => {
+        let state;
+        if (k.error) state = `<span class="badge badge-danger" title="${escapeHtml(k.error)}">Failed</span>`;
+        else if (k.skipped) state = `<span class="badge badge-info">Skipped</span>`;
+        else state = `<span class="badge badge-success">OK</span>`;
+        return `<tr>
+            <td>${escapeHtml(REPLICA_KIND_LABELS[k.name] || k.name)}</td>
+            <td>${state}</td>
+            <td>${k.skipped ? '-' : k.count}</td>
+            <td>${k.skipped ? '-' : k.changed}</td>
+            <td>${k.skipped ? '-' : k.removed}</td>
+            <td style="color: var(--text-secondary); font-size: 12px;">${escapeHtml(k.error || k.note || '')}</td>
+        </tr>`;
+    }).join('');
+    kinds.innerHTML = rows
+        ? `<div class="table-scroll"><table><thead><tr><th>Kind</th><th>State</th><th>On primary</th><th>Changed</th><th>Removed</th><th>Notes</th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<p style="color: var(--text-secondary);">No sync has run yet.</p>';
+}
+
+async function runReplicaSync() {
+    const btn = document.getElementById('replica-sync-btn');
+    const line = document.getElementById('replica-status-line');
+    if (btn) btn.disabled = true;
+    if (line) line.textContent = 'Syncing from the primary…';
+    try {
+        const res = await authFetch(`${API_BASE}/replica/sync`, { method: 'POST' });
+        const data = await res.json();
+        if (data.data) renderReplicaStatus(data.data);
+        showAlert(data.success ? 'Sync finished' : (data.error || 'Sync failed'), data.success ? 'success' : 'error');
+        refreshRole();
+    } catch (err) {
+        showAlert('Sync failed: ' + err.message, 'error');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }

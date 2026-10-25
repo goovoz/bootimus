@@ -9,9 +9,9 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"mime"
 	"net"
@@ -28,14 +28,21 @@ import (
 
 	"bootimus/bootloaders"
 	"bootimus/internal/autoinstall"
+	"bootimus/internal/bmc"
+	_ "bootimus/internal/bmc/amt"
+	_ "bootimus/internal/bmc/redfish"
+	"bootimus/internal/catalogue"
+	"bootimus/internal/diskimage"
 	"bootimus/internal/extractor"
+	"bootimus/internal/housekeeping"
+	"bootimus/internal/imagescan"
 	"bootimus/internal/models"
 	"bootimus/internal/profiles"
-	"bootimus/internal/redfish"
 	"bootimus/internal/smb"
 	"bootimus/internal/storage"
 	"bootimus/internal/sysstats"
 	"bootimus/internal/tools"
+	"bootimus/internal/uki"
 	"bootimus/internal/webhook"
 	"bootimus/internal/wim"
 	"bootimus/internal/wol"
@@ -58,6 +65,7 @@ type Handler struct {
 	wolBroadcastAddr   string
 	profileManager     *profiles.Manager
 	proxyDHCPEnabled   bool
+	AdminTLSStatus     func() string
 	httpPort           int
 	serverAddr         string
 	smbPort            int
@@ -71,6 +79,11 @@ type Handler struct {
 	SchedulerReload    func() error
 	SchedulerRunNow    func(id uint) error
 	WebhookNotifier    *webhook.Notifier
+	Housekeeping       *housekeeping.Runner
+	Replica            ReplicaController
+	DiskImaging        *diskimage.Manager
+	Catalogue          *catalogue.Checker
+	verifier           *catalogue.Verifier
 }
 
 type extractionState struct {
@@ -88,6 +101,7 @@ func NewHandler(store storage.Storage, dataDir string, isoDir string, bootDir st
 		version:            version,
 		bootloaderSelector: blSelector,
 		toolsManager:       tm,
+		verifier:           catalogue.NewVerifier(),
 		profileManager:     pm,
 		wolBroadcastAddr:   wolBroadcastAddr,
 		proxyDHCPEnabled:   proxyDHCPEnabled,
@@ -117,6 +131,10 @@ func (h *Handler) computeSMBPatchFingerprint(img *models.Image) string {
 
 func (h *Handler) patchWindowsBootWim(isoFilename string) bool {
 	if h.smbManager == nil {
+		return false
+	}
+	if err := h.smbManager.Err(); err != nil {
+		log.Printf("Windows SMB: skipping boot.wim patch - smbd is not running: %v", err)
 		return false
 	}
 	if h.serverAddr == "" {
@@ -329,16 +347,16 @@ if not exist !SETUP! (
 
 if exist x:\drivers set SETUP_ARGS=!SETUP_ARGS! /installdrivers x:\drivers
 
+set UNATTEND=
+if exist X:\Windows\System32\AutoUnattend.xml set UNATTEND=X:\Windows\System32\AutoUnattend.xml
 {{- if .AutoInstall }}
-
-if exist Z:\AutoUnattend.xml (
+if not defined UNATTEND if exist Z:\AutoUnattend.xml (
 	copy /Y Z:\AutoUnattend.xml X:\AutoUnattend.xml >nul
- 	set SETUP_ARGS=!SETUP_ARGS! /unattend:X:\AutoUnattend.xml
-) else (
-	echo WARNING: AutoUnattend.xml not on share, running interactive setup.
+	set UNATTEND=X:\AutoUnattend.xml
 )
-
+if not defined UNATTEND echo WARNING: AutoUnattend.xml neither injected by wimboot nor staged on the share, running interactive setup.
 {{- end }}
+if defined UNATTEND set SETUP_ARGS=!SETUP_ARGS! /unattend:!UNATTEND!
 
 echo Starting Windows Setup as !SETUP! !SETUP_ARGS!...
 !SETUP! !SETUP_ARGS!
@@ -478,13 +496,26 @@ func (h *Handler) CreateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client.MACAddress = strings.ToLower(strings.ReplaceAll(client.MACAddress, "-", ":"))
+	client.MACAddress = normaliseMAC(client.MACAddress)
+	if client.MACAddress == "" {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "MAC address is required"})
+		return
+	}
+	if err := autoinstall.ValidateVariableNames(client.Variables); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+		return
+	}
 
 	client.Enabled = true
 	client.Static = true
 
 	if err := h.storage.CreateClient(&client); err != nil {
-		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		if errors.Is(err, storage.ErrClientExists) {
+			h.sendJSON(w, http.StatusConflict, Response{Success: false, Error: "A client with this MAC address already exists"})
+			return
+		}
+		log.Printf("Admin: Failed to create client %s: %v", client.MACAddress, err)
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: "Failed to create client"})
 		return
 	}
 
@@ -534,6 +565,17 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 	if aif, ok := updates["auto_install_file"].(string); ok {
 		client.AutoInstallFile = aif
 	}
+	if raw, ok := updates["variables"]; ok {
+		vars, err := variablesFromPayload(raw)
+		if err != nil {
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+			return
+		}
+		client.Variables = vars
+	}
+	if protocol, ok := updates["bmc_protocol"].(string); ok {
+		client.BMCProtocol = protocol
+	}
 	if host, ok := updates["ipmi_host"].(string); ok {
 		client.IPMIHost = host
 	}
@@ -548,6 +590,26 @@ func (h *Handler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 	}
 	if insecure, ok := updates["ipmi_insecure"].(bool); ok {
 		client.IPMIInsecure = insecure
+	}
+	if noVendor, ok := updates["proxy_dhcp_no_vendor_option"].(bool); ok {
+		client.ProxyDHCPNoVendorOption = noVendor
+	}
+	if sanID, ok := updates["san_target_id"]; ok {
+		if sanID == nil {
+			client.SANTargetID = nil
+		} else if id, ok := sanID.(float64); ok && id > 0 {
+			if _, err := h.storage.GetSANTarget(uint(id)); err != nil {
+				h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "SAN target not found"})
+				return
+			}
+			targetID := uint(id)
+			client.SANTargetID = &targetID
+		} else {
+			client.SANTargetID = nil
+		}
+	}
+	if bootSAN, ok := updates["boot_from_san"].(bool); ok {
+		client.BootFromSAN = bootSAN
 	}
 	if groupID, ok := updates["client_group_id"]; ok {
 		if groupID == nil {
@@ -655,13 +717,23 @@ func (h *Handler) SetNextBootImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	label := req.ImageFilename
+	if sanID, ok := models.ParseNextBootSAN(req.ImageFilename); ok {
+		target, err := h.storage.GetSANTarget(sanID)
+		if err != nil {
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "SAN target not found"})
+			return
+		}
+		label = "SAN target " + target.Name
+	}
+
 	if err := h.storage.SetNextBootImage(req.MACAddress, req.ImageFilename); err != nil {
 		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
 		return
 	}
 
 	log.Printf("Admin: Set next boot image for %s to %s", req.MACAddress, req.ImageFilename)
-	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: fmt.Sprintf("Next boot set to %s", req.ImageFilename)})
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: fmt.Sprintf("Next boot set to %s", label)})
 }
 
 func (h *Handler) PromoteClient(w http.ResponseWriter, r *http.Request) {
@@ -742,40 +814,7 @@ func (h *Handler) GetClientInventoryHistory(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *Handler) syncFilesystemToDatabase() {
-	var isoFiles []models.SyncFile
-
-	err := filepath.WalkDir(h.isoDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(strings.ToLower(d.Name()), ".iso") {
-			return nil
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			log.Printf("Failed to get file info for %s: %v", path, err)
-			return nil
-		}
-
-		relPath, _ := filepath.Rel(h.isoDir, path)
-		groupPath := filepath.Dir(relPath)
-		if groupPath == "." {
-			groupPath = ""
-		}
-
-		isoFiles = append(isoFiles, models.SyncFile{
-			Name:      strings.TrimSuffix(d.Name(), filepath.Ext(d.Name())),
-			Filename:  relPath,
-			Size:      info.Size(),
-			GroupPath: groupPath,
-		})
-
-		return nil
-	})
+	isoFiles, err := imagescan.Scan(h.isoDir)
 	if err != nil {
 		log.Printf("Failed to walk ISO directory for sync: %v", err)
 		return
@@ -842,7 +881,7 @@ func detectDistroFromFilename(filename string) string {
 		"ubuntu": "ubuntu", "debian": "debian", "arch": "arch",
 		"fedora": "fedora", "centos": "centos", "rocky": "centos",
 		"alma": "centos", "opensuse": "opensuse", "nixos": "nixos",
-		"proxmox": "debian", "truenas": "debian", "pop-os": "ubuntu",
+		"proxmox": "proxmox", "truenas": "debian", "pop-os": "ubuntu",
 		"pop_os": "ubuntu", "mint": "ubuntu", "kali": "debian",
 		"windows": "windows", "freebsd": "freebsd",
 	}
@@ -1196,10 +1235,10 @@ func (h *Handler) UploadImage(w http.ResponseWriter, r *http.Request) {
 		switch part.FormName() {
 		case "file":
 			filename = filepath.Base(part.FileName())
-			if !strings.HasSuffix(strings.ToLower(filename), ".iso") {
+			if !imagescan.IsSupportedFilename(filename) {
 				part.Close()
 				log.Printf("Upload rejected: invalid file type: %s", filename)
-				h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Only .iso files are allowed"})
+				h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Only .iso files and unified kernel images (.efi) are allowed"})
 				return
 			}
 
@@ -1255,6 +1294,16 @@ func (h *Handler) UploadImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var ukiImage *uki.Image
+	if strings.EqualFold(filepath.Ext(filename), ".efi") {
+		if ukiImage, err = uki.Inspect(filePath); err != nil {
+			cleanup()
+			log.Printf("Upload rejected: %s is not a unified kernel image: %v", filename, err)
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "This .efi file is not a unified kernel image"})
+			return
+		}
+	}
+
 	existingImage, err := h.storage.GetImage(filename)
 	if err == nil && existingImage != nil {
 		existingImage.Size = size
@@ -1266,7 +1315,9 @@ func (h *Handler) UploadImage(w http.ResponseWriter, r *http.Request) {
 			existingImage.Description = description
 		}
 
-		h.detectAndSetDistro(existingImage)
+		if ukiImage == nil {
+			h.detectAndSetDistro(existingImage)
+		}
 
 		if err := h.storage.UpdateImage(filename, existingImage); err != nil {
 			cleanup()
@@ -1292,7 +1343,12 @@ func (h *Handler) UploadImage(w http.ResponseWriter, r *http.Request) {
 		Description: description,
 	}
 
-	h.detectAndSetDistro(&image)
+	if ukiImage != nil {
+		image.BootMethod = imagescan.BootMethodUKI
+		image.BootParams = ukiImage.Cmdline
+	} else {
+		h.detectAndSetDistro(&image)
+	}
 
 	if err := h.storage.CreateImage(&image); err != nil {
 		cleanup()
@@ -1373,13 +1429,42 @@ func (h *Handler) ExtractImage(w http.ResponseWriter, r *http.Request) {
 		h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Image not found"})
 		return
 	}
+	if image.BootMethod == imagescan.BootMethodUKI {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Unified kernel images boot directly and need no extraction"})
+		return
+	}
 
+	bootFiles, err := h.extractImageFiles(filename, image)
+	if err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+
+	h.sendJSON(w, http.StatusOK, Response{
+		Success: true,
+		Message: fmt.Sprintf("Successfully extracted %s boot files", bootFiles.Distro),
+		Data:    image,
+	})
+}
+
+func (h *Handler) ExtractImageByFilename(filename string) error {
+	image, err := h.storage.GetImage(filename)
+	if err != nil {
+		return fmt.Errorf("image %s not found", filename)
+	}
+	if image.BootMethod == imagescan.BootMethodUKI {
+		return nil
+	}
+	_, err = h.extractImageFiles(filename, image)
+	return err
+}
+
+func (h *Handler) extractImageFiles(filename string, image *models.Image) (*extractor.BootFiles, error) {
 	log.Printf("Admin: Starting kernel/initrd extraction - %s (re-extract: %v)", filename, image.Extracted)
 
 	ext, err := extractor.New(h.isoDir)
 	if err != nil {
-		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: fmt.Sprintf("Failed to create extractor: %v", err)})
-		return
+		return nil, fmt.Errorf("Failed to create extractor: %v", err)
 	}
 
 	isoPath := filepath.Join(h.isoDir, filename)
@@ -1414,12 +1499,7 @@ func (h *Handler) ExtractImage(w http.ResponseWriter, r *http.Request) {
 
 		image.ExtractionError = err.Error()
 		h.storage.UpdateImage(filename, image)
-
-		h.sendJSON(w, http.StatusInternalServerError, Response{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to extract boot files: %v", err),
-		})
-		return
+		return nil, fmt.Errorf("Failed to extract boot files: %v", err)
 	}
 	reporter.SetStage("Saving metadata...")
 
@@ -1457,6 +1537,17 @@ func (h *Handler) ExtractImage(w http.ResponseWriter, r *http.Request) {
 	image.NetbootURL = bootFiles.NetbootURL
 	image.NetbootAvailable = false
 	image.InstallWimPath = bootFiles.InstallWim
+	image.WIMFiles = nil
+	image.WIMPath = ""
+	image.WIMIndex = 0
+	if models.IsWindowsDistro(bootFiles.Distro) {
+		for _, w := range bootFiles.WIMFiles {
+			image.WIMFiles = append(image.WIMFiles, models.WIMFile{Path: w.Path, Size: w.Size})
+		}
+		if rel, err := filepath.Rel(bootFiles.ExtractedDir, bootFiles.BootWim); err == nil {
+			image.WIMPath = filepath.ToSlash(rel)
+		}
+	}
 
 	if bootFiles.Distro == "windows" {
 		mu := h.bootWimLock(filename)
@@ -1472,8 +1563,7 @@ func (h *Handler) ExtractImage(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Setting boot_method to 'kernel' for image ID=%d, filename=%s", image.ID, image.Filename)
 
 	if err := h.storage.UpdateImage(filename, image); err != nil {
-		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
-		return
+		return nil, err
 	}
 
 	log.Printf("Admin: Image extraction completed - %s (distro: %s, kernel: %s, initrd: %s)",
@@ -1484,11 +1574,7 @@ func (h *Handler) ExtractImage(w http.ResponseWriter, r *http.Request) {
 	state.status = "done"
 	h.extractionMu.Unlock()
 
-	h.sendJSON(w, http.StatusOK, Response{
-		Success: true,
-		Message: fmt.Sprintf("Successfully extracted %s boot files", bootFiles.Distro),
-		Data:    image,
-	})
+	return bootFiles, nil
 }
 
 func (h *Handler) ExtractProgress(w http.ResponseWriter, r *http.Request) {
@@ -1530,6 +1616,10 @@ func (h *Handler) PatchImageSMB(w http.ResponseWriter, r *http.Request) {
 
 	if h.smbManager == nil {
 		h.sendJSON(w, http.StatusPreconditionFailed, Response{Success: false, Error: "Windows SMB is not enabled on this server"})
+		return
+	}
+	if err := h.smbManager.Err(); err != nil {
+		h.sendJSON(w, http.StatusPreconditionFailed, Response{Success: false, Error: "Windows SMB server is not running: " + err.Error()})
 		return
 	}
 	if !wim.IsAvailable() {
@@ -1905,6 +1995,66 @@ func checkSanbootCompatibility(distro, filename string) (bool, string) {
 	return true, ""
 }
 
+func (h *Handler) SetWinPEWIM(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
+	filename := r.URL.Query().Get("filename")
+	if filename == "" {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Missing filename"})
+		return
+	}
+	var req struct {
+		WIMPath  string `json:"wim_path"`
+		WIMIndex int    `json:"wim_index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid request body"})
+		return
+	}
+	image, err := h.storage.GetImage(filename)
+	if err != nil {
+		h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Image not found"})
+		return
+	}
+	if !image.Extracted || !models.IsWindowsDistro(image.Distro) {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Only extracted Windows or WinPE images boot from a WIM"})
+		return
+	}
+	if req.WIMIndex < 0 {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "WIM index cannot be negative"})
+		return
+	}
+	wimPath := strings.TrimPrefix(filepath.ToSlash(filepath.Clean("/"+req.WIMPath)), "/")
+	if wimPath == "" || wimPath == "." || !strings.EqualFold(filepath.Ext(wimPath), ".wim") {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "wim_path must name a .wim file inside the extracted image"})
+		return
+	}
+	known := false
+	for _, w := range image.WIMFiles {
+		if w.Path == wimPath {
+			known = true
+			break
+		}
+	}
+	if !known {
+		isoBase := strings.TrimSuffix(filename, filepath.Ext(filename))
+		if _, err := os.Stat(filepath.Join(h.isoDir, isoBase, "iso", filepath.FromSlash(wimPath))); err != nil {
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: fmt.Sprintf("%s was not found in the extracted image", wimPath)})
+			return
+		}
+	}
+	image.WIMPath = wimPath
+	image.WIMIndex = req.WIMIndex
+	if err := h.storage.UpdateImage(filename, image); err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: "Failed to update image"})
+		return
+	}
+	log.Printf("Image %s now boots %s (index %d)", filename, wimPath, req.WIMIndex)
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Boot WIM updated", Data: image})
+}
+
 func (h *Handler) SetBootMethod(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
@@ -1981,17 +2131,32 @@ func (h *Handler) GetStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stats := struct {
-		TotalClients  int64 `json:"total_clients"`
-		ActiveClients int64 `json:"active_clients"`
-		TotalImages   int64 `json:"total_images"`
-		EnabledImages int64 `json:"enabled_images"`
-		TotalBoots    int64 `json:"total_boots"`
+		TotalClients     int64 `json:"total_clients"`
+		ActiveClients    int64 `json:"active_clients"`
+		TotalImages      int64 `json:"total_images"`
+		EnabledImages    int64 `json:"enabled_images"`
+		TotalBoots       int64 `json:"total_boots"`
+		UpdatesAvailable int64 `json:"updates_available"`
 	}{
 		TotalClients:  statsMap["total_clients"],
 		ActiveClients: statsMap["active_clients"],
 		TotalImages:   statsMap["total_images"],
 		EnabledImages: statsMap["enabled_images"],
 		TotalBoots:    statsMap["total_boots"],
+	}
+	if images, err := h.storage.ListImages(); err == nil {
+		for _, img := range images {
+			if img.UpdateAvailable {
+				stats.UpdatesAvailable++
+			}
+		}
+	}
+	if toolList, err := h.storage.ListBootTools(); err == nil {
+		for _, t := range toolList {
+			if t.UpdateAvailable {
+				stats.UpdatesAvailable++
+			}
+		}
 	}
 
 	log.Printf("Stats retrieved: %d clients, %d images, %d boots", stats.TotalClients, stats.TotalImages, stats.TotalBoots)
@@ -2035,41 +2200,11 @@ func (h *Handler) ScanImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existingFiles := make(map[string]bool)
-	var isoFiles []models.SyncFile
-
-	err := filepath.WalkDir(h.isoDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(strings.ToLower(d.Name()), ".iso") {
-			return nil
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-
-		relPath, _ := filepath.Rel(h.isoDir, path)
-		groupPath := filepath.Dir(relPath)
-		if groupPath == "." {
-			groupPath = ""
-		}
-
-		existingFiles[relPath] = true
-		isoFiles = append(isoFiles, models.SyncFile{
-			Name:      strings.TrimSuffix(d.Name(), filepath.Ext(d.Name())),
-			Filename:  relPath,
-			Size:      info.Size(),
-			GroupPath: groupPath,
-		})
-
-		return nil
-	})
+	isoFiles, err := imagescan.Scan(h.isoDir)
+	existingFiles := make(map[string]bool, len(isoFiles))
+	for _, f := range isoFiles {
+		existingFiles[f.Filename] = true
+	}
 	if err != nil {
 		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
 		return
@@ -2707,8 +2842,10 @@ func (h *Handler) GetServerInfo(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to get system stats: %v", err)
 	}
 
+	_, pendingErr := storage.PendingRestore(h.dataDir)
 	info := map[string]interface{}{
-		"version": h.version,
+		"version":         h.version,
+		"restore_pending": pendingErr == nil,
 		"configuration": map[string]string{
 			"data_directory": h.dataDir,
 			"iso_directory":  h.isoDir,
@@ -2731,6 +2868,12 @@ func (h *Handler) GetServerInfo(w http.ResponseWriter, r *http.Request) {
 				}
 				return "Disabled"
 			}(),
+			"oidc_enabled": func() string {
+				if os.Getenv("BOOTIMUS_OIDC_ISSUER") != "" {
+					return os.Getenv("BOOTIMUS_OIDC_ISSUER")
+				}
+				return "Disabled"
+			}(),
 			"proxy_dhcp": func() string {
 				if h.proxyDHCPEnabled {
 					return "Enabled (standalone — no external DHCP PXE config needed)"
@@ -2744,6 +2887,9 @@ func (h *Handler) GetServerInfo(w http.ResponseWriter, r *http.Request) {
 				if h.smbManager == nil {
 					return "Requested but unavailable (install samba and ensure smbd is in PATH)"
 				}
+				if err := h.smbManager.Err(); err != nil {
+					return "Requested but not running: " + err.Error()
+				}
 				return fmt.Sprintf("Enabled (%d share(s) active, port %d)", h.smbManager.ShareCount(), h.smbManager.Port())
 			}(),
 			"windows_smb_patcher": func() string {
@@ -2753,6 +2899,12 @@ func (h *Handler) GetServerInfo(w http.ResponseWriter, r *http.Request) {
 				return "Unavailable (install wimtools / wimlib-imagex to enable boot.wim patching)"
 			}(),
 			"http_port": fmt.Sprintf("%d", h.httpPort),
+			"admin_tls": func() string {
+				if h.AdminTLSStatus == nil {
+					return "Disabled (plain HTTP)"
+				}
+				return h.AdminTLSStatus()
+			}(),
 		},
 		"environment": map[string]string{
 			"BOOTIMUS_TFTP_PORT":        os.Getenv("BOOTIMUS_TFTP_PORT"),
@@ -2769,6 +2921,7 @@ func (h *Handler) GetServerInfo(w http.ResponseWriter, r *http.Request) {
 			"BOOTIMUS_SERVER_ADDR":      os.Getenv("BOOTIMUS_SERVER_ADDR"),
 			"BOOTIMUS_LDAP_HOST":        os.Getenv("BOOTIMUS_LDAP_HOST"),
 			"BOOTIMUS_LDAP_BASE_DN":     os.Getenv("BOOTIMUS_LDAP_BASE_DN"),
+			"BOOTIMUS_OIDC_ISSUER":      os.Getenv("BOOTIMUS_OIDC_ISSUER"),
 		},
 		"system_stats": sysStats,
 	}
@@ -2807,6 +2960,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		Username: req.Username,
 		IsAdmin:  req.IsAdmin,
 		Enabled:  req.Enabled,
+		Source:   models.UserSourceLocal,
 	}
 
 	if err := user.SetPassword(req.Password); err != nil {
@@ -2929,6 +3083,11 @@ func (h *Handler) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user.AuthSource() != models.UserSourceLocal {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Passwords for " + strings.ToUpper(user.AuthSource()) + " users are managed by their identity provider"})
+		return
+	}
+
 	if err := user.SetPassword(req.NewPassword); err != nil {
 		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: "Failed to hash password"})
 		return
@@ -2953,6 +3112,7 @@ type DownloadProgress struct {
 	Status          string    `json:"status"`
 	Error           string    `json:"error,omitempty"`
 	StartTime       time.Time `json:"start_time"`
+<<<<<<< HEAD
 	FinishedAt      time.Time `json:"-"`
 
 	// 内部字段，不参与序列化：续传起点、最近一次写入时间（节流）与上一次的字节数。
@@ -2961,6 +3121,27 @@ type DownloadProgress struct {
 	baseAt      time.Time
 	lastBytes   int64
 	lastWritten time.Time
+=======
+	Verification    string    `json:"verification,omitempty"`
+	Checksum        string    `json:"checksum,omitempty"`
+}
+
+type downloadOptions struct {
+	Description      string
+	SHA256           string
+	ChecksumURL      string
+	CatalogueID      string
+	CatalogueRelease string
+}
+
+func (dm *DownloadManager) SetVerification(filename, verification, checksum string) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	if progress, ok := dm.downloads[filename]; ok {
+		progress.Verification = verification
+		progress.Checksum = checksum
+	}
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 }
 
 type DownloadManager struct {
@@ -3124,16 +3305,16 @@ func formatBytes(bytes int64) string {
 func isoDownloadFilename(rawURL, requested string) (string, error) {
 	if requested == "" {
 		filename := filepath.Base(rawURL)
-		if !strings.HasSuffix(strings.ToLower(filename), ".iso") {
-			return "", fmt.Errorf("URL must point to an .iso file")
+		if !imagescan.IsSupportedFilename(filename) {
+			return "", fmt.Errorf("URL must point to an .iso file or a unified kernel image (.efi)")
 		}
 		return filename, nil
 	}
 	if requested == "." || requested == ".." || strings.ContainsAny(requested, `/\`) {
 		return "", fmt.Errorf("filename must be a plain file name without directories")
 	}
-	if !strings.HasSuffix(strings.ToLower(requested), ".iso") {
-		return "", fmt.Errorf("filename must end in .iso")
+	if !imagescan.IsSupportedFilename(requested) {
+		return "", fmt.Errorf("filename must end in .iso or .efi")
 	}
 	return requested, nil
 }
@@ -3279,11 +3460,21 @@ func (h *Handler) ResolveISOCatalogURL(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+<<<<<<< HEAD
 		URL         string `json:"url"`
 		Filename    string `json:"filename"`
 		Description string `json:"description"`
 		// [bootimus-fork L1] fork-patch: download-proxy
 		UseProxy bool `json:"use_proxy"`
+=======
+		URL              string `json:"url"`
+		Filename         string `json:"filename"`
+		Description      string `json:"description"`
+		SHA256           string `json:"sha256"`
+		ChecksumURL      string `json:"checksum_url"`
+		CatalogueID      string `json:"catalogue_id"`
+		CatalogueRelease string `json:"catalogue_release"`
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -3296,9 +3487,28 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+<<<<<<< HEAD
 	// [bootimus-fork L1] 上游此处若不再直接依赖 isoDownloadFilename 的后缀校验，
 	// 说明上游已实现等价能力，本行改回上游写法即可（本补丁随之退役）。
 	filename, err := resolveDownloadFilename(h.resolveClient(req.UseProxy), req.URL, req.Filename)
+=======
+	opts := downloadOptions{
+		Description:      req.Description,
+		ChecksumURL:      catalogue.ChecksumURLFor(req.URL, req.ChecksumURL),
+		CatalogueID:      req.CatalogueID,
+		CatalogueRelease: req.CatalogueRelease,
+	}
+	if req.SHA256 != "" {
+		sum, err := catalogue.NormaliseSHA256(req.SHA256)
+		if err != nil {
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+			return
+		}
+		opts.SHA256 = sum
+	}
+
+	filename, err := isoDownloadFilename(req.URL, req.Filename)
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 	if err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
 		return
@@ -3319,7 +3529,11 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+<<<<<<< HEAD
 	go h.downloadISO(req.URL, filename, destPath, req.Description, req.UseProxy)
+=======
+	go h.downloadISO(req.URL, filename, destPath, opts)
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 
 	h.sendJSON(w, http.StatusAccepted, Response{
 		Success: true,
@@ -3331,6 +3545,7 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+<<<<<<< HEAD
 // [bootimus-fork L1] fork-patch: download-proxy
 // normalizeProxyURL accepts "host:port" or a full proxy URL and attaches credentials.
 func normalizeProxyURL(addr, user, pass string) (*url.URL, error) {
@@ -3463,6 +3678,90 @@ func (h *Handler) downloadISO(url, filename, destPath, description string, usePr
 				log.Printf("Discarding partial %s: it was started from %s", filename, meta.URL)
 			} else {
 				log.Printf("Discarding partial %s: no resume metadata", filename)
+=======
+func (h *Handler) resolveExpectedChecksum(url, filename string, opts downloadOptions) (string, string) {
+	if opts.SHA256 != "" {
+		return opts.SHA256, "request"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if opts.ChecksumURL != "" {
+		sum, err := catalogue.FetchChecksum(ctx, opts.ChecksumURL, filename)
+		if err != nil {
+			log.Printf("Checksum for %s not available from %s: %v", filename, opts.ChecksumURL, err)
+			return "", ""
+		}
+		return sum, opts.ChecksumURL
+	}
+	if opts.CatalogueID == "" {
+		return "", ""
+	}
+	sum, source, err := catalogue.DiscoverChecksum(ctx, url, filename)
+	if err != nil {
+		log.Printf("No published checksum found next to %s: %v", url, err)
+		return "", ""
+	}
+	return sum, source
+}
+
+func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptions) {
+	log.Printf("Starting ISO download: %s from %s", filename, url)
+
+	downloadMgr.Add(url, filename, 0)
+
+	expected, checksumSource := h.resolveExpectedChecksum(url, filename, opts)
+	verification := "unverified"
+	if expected != "" {
+		log.Printf("Verifying %s against SHA-256 from %s", filename, checksumSource)
+		verification = "pending"
+	}
+	downloadMgr.SetVerification(filename, verification, expected)
+
+	client := &http.Client{
+		Timeout: 0,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		log.Printf("Failed to download ISO %s: %v", filename, err)
+		downloadMgr.Error(filename, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, resp.Status)
+		log.Printf("Failed to download ISO %s: %s", filename, errMsg)
+		downloadMgr.Error(filename, errMsg)
+		return
+	}
+
+	downloadMgr.Add(url, filename, resp.ContentLength)
+	downloadMgr.SetVerification(filename, verification, expected)
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		log.Printf("Failed to create file %s: %v", destPath, err)
+		downloadMgr.Error(filename, err.Error())
+		return
+	}
+	defer out.Close()
+
+	buffer := make([]byte, 32*1024)
+	var downloaded int64
+	hasher := sha256.New()
+
+	for {
+		n, err := resp.Body.Read(buffer)
+		if n > 0 {
+			hasher.Write(buffer[:n])
+			_, writeErr := out.Write(buffer[:n])
+			if writeErr != nil {
+				log.Printf("Failed to write to file %s: %v", destPath, writeErr)
+				downloadMgr.Error(filename, writeErr.Error())
+				os.Remove(destPath)
+				return
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 			}
 		}
 		os.Remove(partPath)
@@ -3698,27 +3997,68 @@ func (h *Handler) downloadISO(url, filename, destPath, description string, usePr
 		size = fi.Size()
 	}
 
+	actual := hex.EncodeToString(hasher.Sum(nil))
+	if expected != "" && actual != expected {
+		out.Close()
+		os.Remove(destPath)
+		log.Printf("Checksum mismatch for %s: expected %s, got %s", filename, expected, actual)
+		downloadMgr.SetVerification(filename, "mismatch", expected)
+		downloadMgr.Error(filename, fmt.Sprintf("SHA-256 mismatch: expected %s but the download hashed to %s; the file has been removed", expected, actual))
+		return
+	}
+	if expected != "" {
+		downloadMgr.SetVerification(filename, "verified", actual)
+	}
+
+	syncFile := models.SyncFile{Name: strings.TrimSuffix(filename, filepath.Ext(filename)), Filename: filename, Size: downloaded}
+	if strings.EqualFold(filepath.Ext(filename), ".efi") {
+		img, err := uki.Inspect(destPath)
+		if err != nil {
+			log.Printf("Downloaded %s is not a unified kernel image: %v", filename, err)
+			downloadMgr.Error(filename, "not a unified kernel image")
+			os.Remove(destPath)
+			return
+		}
+		syncFile.BootMethod = imagescan.BootMethodUKI
+		syncFile.BootParams = img.Cmdline
+	}
+
 	downloadMgr.Complete(filename)
 	log.Printf("Completed ISO download: %s (%d bytes)", filename, size)
 
 	if h.storage != nil {
+<<<<<<< HEAD
 		isoFiles := []models.SyncFile{
 			{Name: strings.TrimSuffix(filename, filepath.Ext(filename)), Filename: filename, Size: size},
 		}
+=======
+		isoFiles := []models.SyncFile{syncFile}
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 
 		if err := h.storage.SyncImages(isoFiles); err != nil {
 			log.Printf("Failed to sync downloaded ISO to database: %v", err)
 		}
 
 		if img, err := h.storage.GetImage(filename); err == nil {
-			changed := false
-			if description != "" {
-				img.Description = description
-				changed = true
+			changed := true
+			now := time.Now()
+			img.Checksum = actual
+			img.ChecksumVerified = expected != ""
+			img.ChecksumCheckedAt = &now
+			img.CatalogueID = opts.CatalogueID
+			img.CatalogueRelease = opts.CatalogueRelease
+			img.UpdateAvailable = false
+			img.UpdateVersion = ""
+			img.UpdateFilename = ""
+			img.UpdateURL = ""
+			if opts.Description != "" {
+				img.Description = opts.Description
 			}
-			h.detectAndSetDistro(img)
-			if img.Distro != "" {
-				changed = true
+			if syncFile.BootMethod == "" {
+				h.detectAndSetDistro(img)
+				if img.Distro != "" {
+					changed = true
+				}
 			}
 			if changed {
 				if err := h.storage.UpdateImage(filename, img); err != nil {
@@ -3915,6 +4255,109 @@ func (h *Handler) GetDownloadProgress(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListDownloads(w http.ResponseWriter, r *http.Request) {
 	downloads := downloadMgr.GetAll()
 	h.sendJSON(w, http.StatusOK, Response{Success: true, Data: downloads})
+}
+
+func (h *Handler) VerifyImage(w http.ResponseWriter, r *http.Request) {
+	filename := r.URL.Query().Get("filename")
+	if filename == "" {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Filename required"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		progress := h.verifier.Get(filename)
+		if progress == nil {
+			h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "No verification running for this image"})
+			return
+		}
+		h.sendJSON(w, http.StatusOK, Response{Success: true, Data: progress})
+	case http.MethodPost:
+		img, err := h.storage.GetImage(filename)
+		if err != nil {
+			h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Image not found"})
+			return
+		}
+		var body struct {
+			SHA256      string `json:"sha256"`
+			ChecksumURL string `json:"checksum_url"`
+		}
+		if r.Body != nil {
+			json.NewDecoder(r.Body).Decode(&body)
+		}
+		expected := ""
+		switch {
+		case body.SHA256 != "":
+			sum, err := catalogue.NormaliseSHA256(body.SHA256)
+			if err != nil {
+				h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+				return
+			}
+			expected = sum
+		case body.ChecksumURL != "":
+			ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+			defer cancel()
+			sum, err := catalogue.FetchChecksum(ctx, body.ChecksumURL, filename)
+			if err != nil {
+				h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Checksum file did not list " + filename + ": " + err.Error()})
+				return
+			}
+			expected = sum
+		case img.ChecksumVerified && img.Checksum != "":
+			expected = img.Checksum
+		default:
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "No checksum is known for this image; supply sha256 or checksum_url"})
+			return
+		}
+		filePath := filepath.Join(h.isoDir, filepath.Base(filename))
+		if _, err := os.Stat(filePath); err != nil {
+			h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Image file not found on disk"})
+			return
+		}
+		if !h.verifier.Begin(filename, expected) {
+			h.sendJSON(w, http.StatusConflict, Response{Success: false, Error: "Verification already running"})
+			return
+		}
+		go h.verifier.Run(filename, filePath, expected, func(actual string, verified bool) {
+			current, err := h.storage.GetImage(filename)
+			if err != nil {
+				return
+			}
+			now := time.Now()
+			current.Checksum = actual
+			current.ChecksumVerified = verified
+			current.ChecksumCheckedAt = &now
+			if err := h.storage.UpdateImage(filename, current); err != nil {
+				log.Printf("Failed to record checksum for %s: %v", filename, err)
+			}
+			if verified {
+				log.Printf("Checksum verified for %s", filename)
+			} else {
+				log.Printf("Checksum mismatch for %s: expected %s, got %s", filename, expected, actual)
+			}
+		})
+		h.sendJSON(w, http.StatusAccepted, Response{Success: true, Message: "Verification started", Data: map[string]string{"filename": filename, "expected": expected}})
+	default:
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+	}
+}
+
+func (h *Handler) CheckCatalogue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
+	if h.Catalogue == nil {
+		h.sendJSON(w, http.StatusServiceUnavailable, Response{Success: false, Error: "Catalogue checks need a database"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	report, err := h.Catalogue.Check(ctx)
+	if err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: fmt.Sprintf("%d image and %d tool updates available", len(report.Images), len(report.Tools)), Data: report})
 }
 
 func (h *Handler) GetAutoInstallScript(w http.ResponseWriter, r *http.Request) {
@@ -4117,6 +4560,7 @@ func (h *Handler) SaveAutoInstallFile(w http.ResponseWriter, r *http.Request) {
 		Distro   string `json:"distro"`
 		Filename string `json:"filename"`
 		Content  string `json:"content"`
+		Force    bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid body"})
@@ -4125,6 +4569,13 @@ func (h *Handler) SaveAutoInstallFile(w http.ResponseWriter, r *http.Request) {
 	if h.profileManager != nil {
 		if _, err := h.storage.GetDistroProfile(req.Distro); err != nil {
 			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: fmt.Sprintf("Unknown distro profile: %s", req.Distro)})
+			return
+		}
+	}
+	force := req.Force || r.URL.Query().Get("force") == "true"
+	if !force {
+		if err := autoinstall.Validate(req.Filename, req.Content); err != nil {
+			h.sendValidationFailure(w, err)
 			return
 		}
 	}
@@ -4168,6 +4619,12 @@ func (h *Handler) UploadAutoInstallFile(w http.ResponseWriter, r *http.Request) 
 		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: "Read failed"})
 		return
 	}
+	if r.FormValue("force") != "true" {
+		if err := autoinstall.Validate(filename, string(buf)); err != nil {
+			h.sendValidationFailure(w, err)
+			return
+		}
+	}
 	if err := h.autoInstallLib.Write(distro, filename, string(buf)); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
 		return
@@ -4202,6 +4659,84 @@ func (h *Handler) DownloadAutoInstallFile(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
 	w.Write([]byte(content))
+}
+
+func (h *Handler) sendValidationFailure(w http.ResponseWriter, err error) {
+	h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error(), Data: map[string]bool{"validation_failed": true}})
+}
+
+func variablesFromPayload(raw interface{}) (models.StringMap, error) {
+	if raw == nil {
+		return models.StringMap{}, nil
+	}
+	obj, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("variables must be an object of string values")
+	}
+	vars := make(models.StringMap, len(obj))
+	for name, value := range obj {
+		str, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("variable %q must be a string", name)
+		}
+		vars[name] = str
+	}
+	if err := autoinstall.ValidateVariableNames(vars); err != nil {
+		return nil, err
+	}
+	return vars, nil
+}
+
+func (h *Handler) RenderAutoInstallFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
+	if h.autoInstallLib == nil {
+		h.sendJSON(w, http.StatusServiceUnavailable, Response{Success: false, Error: "Auto-install manager unavailable"})
+		return
+	}
+	q := r.URL.Query()
+	content, err := h.autoInstallLib.Read(q.Get("distro"), q.Get("filename"))
+	if err != nil {
+		if err == autoinstall.ErrNotFound {
+			h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "File not found"})
+			return
+		}
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+		return
+	}
+	ctx := autoinstall.Context{ServerAddr: h.serverAddr, ServerPort: h.httpPort}
+	if mac := normaliseMAC(q.Get("mac")); mac != "" {
+		client, err := h.storage.GetClient(mac)
+		if err != nil {
+			h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Client not found"})
+			return
+		}
+		ctx.MAC = mac
+		ctx.Client = client
+		if client.ClientGroupID != nil {
+			if group, err := h.storage.GetClientGroup(*client.ClientGroupID); err == nil {
+				ctx.Group = group
+			}
+		}
+	}
+	if imageFilename := q.Get("image"); imageFilename != "" {
+		image, err := h.storage.GetImage(imageFilename)
+		if err != nil {
+			h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Image not found"})
+			return
+		}
+		ctx.Image = image
+	}
+	vars := ctx.Variables()
+	vars["INSTALL_TOKEN"] = "preview"
+	vars["CALLBACK_URL"] = ctx.ServerURL() + "/install/callback?token=preview"
+	rendered, unresolved := autoinstall.Render(content, vars)
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Data: map[string]interface{}{
+		"content":    rendered,
+		"unresolved": unresolved,
+	}})
 }
 
 func (h *Handler) DeleteAutoInstallFile(w http.ResponseWriter, r *http.Request) {
@@ -4890,34 +5425,14 @@ func (h *Handler) DeleteImageGroup(w http.ResponseWriter, r *http.Request) {
 	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Group deleted"})
 }
 
-func (h *Handler) resolveRedfish(c *models.Client) (string, int, string, string, bool, bool) {
-	host := c.IPMIHost
-	port := c.IPMIPort
-	user := c.IPMIUsername
-	pass := c.IPMIPassword
-	insecure := c.IPMIInsecure
-
+func (h *Handler) resolveBMC(c *models.Client) (bmc.Target, bool) {
+	var group *models.ClientGroup
 	if c.ClientGroupID != nil {
-		if g, err := h.storage.GetClientGroup(*c.ClientGroupID); err == nil && g != nil {
-			if port == 0 {
-				port = g.IPMIPort
-			}
-			if user == "" {
-				user = g.IPMIUsername
-			}
-			if pass == "" {
-				pass = g.IPMIPassword
-			}
-			if !insecure {
-				insecure = g.IPMIInsecure
-			}
+		if g, err := h.storage.GetClientGroup(*c.ClientGroupID); err == nil {
+			group = g
 		}
 	}
-
-	if host == "" || user == "" || pass == "" {
-		return "", 0, "", "", false, false
-	}
-	return host, port, user, pass, insecure, true
+	return bmc.Resolve(c, group)
 }
 
 func (h *Handler) PowerClient(w http.ResponseWriter, r *http.Request) {
@@ -4936,18 +5451,22 @@ func (h *Handler) PowerClient(w http.ResponseWriter, r *http.Request) {
 		h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Client not found"})
 		return
 	}
-	host, port, user, pass, insecure, ok := h.resolveRedfish(c)
+	target, ok := h.resolveBMC(c)
 	if !ok {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Client has no BMC host + credentials (set on client or group)"})
 		return
 	}
-	client := redfish.New(host, port, user, pass, insecure)
-	if err := client.SetPower(r.Context(), redfish.PowerAction(action)); err != nil {
-		log.Printf("Redfish %s on %s (%s) failed: %v", action, mac, host, err)
+	ctrl, err := bmc.New(target)
+	if err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+		return
+	}
+	if err := ctrl.SetPower(r.Context(), bmc.Action(action)); err != nil {
+		log.Printf("BMC %s %s on %s (%s) failed: %v", target.Protocol, action, mac, target.Host, err)
 		h.sendJSON(w, http.StatusOK, Response{Success: false, Error: err.Error()})
 		return
 	}
-	log.Printf("Redfish %s on %s (%s) succeeded", action, mac, host)
+	log.Printf("BMC %s %s on %s (%s) succeeded", target.Protocol, action, mac, target.Host)
 	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: fmt.Sprintf("Power %s sent to %s", action, mac)})
 }
 
@@ -4962,13 +5481,17 @@ func (h *Handler) PowerStatusClient(w http.ResponseWriter, r *http.Request) {
 		h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Client not found"})
 		return
 	}
-	host, port, user, pass, insecure, ok := h.resolveRedfish(c)
+	target, ok := h.resolveBMC(c)
 	if !ok {
 		h.sendJSON(w, http.StatusOK, Response{Success: true, Data: map[string]string{"state": "unconfigured"}})
 		return
 	}
-	client := redfish.New(host, port, user, pass, insecure)
-	state, err := client.PowerState(r.Context())
+	ctrl, err := bmc.New(target)
+	if err != nil {
+		h.sendJSON(w, http.StatusOK, Response{Success: false, Error: err.Error()})
+		return
+	}
+	state, err := ctrl.PowerState(r.Context())
 	if err != nil {
 		h.sendJSON(w, http.StatusOK, Response{Success: false, Error: err.Error()})
 		return
@@ -5007,21 +5530,25 @@ func (h *Handler) PowerClientGroup(w http.ResponseWriter, r *http.Request) {
 		if !c.Enabled {
 			continue
 		}
-		host, port, user, pass, insecure, ok := h.resolveRedfish(c)
+		target, ok := bmc.Resolve(c, group)
 		if !ok {
 			continue
 		}
+		ctrl, err := bmc.New(target)
+		if err != nil {
+			log.Printf("BMC bulk %s on %s (%s) skipped: %v", action, c.MACAddress, target.Host, err)
+			continue
+		}
 		dispatched++
-		go func(mac, host string, port int, user, pass string, insecure bool) {
+		go func(mac string, target bmc.Target, ctrl bmc.Controller) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			client := redfish.New(host, port, user, pass, insecure)
-			if err := client.SetPower(ctx, redfish.PowerAction(action)); err != nil {
-				log.Printf("Redfish bulk %s on %s (%s) failed: %v", action, mac, host, err)
+			if err := ctrl.SetPower(ctx, bmc.Action(action)); err != nil {
+				log.Printf("BMC %s bulk %s on %s (%s) failed: %v", target.Protocol, action, mac, target.Host, err)
 			} else {
-				log.Printf("Redfish bulk %s on %s (%s) ok", action, mac, host)
+				log.Printf("BMC %s bulk %s on %s (%s) ok", target.Protocol, action, mac, target.Host)
 			}
-		}(c.MACAddress, host, port, user, pass, insecure)
+		}(c.MACAddress, target, ctrl)
 		if stagger > 0 {
 			time.Sleep(stagger)
 		}
@@ -5273,6 +5800,97 @@ func (h *Handler) TestWebhook(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type housekeepingView struct {
+	Settings   *models.HousekeepingSettings `json:"settings"`
+	LastReport *housekeeping.Report         `json:"last_report,omitempty"`
+	Usage      *housekeeping.Usage          `json:"usage,omitempty"`
+	UsageError string                       `json:"usage_error,omitempty"`
+}
+
+func (h *Handler) housekeepingView() (*housekeepingView, error) {
+	settings, err := h.storage.GetHousekeepingSettings()
+	if err != nil {
+		return nil, err
+	}
+	view := &housekeepingView{Settings: settings, LastReport: housekeeping.ParseReport(settings.LastReport)}
+	settings.LastReport = ""
+	if h.dataDir != "" {
+		if usage, usageErr := housekeeping.DataDirUsage(h.dataDir); usageErr != nil {
+			view.UsageError = usageErr.Error()
+		} else {
+			view.Usage = usage
+		}
+	}
+	return view, nil
+}
+
+func (h *Handler) GetHousekeeping(w http.ResponseWriter, r *http.Request) {
+	view, err := h.housekeepingView()
+	if err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Data: view})
+}
+
+func (h *Handler) UpdateHousekeeping(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BootLogDays          int  `json:"boot_log_days"`
+		InventoryHistoryDays int  `json:"inventory_history_days"`
+		DiscoveredClientDays int  `json:"discovered_client_days"`
+		AuditLogDays         int  `json:"audit_log_days"`
+		CatalogueCheckOff    bool `json:"catalogue_check_off"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid body"})
+		return
+	}
+	if body.BootLogDays < 0 || body.InventoryHistoryDays < 0 || body.DiscoveredClientDays < 0 || body.AuditLogDays < 0 {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Retention periods cannot be negative"})
+		return
+	}
+	settings, err := h.storage.GetHousekeepingSettings()
+	if err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	settings.BootLogDays = body.BootLogDays
+	settings.InventoryHistoryDays = body.InventoryHistoryDays
+	settings.DiscoveredClientDays = body.DiscoveredClientDays
+	settings.AuditLogDays = body.AuditLogDays
+	settings.CatalogueCheckOff = body.CatalogueCheckOff
+	if err := h.storage.UpdateHousekeepingSettings(settings); err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	settings.LastReport = ""
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Housekeeping settings saved", Data: settings})
+}
+
+func (h *Handler) RunHousekeeping(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+		return
+	}
+	if h.Housekeeping == nil {
+		h.sendJSON(w, http.StatusServiceUnavailable, Response{Success: false, Error: "Housekeeping is not available"})
+		return
+	}
+	report := h.Housekeeping.RunNow()
+	housekeeping.InvalidateUsage()
+	view, err := h.housekeepingView()
+	if err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	view.LastReport = report
+	message := "Housekeeping completed"
+	if report.Status != housekeeping.StatusOK {
+		message = "Housekeeping finished with errors"
+	}
+	h.sendJSON(w, http.StatusOK, Response{Success: report.Status != housekeeping.StatusFailed, Message: message, Data: view})
+}
+
 func (h *Handler) ExportBackup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
@@ -5376,6 +5994,70 @@ func (h *Handler) ExportBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("Backup exported (%s) — db: %s (%d bytes)", ts, dbName, dbBuf.Len())
+}
+
+func (h *Handler) ImportBackup(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		summary, err := storage.PendingRestore(h.dataDir)
+		if errors.Is(err, storage.ErrNoPendingRestore) {
+			h.sendJSON(w, http.StatusOK, Response{Success: true, Data: map[string]interface{}{"pending": false}})
+			return
+		}
+		if err != nil {
+			h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+			return
+		}
+		h.sendJSON(w, http.StatusOK, Response{Success: true, Data: map[string]interface{}{"pending": true, "summary": summary, "restart_required": true}})
+	case http.MethodDelete:
+		if err := storage.CancelRestore(h.dataDir); err != nil {
+			if errors.Is(err, storage.ErrNoPendingRestore) {
+				h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "No restore is staged"})
+				return
+			}
+			h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+			return
+		}
+		log.Printf("Backup restore cancelled")
+		h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Staged restore cancelled"})
+	case http.MethodPost:
+		reader, err := r.MultipartReader()
+		if err != nil {
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid multipart body"})
+			return
+		}
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Malformed upload"})
+				return
+			}
+			if part.FormName() != "backup" {
+				part.Close()
+				continue
+			}
+			summary, stageErr := storage.StageRestore(h.dataDir, part)
+			part.Close()
+			if stageErr != nil {
+				log.Printf("Backup restore staging failed: %v", stageErr)
+				h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: stageErr.Error()})
+				return
+			}
+			log.Printf("Backup restore staged (%s database, %d files); restart required to apply", summary.Database, summary.FileCount)
+			h.sendJSON(w, http.StatusOK, Response{
+				Success: true,
+				Message: "Restore staged. Restart Bootimus to apply it.",
+				Data:    map[string]interface{}{"pending": true, "summary": summary, "restart_required": true},
+			})
+			return
+		}
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "No backup file in upload (expected form field 'backup')"})
+	default:
+		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
+	}
 }
 
 func (h *Handler) ImportClientsCSV(w http.ResponseWriter, r *http.Request) {
@@ -5484,7 +6166,22 @@ func (h *Handler) ImportClientsCSV(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if _, err := h.storage.GetClient(mac); err == nil {
+		existing, existsErr := h.storage.GetClient(mac)
+		if v := get(row, "proxy_dhcp_no_vendor_option"); v != "" {
+			client.ProxyDHCPNoVendorOption = toBool(v)
+		} else if existsErr == nil {
+			client.ProxyDHCPNoVendorOption = existing.ProxyDHCPNoVendorOption
+		}
+
+		if existsErr == nil {
+			client.BMCProtocol = existing.BMCProtocol
+			client.IPMIHost = existing.IPMIHost
+			client.IPMIPort = existing.IPMIPort
+			client.IPMIUsername = existing.IPMIUsername
+			client.IPMIPassword = existing.IPMIPassword
+			client.IPMIInsecure = existing.IPMIInsecure
+			client.AutoInstallFile = existing.AutoInstallFile
+			client.Variables = existing.Variables
 			if err := h.storage.UpdateClient(mac, client); err != nil {
 				errors = append(errors, fmt.Sprintf("row %d (%s): update failed: %v", rowNum, mac, err))
 				continue
@@ -5570,6 +6267,10 @@ func (h *Handler) CreateClientGroup(w http.ResponseWriter, r *http.Request) {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Group name is required"})
 		return
 	}
+	if err := autoinstall.ValidateVariableNames(group.Variables); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+		return
+	}
 	if err := h.storage.CreateClientGroup(&group); err != nil {
 		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
 		return
@@ -5594,11 +6295,10 @@ func (h *Handler) UpdateClientGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	group.ID = uint(id)
-	type groupWithMembers struct {
-		Members []string `json:"members"`
+	if err := autoinstall.ValidateVariableNames(group.Variables); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+		return
 	}
-	var withMembers groupWithMembers
-	_ = withMembers
 
 	if err := h.storage.UpdateClientGroup(uint(id), &group); err != nil {
 		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})

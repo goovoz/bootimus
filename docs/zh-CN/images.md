@@ -5,6 +5,10 @@
 ##  目录
 
 - [添加镜像](#添加镜像)
+- [校验和与更新通知](#校验和与更新通知)
+- [统一内核镜像 (UKI)](#统一内核镜像-uki)
+- [OpenBSD 与 NetBSD](#openbsd-与-netbsd)
+- [WinPE 与救援介质](#winpe-与救援介质)
 - [Kernel 提取](#kernel-提取)
 - [Netboot 支持](#netboot-支持)
 - [Ubuntu Desktop 优化](#ubuntu-desktop-优化)
@@ -58,6 +62,21 @@ curl -u admin:password -X POST http://localhost:8081/api/images/download \
 curl -u admin:password http://localhost:8081/api/downloads/progress?filename=ubuntu-24.04-live-server-amd64.iso
 ```
 
+### 校验和与更新通知
+
+**下载时校验。** 通过 **Get Images**(内建目录)获取 ISO 时,Bootimus 会在其旁边寻找已发布的校验和文件(`SHA256SUMS`、`sha256sum.txt` 及类似文件),并在下载流式进行的同时计算哈希。不匹配会导致下载失败并删除文件,因此被截断或被篡改的镜像绝不会进入引导菜单。从普通 URL 下载时,也可以通过向 `/api/images/download` 传入 `sha256` 或 `checksum_url` 进行校验:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8081/api/images/download \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://releases.ubuntu.com/24.04.4/ubuntu-24.04.4-live-server-amd64.iso",
+       "checksum_url": "https://releases.ubuntu.com/24.04.4/SHA256SUMS"}'
+```
+
+已校验的镜像会在镜像列表中显示 **✓ Verified** 徽章,并在镜像属性面板中显示记录的 SHA-256。在没有已发布校验和的情况下下载的镜像,或手动上传的镜像,会标记为 **Unverified**;在属性面板中粘贴一个 SHA-256 或校验和文件的 URL,然后点击 **Verify**,即可在后台计算文件哈希(`POST /api/images/verify?filename=…`,用 `GET` 轮询同一 URL)。
+
+**更新版本。** Bootimus 每天一次(以及在 **Settings → Housekeeping → Check now** 或 `POST /api/catalogue/check` 时)把已安装镜像与目录进行比较。从目录下载的镜像按其发行版和发布系列匹配,因此当 `24.04.4` 出现时,`ubuntu-24.04.3-desktop-amd64.iso` 会被标记;在此功能之前添加的镜像则按文件名形态匹配。被标记的镜像带有 **Update available** 徽章,属性面板中有 **Download newer version** 按钮,工具显示同样的徽章并带 **Download newer**,仪表盘会统计待处理的更新数量。允许远程配置更新时,检查使用在线目录;设置了 `--disable-remote-profiles` 时,则退回到二进制内置的目录。在 Housekeeping 下取消勾选 **Check the catalogue daily** 即可关闭。
+
 ### 用文件夹组织
 
 放在子目录中的 ISO 会在引导菜单中自动分组:
@@ -87,6 +106,66 @@ curl -u admin:password http://localhost:8081/api/downloads/progress?filename=ubu
 ```bash
 curl -u admin:password -X POST http://localhost:8081/api/scan
 ```
+
+## 统一内核镜像 (UKI)
+
+统一内核镜像 (UKI) 是一个单独的 EFI 可执行文件,其中打包了 Linux 内核、它的 initrd 以及内核命令行。Bootimus 直接启动 UKI,无需提取。
+
+**添加 UKI**:上传 `.efi` 文件、从 URL 下载,或复制到 `/data/isos/` 后扫描,方式与 ISO 完全相同。Bootimus 只登记属于 UKI 的 `.efi` 文件(带有 `.linux` 段的 EFI 可执行文件);其他 EFI 程序会被拒绝,ISO 提取目录中的文件也会被忽略。
+
+**启动参数**:UKI 的 `.cmdline` 段中内嵌的命令行会在首次添加时复制到镜像的启动参数中,因此你可以在镜像属性中查看并修改它。Bootimus 使用以下方式启动该镜像:
+
+```
+kernel http://<server>:8080/isos/<image>.efi <boot parameters>
+```
+
+关闭 Secure Boot 时,这些参数会替换内嵌的命令行,所以内嵌命令行会被预先填入。开启 Secure Boot 时,大多数 UKI 内的 systemd-stub 会忽略这些参数,始终使用内嵌的命令行。
+
+**仅限 UEFI**:UKI 是 EFI 程序,传统 BIOS 客户端无法启动它们。在 BIOS 客户端上选择 UKI 时,会显示需要 UEFI 的提示。
+
+## OpenBSD 与 NetBSD
+
+OpenBSD 和 NetBSD 不是从 Linux 风格的内核和 initrd 引导的。它们各自自带第二阶段网络加载程序,而该加载程序只会说 TFTP:它从 TFTP 服务器的根目录获取配置文件和安装内核。Bootimus 通过从安装 ISO 中提取这些文件并经由自己的 TFTP 服务器提供它们来支持两者,因此客户端必须能访问 TFTP 端口(PXE 本身已经需要这一点)。
+
+**添加镜像**:OpenBSD 上传 `install77.iso`(或 `cd77.iso`),NetBSD 上传 `NetBSD-10.1-amd64.iso`,然后像其他 ISO 一样运行 **Extract Kernel/Initrd**。提取会把加载程序和安装内核复制到 ISO 旁边的 `bsd/` 文件夹中,并提取完整的 ISO 目录树,以便安装程序可以从 `http://<server>:8080/boot/<image>/iso/` 获取安装集。
+
+| 发行版 | 从 ISO 中提取的加载程序 | 内核 |
+|--------|--------------------------|------|
+| OpenBSD | 来自 `/<version>/<arch>/` 的 `pxeboot`(BIOS)、`BOOTX64.EFI`、`BOOTIA32.EFI`、`BOOTAA64.EFI`(UEFI) | `bsd.rd` |
+| NetBSD | 来自 `/<arch>/installation/misc/` 的 `pxeboot_ia32.bin`(BIOS),以及 ISO 自带时的 `bootx64.efi`(UEFI) | `netbsd-INSTALL.gz` |
+
+**引导的工作方式**:菜单条目会链式加载 HTTP 端口上的一个小 iPXE 脚本,该脚本记录下这个客户端(按 IP 地址)选择了该镜像,然后从 `bsd/<image>/` 经 TFTP 链式加载对应的加载程序。在接下来的 15 分钟内,来自该 IP、针对加载程序在 TFTP 根目录寻找的那些文件(OpenBSD 的 `etc/boot.conf`、`etc/random.seed`、`bsd.rd`、`bsd`;NetBSD 的 `boot.cfg`、`EFI/NetBSD/boot.cfg`、`netbsd` 和 `netbsd-INSTALL.gz`)的请求都会由该镜像应答。配置文件即时生成,并把加载程序指向 `bsd/<image>/` 下的内核,因此显式路径同样可用。如果 ISO 缺少适用于该客户端固件的加载程序,客户端会看到相应提示并返回菜单。
+
+**串口控制台及其他加载程序设置**:把额外的加载程序配置行放进镜像的 **Boot Parameters**,用分号分隔。对 OpenBSD,它们会追加到生成的 `boot.conf`,例如 `stty com0 115200;set tty com0`。对 NetBSD,它们会追加到生成的 `boot.cfg`,例如 `consdev=com0`。
+
+**已知限制**:
+
+- 此支持是新加入的,尚未在真实硬件上验证。请反馈哪些可用、哪些不可用。
+- NetBSD 的 `pxeboot_ia32.bin` 加载后会自行进行一次 DHCP 交换,并读取 DHCP 的 `filename` 字段来决定使用 NFS 还是 TFTP。如果那里没有 `tftp:` 前缀,它默认使用 NFS,而 Bootimus 并不为此提供 NFS。如果加载程序报告无法打开 `boot.cfg` 或内核,请在其提示符下输入 `boot tftp:bsd/<image>/netbsd-INSTALL.gz`,或在你的 DHCP 服务器上给 NetBSD 客户端设置 `filename "tftp:boot.cfg";`。OpenBSD 的加载程序始终使用 TFTP,无需这一步。
+- 按客户端的关联以 IP 地址为键,因此同一 NAT 地址后的两台客户端如果在 15 分钟内引导不同的 BSD 镜像,会收到相同的配置。
+- 尚未接入 BSD 安装程序的自动安装。安装程序仍然可以通过 HTTP 从提取出的 ISO 目录树获取安装集。
+
+## WinPE 与救援介质
+
+Bootimus 通过 [wimboot](https://ipxe.org/wimboot) 引导 Windows 安装程序,同一路径现在也涵盖基于 WinPE 的救援介质,例如 Sergei Strelec 的 WinPE、Active@ Boot Disk 和 Hiren's BootCD PE。
+
+**支持的布局**:任何带有 `BCD`(位于 `boot/` 或 `efi/microsoft/boot/` 下)、`boot/boot.sdi` 以及至少一个 `.wim` 文件的 ISO。安装介质还会有 `sources/install.wim` 或 `install.esd`;没有它的介质会被归类为 **WinPE / Rescue Media** 配置(`winpe`)而不是 **Windows**,因此不会对其应用自动安装或 SMB 处理。前四级目录中任何位置的 WIM 文件都能被找到,所以 Strelec 的 `SSTR/*.wim` 及类似布局无需重命名任何东西即可使用。
+
+**选择 WIM**:提取后,镜像属性面板会列出找到的每个 WIM 及其大小。选择 wimboot 应加载的那个,如果一个 WIM 包含多个映像,再选择映像索引。只有索引大于一时才会把它加到 wimboot 行上,引导参数中显式的 `index=` 优先。同样的设置也可以通过 API 完成:
+
+```bash
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"wim_path":"SSTR/strelec10x64Eng.wim","wim_index":1}' \
+  "http://localhost:8081/api/images/winpe?filename=WinPE_Strelec.iso"
+```
+
+**引导方式**:只有所选的 WIM 会发送给客户端;wimboot 自行合成 BCD 和 `boot.sdi`,这避免了某些介质在使用 DVD 的 BCD 时出现的黑屏。引导参数仅限 wimboot 自己的选项(`rawbcd`、`rawwim`、`gui`、`linear`、`quiet`、`pause`、`index`、`initrdfile`),与 Windows 安装程序完全一致。
+
+**限制**:
+
+- 救援环境期望在自己的引导介质上找到的程序(例如 Strelec 的 `SSTR` 便携工具文件夹)不在 WIM 内,因此 PXE 引导后它们会缺失,除非该环境能自行通过网络获取。核心的 WinPE 桌面以及内置于 WIM 中的工具可以正常使用。
+- 需要自带 BCD 条目的介质(自定义的 `bootmgr` 菜单、多 WIM 选择菜单)会直接引导进入所选的 WIM,而不显示那个菜单。
+- 目前还不能单独上传裸 `.wim` 文件;请把它们放到带有 `BCD` 和 `boot.sdi` 的 ISO 上,或使用完整的救援 ISO。
 
 ## Kernel 提取
 

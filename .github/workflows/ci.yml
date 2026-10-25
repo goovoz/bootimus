@@ -36,6 +36,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Integration test (throwaway OIDC provider)
+        run: make test-integration
+
       - name: Build
         run: make build
 

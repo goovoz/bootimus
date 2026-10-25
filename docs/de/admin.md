@@ -9,6 +9,8 @@ Kompletter Leitfaden zur Nutzung der Bootimus-Admin-Oberfläche und der REST-API
 - [Client-Verwaltung](#client-verwaltung)
 - [Image-Verwaltung](#image-verwaltung)
 - [Boot-Logs](#boot-logs)
+- [Housekeeping und Aufbewahrung](#housekeeping-und-aufbewahrung)
+- [Audit-Log](#audit-log)
 - [REST-API](#rest-api)
 - [Automatisierungs-Beispiele](#automatisierungs-beispiele)
 - [Security Best Practices](#security-best-practices)
@@ -24,7 +26,7 @@ http://your-server:8081/
 **Voraussetzungen**:
 - Admin-Oberfläche läuft auf separatem Port (Default 8081)
 - Funktioniert mit SQLite oder PostgreSQL
-- Token-basierte JWT-Authentifizierung (mit optionalem LDAP/AD-Backend)
+- Token-basierte JWT-Authentifizierung (mit optionalem LDAP/AD-Backend und OIDC-Single-Sign-On)
 
 ### Erster Login
 
@@ -48,7 +50,7 @@ Navigiere zu `http://your-server:8081` — du siehst eine dedizierte Login-Seite
 - **Username**: `admin`
 - **Passwort**: Aus den Server-Startup-Logs
 
-Wenn LDAP konfiguriert ist, erscheint auf der Login-Seite ein Dropdown zur Auswahl zwischen lokaler und LDAP-Authentifizierung. Details im [Authentifizierungs-Leitfaden](authentication.md).
+Wenn LDAP konfiguriert ist, erscheint auf der Login-Seite ein Dropdown zur Auswahl zwischen lokaler und LDAP-Authentifizierung. Wenn OIDC konfiguriert ist, erscheint ein Button **Sign in with …** für Single Sign-On. Nutzer, die keine Administratoren sind, erhalten schreibgeschützten Zugriff: Sie können das Panel durchsehen, aber nichts ändern. Details im [Authentifizierungs-Leitfaden](authentication.md).
 
 ### Schnellstart
 
@@ -316,13 +318,78 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/logs?limit=10
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/logs?limit=500
 ```
 
+## Housekeeping und Aufbewahrung
+
+Boot-Logs und Hardware-Inventar-Meldungen sammeln sich bei jedem PXE-Boot an, und das Audit-Log wächst mit jeder Admin-Änderung. Das Housekeeping läuft einmal täglich (und ein paar Minuten nach dem Start) und löscht Einträge, die älter sind als die unter **Settings** → **Housekeeping** eingestellten Aufbewahrungsfristen. Eine Frist von `0` behält die Einträge für immer.
+
+| Einstellung | Default | Was entfernt wird |
+|-------------|---------|-------------------|
+| Boot log retention | 90 Tage | Boot-Versuche, die älter als die Frist sind |
+| Inventory history retention | 90 Tage | Ältere Inventar-Meldungen; das jeweils neueste Inventar jedes Clients bleibt immer erhalten |
+| Remove discovered clients not seen for | 0 (aus) | Automatisch erkannte Clients, deren letzter Boot älter als die Frist ist. Statische Clients und Cluster-Nodes werden nie angefasst |
+| Audit log retention | 365 Tage | Audit-Einträge zu Admin-Aktionen, die älter als die Frist sind |
+| Check the catalogue daily | an | Keine Löschaufgabe: markiert installierte Images und Tools, für die der Katalog ein neueres Release kennt (siehe [Leitfaden zur Image-Verwaltung](images.md#prüfsummen-und-update-benachrichtigungen)) |
+
+Die Karte zeigt außerdem das Ergebnis des letzten Laufs pro Aufgabe und wie viel Platz jeder Eintrag der obersten Ebene im Daten-Verzeichnis belegt, sodass leicht zu sehen ist, welche ISO-Gruppe oder welcher Cache den Platz braucht.
+
+**Per API**:
+```bash
+# Aktuelle Einstellungen, letzter Bericht und Belegung des Daten-Verzeichnisses
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/housekeeping
+
+# Boot-Logs 30 Tage und Inventar-Historie ein Jahr behalten, Clients nie löschen
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"boot_log_days":30,"inventory_history_days":365,"discovered_client_days":0,"audit_log_days":365}' \
+  http://localhost:8081/api/housekeeping
+
+# Housekeeping jetzt ausführen
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/housekeeping/run
+
+# Installierte Images und Tools jetzt mit dem Katalog vergleichen
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/catalogue/check
+```
+
+## Audit-Log
+
+Jede Änderung über die Admin-API wird aufgezeichnet: der Nutzer, HTTP-Methode und Pfad, der Query-String, der Status, mit dem der Server geantwortet hat, und die IP-Adresse des Aufrufers. Lesezugriffe (`GET`-Requests) und der Login-Endpunkt selbst werden nicht aufgezeichnet. Query-Werte, die nach Passwörtern oder Token aussehen, werden als `[redacted]` gespeichert.
+
+Der Tab **Audit Log** ist nur für Administratoren sichtbar. Er lässt sich nach Nutzer, Pfad und Startzeitpunkt filtern und blättert mit **Load more** durch ältere Einträge.
+
+Dieselben Einträge können als `admin.action`-Webhook-Events weitergeleitet werden, indem du dieses Event unter **Settings → Webhook** anhakst. Die Payload enthält Nutzer, Methode, Pfad, Query, Status und eine kurze Zusammenfassung in ihrer `metadata`-Map.
+
+**Per API**:
+```bash
+# Letzte 100 Einträge
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/audit
+
+# Alles, was alice seit einem Zeitpunkt an Clients geändert hat
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8081/api/audit?username=alice&path=/api/clients&since=2026-10-01T00:00:00Z&limit=500"
+```
+
+Die Antwort enthält `entries` (neueste zuerst) und `total`, sodass sich mit `offset` blättern lässt.
+
 ## REST-API
 
 Alle Admin-Funktionen sind zur Automatisierung über die REST-API verfügbar.
 
+### OpenAPI-Dokument
+
+Der Server beschreibt seine eigene API als OpenAPI-3.0-Dokument unter `GET /api/openapi.json` (keine Authentifizierung nötig). Dasselbe Dokument liegt als [docs/openapi.json](../openapi.json) im Repository und lässt sich mit `bootimus openapi` oder `make openapi` neu erzeugen. Jede Operation trägt zwei Erweiterungen: `x-bootimus-public` markiert Endpunkte, die keinen Token brauchen, und `x-bootimus-readonly` markiert Endpunkte, die schreibgeschützte Nutzer aufrufen dürfen. Der Tab **API Reference** im Admin-UI wird aus diesem Dokument gerendert und bleibt so automatisch mit dem Server synchron.
+
+```bash
+# Dokument von einem laufenden Server speichern
+curl -s http://localhost:8081/api/openapi.json > bootimus-openapi.json
+
+# Oder ohne Server direkt aus dem Binary ausgeben
+bootimus openapi > bootimus-openapi.json
+```
+
+Importiere es in Postman, Insomnia, Swagger UI oder einen OpenAPI-Client-Generator, um mit deinem eigenen Tooling auf die API zuzugreifen.
+
 ### Authentifizierung
 
-Für alle Endpunkte ist HTTP Basic Authentication erforderlich:
+Alle Endpunkte außer `/api/login` und `/api/auth-info` brauchen einen Bearer-Token, gesendet als `Authorization: Bearer <token>`. Das ist entweder ein 24 Stunden gültiger JWT von `POST /api/login` (siehe [Authentifizierung](authentication.md#token-holen)) oder ein langlebiger [API-Token](authentication.md#api-token), angelegt unter **Users** → **API Tokens**, was für Skripte die bessere Wahl ist. Melde dich an mit:
 - **Username**: `admin`
 - **Passwort**: Beim ersten Lauf automatisch generiert
 
@@ -366,6 +433,7 @@ GET /api/stats
 | `PUT` | `/api/clients?mac=<MAC>` | Client aktualisieren |
 | `DELETE` | `/api/clients?mac=<MAC>` | Client löschen |
 | `POST` | `/api/assign-images` | Images einem Client zuweisen |
+| `GET` | `/api/clients/menu-preview?mac=<MAC>` | Das iPXE-Skript rendern, das ein Client erhalten würde (ohne Nebenwirkungen; `mac` weglassen für das anonyme Menü) |
 
 #### Images
 
@@ -376,10 +444,28 @@ GET /api/stats
 | `PUT` | `/api/images?filename=<name>` | Image aktualisieren |
 | `DELETE` | `/api/images?filename=<name>` | Image löschen |
 | `POST` | `/api/images/upload` | ISO hochladen |
-| `POST` | `/api/images/download` | ISO von URL herunterladen |
+| `POST` | `/api/images/download` | ISO von URL herunterladen, bei Angabe von `sha256` oder `checksum_url` mit Verifikation |
+| `POST` | `/api/images/verify?filename=<name>` | Ein Image im Hintergrund gegen eine Prüfsumme hashen |
+| `GET` | `/api/images/verify?filename=<name>` | Fortschritt und Ergebnis der Verifikation |
+| `POST` | `/api/catalogue/check` | Images und Tools mit neueren Katalog-Releases markieren |
 | `POST` | `/api/images/extract` | Kernel/initrd extrahieren |
 | `POST` | `/api/images/netboot/download` | Netboot-Dateien herunterladen |
+| `PUT` | `/api/images/winpe?filename=<name>` | WIM-Datei und Image-Index wählen, mit denen ein Windows- oder WinPE-Image bootet. Body: `{wim_path, wim_index}` |
 | `POST` | `/api/scan` | Nach neuen ISOs scannen |
+
+#### Disk Images
+
+| Methode | Endpunkt | Beschreibung |
+|---------|----------|--------------|
+| `GET` | `/api/disk-images` | Bereitschaftsstatus und Liste der erfassten Disk-Images |
+| `PUT` | `/api/disk-images?id=<id>` | Beschreibung eines Images ändern |
+| `DELETE` | `/api/disk-images?id=<id>` | Image samt Dateien löschen |
+| `POST` | `/api/disk-images/capture` | Erfassung einreihen: `{mac_address, name, description, disk, wake}` |
+| `POST` | `/api/disk-images/deploy` | Deploy einreihen: `{mac_address` oder `client_group_id, image_id, disk, wake}` |
+| `GET` | `/api/disk-images/jobs?mac=<MAC>&limit=<n>` | Letzte Erfassungs- und Deploy-Jobs |
+| `DELETE` | `/api/disk-images/jobs?id=<id>` | Wartenden oder laufenden Job abbrechen |
+
+Den Ablauf beschreibt der [Disk-Imaging-Leitfaden](disk-imaging.md).
 
 #### Downloads
 

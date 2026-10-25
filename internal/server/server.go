@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +28,13 @@ import (
 	"bootimus/internal/admin"
 	"bootimus/internal/auth"
 	"bootimus/internal/autoinstall"
+	"bootimus/internal/bmc"
+	_ "bootimus/internal/bmc/amt"
+	_ "bootimus/internal/bmc/redfish"
+	"bootimus/internal/catalogue"
+	"bootimus/internal/diskimage"
+	"bootimus/internal/housekeeping"
+	"bootimus/internal/imagescan"
 	"bootimus/internal/metrics"
 	"bootimus/internal/models"
 	"bootimus/internal/nbd"
@@ -33,10 +42,11 @@ import (
 	"bootimus/internal/nfs"
 	"bootimus/internal/profiles"
 	"bootimus/internal/proxydhcp"
-	"bootimus/internal/redfish"
+	"bootimus/internal/replica"
 	"bootimus/internal/scheduler"
 	"bootimus/internal/smb"
 	"bootimus/internal/storage"
+	"bootimus/internal/tlscert"
 	"bootimus/internal/tools"
 	"bootimus/internal/webhook"
 	"bootimus/internal/wol"
@@ -74,53 +84,98 @@ func panicRecoveryMiddleware(next http.Handler) http.Handler {
 }
 
 type Config struct {
-	TFTPPort         int
-	TFTPSinglePort   bool
-	TFTPBlockSize    int
-	HTTPPort         int
-	AdminPort        int
-	BootDir          string
-	DataDir          string
-	ISODir           string
-	ServerAddr       string
-	BindInterface    string
-	Storage          storage.Storage
-	Auth             *auth.Manager
-	NBDEnabled       bool
-	NBDPort          int
-	NFSEnabled       bool
-	NFSPort          int
-	WOLBroadcastAddr string
-	ProfileManager   *profiles.Manager
+	TFTPPort            int
+	TFTPSinglePort      bool
+	TFTPBlockSize       int
+	HTTPPort            int
+	AdminPort           int
+	BootDir             string
+	DataDir             string
+	ISODir              string
+	ServerAddr          string
+	BindInterface       string
+	Storage             storage.Storage
+	Auth                *auth.Manager
+	NBDEnabled          bool
+	NBDPort             int
+	NFSEnabled          bool
+	InstallTimeoutHours int
+	NFSPort             int
+	WOLBroadcastAddr    string
+	ProfileManager      *profiles.Manager
 
 	ProxyDHCPEnabled          bool
 	ProxyDHCPBootfileBIOS     string
 	ProxyDHCPBootfileUEFI     string
 	ProxyDHCPBootfileARM      string
 	ProxyDHCPNoBootfileOption bool
+	ProxyDHCPNoVendorOption   bool
 
 	WindowsSMBEnabled bool
 	WindowsSMBPort    int
+
+	AdminTLS AdminTLSConfig
+	Replica  *replica.Config
+}
+
+type AdminTLSConfig struct {
+	Enabled      bool
+	CertFile     string
+	KeyFile      string
+	SelfSigned   bool
+	RedirectPort int
+}
+
+func (c AdminTLSConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if (c.CertFile == "") != (c.KeyFile == "") {
+		return fmt.Errorf("admin TLS needs both a certificate file and a key file, or neither for a self-signed certificate")
+	}
+	if c.RedirectPort < 0 || c.RedirectPort > 65535 {
+		return fmt.Errorf("admin TLS redirect port %d is out of range", c.RedirectPort)
+	}
+	return nil
+}
+
+func (c AdminTLSConfig) usesSelfSigned() bool {
+	return c.Enabled && (c.SelfSigned || c.CertFile == "")
 }
 
 type Server struct {
 	config                *Config
 	httpServer            *http.Server
 	adminServer           *http.Server
+	adminRedirectServer   *http.Server
+	adminTLS              *tlscert.Reloader
+	adminTLSMode          string
 	tftpServer            *tftp.Server
 	proxyDHCPServer       *proxydhcp.Server
+	proxyDHCPRecorder     *proxydhcp.Recorder
+	bsdSelections         *bsdSelections
 	webhookNotifier       *webhook.Notifier
 	scheduler             *scheduler.Scheduler
+	housekeeping          *housekeeping.Runner
+	replica               *replica.Syncer
+	catalogue             *catalogue.Checker
 	bootLogDedup          map[string]time.Time
 	bootLogDedupMu        sync.Mutex
+	installSweepStop      chan struct{}
+	installSweepOnce      sync.Once
+	installSweepWG        sync.WaitGroup
 	wg                    sync.WaitGroup
 	activeSessions        *ActiveSessions
 	logBroadcaster        *LogBroadcaster
+	audit                 *auditRecorder
+	consoles              consoleSessions
+	openConsole           func(ctx context.Context, t bmc.Target) (bmc.Console, error)
 	activeBootloaderSet   string // name of active set folder, empty = built-in
 	activeBootloaderSetMu sync.RWMutex
 	toolsManager          *tools.Manager
 	smbManager            *smb.Manager
 	autoInstallLib        *autoinstall.Library
+	diskImages            *diskimage.Manager
 }
 
 type ActiveSession struct {
@@ -311,12 +366,27 @@ func New(cfg *Config) *Server {
 		activeSessions: &ActiveSessions{
 			sessions: make(map[string]*ActiveSession),
 		},
-		logBroadcaster:  lb,
-		toolsManager:    tm,
-		bootLogDedup:    make(map[string]time.Time),
-		webhookNotifier: webhook.New(cfg.Storage),
+		logBroadcaster:    lb,
+		toolsManager:      tm,
+		bootLogDedup:      make(map[string]time.Time),
+		webhookNotifier:   webhook.New(cfg.Storage),
+		proxyDHCPRecorder: proxydhcp.NewRecorder(proxydhcp.DefaultRecorderSize),
+		bsdSelections:     newBSDSelections(),
 	}
 	s.scheduler = scheduler.New(cfg.Storage, s.executeScheduledTask)
+	if cfg.Storage != nil {
+		s.housekeeping = housekeeping.New(cfg.Storage)
+		s.diskImages = diskimage.New(cfg.Storage, diskimage.Config{
+			DataDir:    cfg.DataDir,
+			ServerAddr: cfg.ServerAddr,
+			HTTPPort:   cfg.HTTPPort,
+			NFSPort:    cfg.NFSPort,
+			NFSEnabled: cfg.NFSEnabled,
+		}, tm)
+		s.diskImages.OnEvent = s.fireDiskImagingEvent
+		s.catalogue = catalogue.NewChecker(cfg.Storage, tm.DisableRemoteCheck)
+		s.housekeeping.Register(s.catalogue)
+	}
 	s.loadBootloaderConfig()
 	return s
 }
@@ -328,6 +398,8 @@ func (s *Server) bootloaderConfigPath() string {
 type bootloaderConfigFile struct {
 	ActiveSet string `json:"active_set"`
 }
+
+const bootloaderSetRequestPrefix = "bootloader-sets/"
 
 func (s *Server) loadBootloaderConfig() {
 	data, err := os.ReadFile(s.bootloaderConfigPath())
@@ -372,12 +444,25 @@ func (s *Server) SetActiveBootloaderSet(name string) {
 	log.Printf("Bootloader set %q active: PXE bootfiles BIOS=%s UEFI=%s ARM64=%s", display, bios, uefi, arm64)
 }
 
-// activeSetManifest loads manifest.json for the active bootloader set — from
-// the on-disk set directory when present, otherwise from the embedded sets.
-func (s *Server) activeSetManifest() *bootloaders.Manifest {
-	setName := s.GetActiveBootloaderSet()
+func normaliseBootloaderSetName(setName string) string {
+	setName = strings.TrimSpace(setName)
+	if setName == "" || strings.ContainsAny(setName, `/\`) || setName != path.Base(setName) || setName == "." || setName == ".." {
+		return ""
+	}
+	return setName
+}
+
+func (s *Server) activeBootloaderSetName() string {
+	if setName := normaliseBootloaderSetName(s.GetActiveBootloaderSet()); setName != "" {
+		return setName
+	}
+	return bootloaders.DefaultSet
+}
+
+func (s *Server) bootloaderSetManifest(setName string) *bootloaders.Manifest {
+	setName = normaliseBootloaderSetName(setName)
 	if setName == "" {
-		setName = bootloaders.DefaultSet
+		return nil
 	}
 	if s.config.BootDir != "" {
 		diskPath := filepath.Join(s.config.BootDir, setName, "manifest.json")
@@ -394,26 +479,129 @@ func (s *Server) activeSetManifest() *bootloaders.Manifest {
 	return m
 }
 
+func (s *Server) proxyDHCPOmitVendorOption(mac net.HardwareAddr) bool {
+	if s.config.Storage == nil || len(mac) == 0 {
+		return false
+	}
+	client, err := s.config.Storage.GetClient(strings.ToLower(mac.String()))
+	return err == nil && client != nil && client.ProxyDHCPNoVendorOption
+}
+
 // proxyDHCPBootfiles returns the bootfile names proxyDHCP should advertise.
 // Precedence: explicitly configured value (differs from the compiled default)
 // > active bootloader set manifest > compiled default. Evaluated per DHCP
 // request, so switching sets takes effect without a restart.
 func (s *Server) proxyDHCPBootfiles() (bios, uefi, arm64 string) {
-	bios = s.config.ProxyDHCPBootfileBIOS
-	uefi = s.config.ProxyDHCPBootfileUEFI
-	arm64 = s.config.ProxyDHCPBootfileARM
-	if m := s.activeSetManifest(); m != nil {
-		if (bios == "" || bios == proxydhcp.DefaultBootfileBIOS) && m.Bootfiles.BIOS != "" {
-			bios = m.Bootfiles.BIOS
+	bios, uefi, arm64 = s.bootfilesForSet(s.activeBootloaderSetName())
+	return configuredBootfile(s.config.ProxyDHCPBootfileBIOS, proxydhcp.DefaultBootfileBIOS, bios),
+		configuredBootfile(s.config.ProxyDHCPBootfileUEFI, proxydhcp.DefaultBootfileUEFI, uefi),
+		configuredBootfile(s.config.ProxyDHCPBootfileARM, proxydhcp.DefaultBootfileARM64, arm64)
+}
+
+func configuredBootfile(configured, defaultName, setName string) string {
+	if configured != "" && configured != defaultName {
+		return configured
+	}
+	return setName
+}
+
+func (s *Server) bootfilesForSet(setName string) (bios, uefi, arm64 string) {
+	bios = proxydhcp.DefaultBootfileBIOS
+	uefi = proxydhcp.DefaultBootfileUEFI
+	arm64 = proxydhcp.DefaultBootfileARM64
+	if manifest := s.bootloaderSetManifest(setName); manifest != nil {
+		if manifest.Bootfiles.BIOS != "" {
+			bios = manifest.Bootfiles.BIOS
 		}
-		if (uefi == "" || uefi == proxydhcp.DefaultBootfileUEFI) && m.Bootfiles.UEFI != "" {
-			uefi = m.Bootfiles.UEFI
+		if manifest.Bootfiles.UEFI != "" {
+			uefi = manifest.Bootfiles.UEFI
 		}
-		if (arm64 == "" || arm64 == proxydhcp.DefaultBootfileARM64) && m.Bootfiles.ARM64 != "" {
-			arm64 = m.Bootfiles.ARM64
+		if manifest.Bootfiles.ARM64 != "" {
+			arm64 = manifest.Bootfiles.ARM64
 		}
 	}
 	return bios, uefi, arm64
+}
+
+func (s *Server) effectiveBootloaderSet(clientHWAddr net.HardwareAddr) (string, bool) {
+	globalSet := s.activeBootloaderSetName()
+	if len(clientHWAddr) == 0 || s.config.Storage == nil {
+		return globalSet, false
+	}
+
+	mac := strings.ToLower(clientHWAddr.String())
+	clientSet, groupSet, err := s.config.Storage.GetClientBootloaderSets(mac)
+	if err != nil {
+		return globalSet, false
+	}
+	if setName := normaliseBootloaderSetName(clientSet); setName != "" {
+		return setName, true
+	}
+	if setName := normaliseBootloaderSetName(groupSet); setName != "" {
+		return setName, true
+	}
+	return globalSet, false
+}
+
+func cleanBootloaderPath(filename string) (string, bool) {
+	if strings.Contains(filename, `\`) {
+		return "", false
+	}
+	filename = path.Clean(filename)
+	if filename == "." || filename == ".." || path.IsAbs(filename) || strings.HasPrefix(filename, "../") {
+		return "", false
+	}
+	return filename, true
+}
+
+func qualifyBootloaderSetRequest(setName, filename string) string {
+	setName = normaliseBootloaderSetName(setName)
+	filename, valid := cleanBootloaderPath(filename)
+	if setName == "" || !valid {
+		return ""
+	}
+	return path.Join(bootloaderSetRequestPrefix, setName, filename)
+}
+
+func (s *Server) proxyDHCPBootfilesForClient(clientHWAddr net.HardwareAddr) (bios, uefi, arm64 string) {
+	setName, overridden := s.effectiveBootloaderSet(clientHWAddr)
+	if !overridden {
+		return s.proxyDHCPBootfiles()
+	}
+
+	bios, uefi, arm64 = s.bootfilesForSet(setName)
+	return configuredOrQualifiedBootfile(s.config.ProxyDHCPBootfileBIOS, proxydhcp.DefaultBootfileBIOS, setName, bios),
+		configuredOrQualifiedBootfile(s.config.ProxyDHCPBootfileUEFI, proxydhcp.DefaultBootfileUEFI, setName, uefi),
+		configuredOrQualifiedBootfile(s.config.ProxyDHCPBootfileARM, proxydhcp.DefaultBootfileARM64, setName, arm64)
+}
+
+func configuredOrQualifiedBootfile(configured, defaultName, setName, setFilename string) string {
+	if configured != "" && configured != defaultName {
+		return configured
+	}
+	return qualifyBootloaderSetRequest(setName, setFilename)
+}
+
+func (s *Server) resolveBootloaderRequest(requestPath string) (setName, filename string, err error) {
+	cleanPath, valid := cleanBootloaderPath(requestPath)
+	if !valid {
+		return "", "", fmt.Errorf("invalid bootloader path: %s", requestPath)
+	}
+	if !strings.HasPrefix(cleanPath, bootloaderSetRequestPrefix) {
+		return s.activeBootloaderSetName(), cleanPath, nil
+	}
+
+	relativePath := strings.TrimPrefix(cleanPath, bootloaderSetRequestPrefix)
+	separator := strings.IndexByte(relativePath, '/')
+	if separator <= 0 || separator == len(relativePath)-1 {
+		return "", "", fmt.Errorf("invalid qualified bootloader path: %s", requestPath)
+	}
+	setName = normaliseBootloaderSetName(relativePath[:separator])
+	filename, valid = cleanBootloaderPath(relativePath[separator+1:])
+	if setName == "" || !valid {
+		return "", "", fmt.Errorf("invalid qualified bootloader path: %s", requestPath)
+	}
+	return setName, filename, nil
 }
 
 func (s *Server) resolveRaspberryPiOverride(filename string) string {
@@ -430,12 +618,14 @@ func (s *Server) resolveRaspberryPiOverride(filename string) string {
 	return ""
 }
 
-func (s *Server) resolveBootloaderFile(filename string) string {
-	setName := s.GetActiveBootloaderSet()
-	if setName == "" || s.config.BootDir == "" {
+func (s *Server) resolveBootloaderFile(setName, filename string) string {
+	setName = normaliseBootloaderSetName(setName)
+	filename, valid := cleanBootloaderPath(filename)
+	if setName == "" || !valid || s.config.BootDir == "" {
 		return ""
 	}
-	fullPath := filepath.Join(s.config.BootDir, setName, filename)
+	setDir := filepath.Join(s.config.BootDir, setName)
+	fullPath := filepath.Join(setDir, filepath.FromSlash(filename))
 	if _, err := os.Stat(fullPath); err == nil {
 		return fullPath
 	}
@@ -511,26 +701,16 @@ func (s *Server) Start() error {
 		log.Printf("Auto-install files directory: %s", mgr.Root())
 	}
 
-	isos, err := s.scanISOs()
+	isoFiles, err := imagescan.Scan(s.config.ISODir)
 	if err != nil {
 		log.Printf("Warning: Failed to scan ISOs: %v", err)
 	} else {
-		log.Printf("Found %d ISO image(s)", len(isos))
-		for _, iso := range isos {
-			log.Printf("  - %s (%s)", iso.Name, iso.SizeStr)
+		log.Printf("Found %d image(s)", len(isoFiles))
+		for _, f := range isoFiles {
+			log.Printf("  - %s (%s)", f.Name, formatBytes(f.Size))
 		}
 
 		if s.config.Storage != nil {
-			isoFiles := make([]models.SyncFile, len(isos))
-			for i, iso := range isos {
-				isoFiles[i] = models.SyncFile{
-					Name:      iso.Name,
-					Filename:  iso.Filename,
-					Size:      iso.Size,
-					GroupPath: iso.GroupPath,
-				}
-			}
-
 			if err := s.config.Storage.SyncImages(isoFiles); err != nil {
 				log.Printf("Warning: Failed to sync images with database: %v", err)
 			}
@@ -542,9 +722,8 @@ func (s *Server) Start() error {
 		s.preloadSMBShares(mgr)
 		if err := mgr.Start(); err != nil {
 			log.Printf("Windows SMB: requested but could not start: %v - feature disabled for this run", err)
-		} else {
-			s.smbManager = mgr
 		}
+		s.smbManager = mgr
 	}
 
 	s.wg.Add(1)
@@ -597,6 +776,9 @@ func (s *Server) Start() error {
 		go func() {
 			defer s.wg.Done()
 			nfsServer := nfs.NewServer(s.config.ISODir, s.config.NFSPort, s.config.BindInterface)
+			if s.diskImages != nil {
+				nfsServer.DiskImageDir = s.diskImages.Root()
+			}
 			if err := nfsServer.Start(); err != nil {
 				log.Printf("NFS server error: %v", err)
 			}
@@ -607,16 +789,25 @@ func (s *Server) Start() error {
 		s.scheduler.Start()
 	}
 
+	if s.housekeeping != nil {
+		s.housekeeping.Start()
+	}
+
+	s.startInstallSweeper()
+
 	if s.config.ProxyDHCPEnabled {
 		pd, err := proxydhcp.NewServer(proxydhcp.Config{
-			ServerIP:        net.ParseIP(s.config.ServerAddr),
-			ServerHTTPPort:  s.config.HTTPPort,
-			Interface:       s.config.BindInterface,
-			BootfileBIOS:    s.config.ProxyDHCPBootfileBIOS,
-			BootfileUEFI:    s.config.ProxyDHCPBootfileUEFI,
-			BootfileARM64:   s.config.ProxyDHCPBootfileARM,
-			NoBootfileption: s.config.ProxyDHCPNoBootfileOption,
-			Bootfiles:       s.proxyDHCPBootfiles,
+			ServerIP:         net.ParseIP(s.config.ServerAddr),
+			ServerHTTPPort:   s.config.HTTPPort,
+			Interface:        s.config.BindInterface,
+			BootfileBIOS:     s.config.ProxyDHCPBootfileBIOS,
+			BootfileUEFI:     s.config.ProxyDHCPBootfileUEFI,
+			BootfileARM64:    s.config.ProxyDHCPBootfileARM,
+			NoBootfileption:  s.config.ProxyDHCPNoBootfileOption,
+			NoVendorOption:   s.config.ProxyDHCPNoVendorOption,
+			OmitVendorOption: s.proxyDHCPOmitVendorOption,
+			Bootfiles:        s.proxyDHCPBootfilesForClient,
+			Observer:         s.proxyDHCPRecorder.Record,
 		})
 		if err != nil {
 			log.Printf("proxyDHCP: failed to construct server: %v", err)
@@ -684,6 +875,14 @@ func (s *Server) Shutdown() error {
 		}
 	}
 
+	if s.adminRedirectServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		if err := s.adminRedirectServer.Shutdown(ctx); err != nil {
+			log.Printf("Admin redirect server shutdown error: %v", err)
+		}
+	}
+
 	if s.tftpServer != nil {
 		s.tftpServer.Shutdown()
 		log.Println("TFTP server stopped")
@@ -702,6 +901,18 @@ func (s *Server) Shutdown() error {
 		log.Println("Scheduler stopped")
 	}
 
+	if s.housekeeping != nil {
+		s.housekeeping.Stop()
+		log.Println("Housekeeping stopped")
+	}
+
+	if s.replica != nil {
+		s.replica.Stop()
+		log.Println("Replica sync stopped")
+	}
+
+	s.stopInstallSweeper()
+
 	if s.smbManager != nil {
 		s.smbManager.Stop()
 		log.Println("SMB server stopped")
@@ -713,45 +924,20 @@ func (s *Server) Shutdown() error {
 }
 
 func (s *Server) scanISOs() ([]ISOImage, error) {
-	var isos []ISOImage
-
-	err := filepath.WalkDir(s.config.ISODir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(strings.ToLower(d.Name()), ".iso") {
-			return nil
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			log.Printf("Warning: Failed to get info for %s: %v", path, err)
-			return nil
-		}
-
-		relPath, _ := filepath.Rel(s.config.ISODir, path)
-		groupPath := filepath.Dir(relPath)
-		if groupPath == "." {
-			groupPath = ""
-		}
-
-		displayName := strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))
-
-		isos = append(isos, ISOImage{
-			Name:      displayName,
-			Filename:  relPath,
-			Size:      info.Size(),
-			SizeStr:   formatBytes(info.Size()),
-			GroupPath: groupPath,
-		})
-
-		return nil
-	})
+	files, err := imagescan.Scan(s.config.ISODir)
 	if err != nil {
 		return nil, err
+	}
+
+	isos := make([]ISOImage, 0, len(files))
+	for _, f := range files {
+		isos = append(isos, ISOImage{
+			Name:      f.Name,
+			Filename:  f.Filename,
+			Size:      f.Size,
+			SizeStr:   formatBytes(f.Size),
+			GroupPath: f.GroupPath,
+		})
 	}
 
 	sort.Slice(isos, func(i, j int) bool {
@@ -811,35 +997,44 @@ func sanitiseTFTPFilename(name string) string {
 	return name
 }
 
-func (s *Server) startTFTPServer() error {
-	log.Printf("Starting TFTP server on port %d...", s.config.TFTPPort)
+func (s *Server) serveTFTPFile(filename string, rf io.ReaderFrom) error {
+	if clean := sanitiseTFTPFilename(filename); clean != filename {
+		log.Printf("TFTP: Truncated malformed filename %q to %q", filename, clean)
+		filename = clean
+	}
+	cleanPath := filepath.Clean(filename)
+	if filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Base(cleanPath)
+	}
+	cleanPath = filepath.ToSlash(cleanPath)
 
-	server := tftp.NewServer(
-		func(filename string, rf io.ReaderFrom) error {
-			if clean := sanitiseTFTPFilename(filename); clean != filename {
-				log.Printf("TFTP: Truncated malformed filename %q to %q", filename, clean)
-				filename = clean
-			}
-			cleanPath := filepath.Clean(filename)
-			if filepath.IsAbs(cleanPath) {
-				cleanPath = filepath.Base(cleanPath)
-			}
+	remote := tftpRemote(rf)
+	start := time.Now()
+	defer func() {
+		log.Printf("TFTP DEBUG: handler exit %s file=%s elapsed=%s", remote, filename, time.Since(start))
+	}()
+	log.Printf("TFTP DEBUG: handler entry %s file=%s", remote, filename)
+	log.Printf("TFTP: Client requesting file: %s", filename)
+	metrics.TFTPRequests.WithLabelValues(cleanPath).Inc()
 
-			remote := tftpRemote(rf)
-			start := time.Now()
-			defer func() {
-				log.Printf("TFTP DEBUG: handler exit %s file=%s elapsed=%s", remote, filename, time.Since(start))
-			}()
-			log.Printf("TFTP DEBUG: handler entry %s file=%s", remote, filename)
-			log.Printf("TFTP: Client requesting file: %s", filename)
-			metrics.TFTPRequests.WithLabelValues(cleanPath).Inc()
+	if handled, err := s.serveBSDTFTP(cleanPath, remote, rf); handled {
+		if err != nil {
+			log.Printf("TFTP: %v", err)
+		}
+		return err
+	}
 
-			if cleanPath == "autoexec.ipxe" {
-				serverAddr := "${next-server}"
-				if s.config.ServerAddr != "" {
-					serverAddr = s.config.ServerAddr
-				}
-				script := fmt.Sprintf(`#!ipxe
+	setName, bootloaderFilename, err := s.resolveBootloaderRequest(cleanPath)
+	if err != nil {
+		return err
+	}
+
+	if bootloaderFilename == "autoexec.ipxe" {
+		serverAddr := "${next-server}"
+		if s.config.ServerAddr != "" {
+			serverAddr = s.config.ServerAddr
+		}
+		script := fmt.Sprintf(`#!ipxe
 
 # Auto-detect server IP and chain to dynamic menu
 :dhcp
@@ -854,109 +1049,112 @@ echo Press any key to retry...
 prompt
 goto dhcp
 `, serverAddr, s.config.HTTPPort, serverAddr, s.config.HTTPPort)
-				data := []byte(script)
-				log.Printf("TFTP: Serving dynamic autoexec.ipxe (HTTP port: %d)", s.config.HTTPPort)
+		data := []byte(script)
+		log.Printf("TFTP: Serving dynamic autoexec.ipxe (HTTP port: %d)", s.config.HTTPPort)
 
-				if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
-					rfs.SetSize(int64(len(data)))
-				}
+		if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
+			rfs.SetSize(int64(len(data)))
+		}
 
-				n, err := rf.ReadFrom(bytes.NewReader(data))
-				if err != nil {
-					log.Printf("TFTP: Transfer error for %s: %v", filename, err)
-					return err
-				}
+		n, err := rf.ReadFrom(bytes.NewReader(data))
+		if err != nil {
+			log.Printf("TFTP: Transfer error for %s: %v", filename, err)
+			return err
+		}
 
-				log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
-				return nil
+		log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
+		return nil
+	}
+
+	if customPath := s.resolveBootloaderFile(setName, bootloaderFilename); customPath != "" {
+		file, err := os.Open(customPath)
+		if err == nil {
+			defer file.Close()
+			log.Printf("TFTP: Serving from set '%s': %s", setName, bootloaderFilename)
+
+			fileInfo, err := file.Stat()
+			if err != nil {
+				return err
 			}
 
-			if customPath := s.resolveBootloaderFile(cleanPath); customPath != "" {
-				file, err := os.Open(customPath)
-				if err == nil {
-					defer file.Close()
-					log.Printf("TFTP: Serving from set '%s': %s", s.GetActiveBootloaderSet(), cleanPath)
-
-					fileInfo, err := file.Stat()
-					if err != nil {
-						return err
-					}
-
-					if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
-						rfs.SetSize(fileInfo.Size())
-					}
-
-					n, err := rf.ReadFrom(file)
-					if err != nil {
-						log.Printf("TFTP: Transfer error for %s: %v", filename, err)
-						return err
-					}
-
-					log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
-					return nil
-				}
+			if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
+				rfs.SetSize(fileInfo.Size())
 			}
 
-			data, resolvedSet, err := bootloaders.Resolve(s.GetActiveBootloaderSet(), cleanPath)
-			if err == nil {
-				log.Printf("TFTP: Serving embedded bootloader from set '%s': %s", resolvedSet, cleanPath)
-
-				if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
-					rfs.SetSize(int64(len(data)))
-				}
-
-				n, err := rf.ReadFrom(bytes.NewReader(data))
-				if err != nil {
-					log.Printf("TFTP: Transfer error for %s: %v", filename, err)
-					return err
-				}
-
-				log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
-				return nil
+			n, err := rf.ReadFrom(file)
+			if err != nil {
+				log.Printf("TFTP: Transfer error for %s: %v", filename, err)
+				return err
 			}
 
-			if diskPath := s.resolveRaspberryPiOverride(cleanPath); diskPath != "" {
-				file, err := os.Open(diskPath)
-				if err == nil {
-					defer file.Close()
-					log.Printf("TFTP: Serving Raspberry Pi override from disk: %s", cleanPath)
+			log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
+			return nil
+		}
+	}
 
-					fileInfo, err := file.Stat()
-					if err != nil {
-						return err
-					}
-					if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
-						rfs.SetSize(fileInfo.Size())
-					}
-					n, err := rf.ReadFrom(file)
-					if err != nil {
-						log.Printf("TFTP: Transfer error for %s: %v", filename, err)
-						return err
-					}
-					log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
-					return nil
-				}
+	data, resolvedSet, err := bootloaders.Resolve(setName, bootloaderFilename)
+	if err == nil {
+		log.Printf("TFTP: Serving embedded bootloader from set '%s': %s", resolvedSet, bootloaderFilename)
+
+		if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
+			rfs.SetSize(int64(len(data)))
+		}
+
+		n, err := rf.ReadFrom(bytes.NewReader(data))
+		if err != nil {
+			log.Printf("TFTP: Transfer error for %s: %v", filename, err)
+			return err
+		}
+
+		log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
+		return nil
+	}
+
+	if diskPath := s.resolveRaspberryPiOverride(cleanPath); diskPath != "" {
+		file, err := os.Open(diskPath)
+		if err == nil {
+			defer file.Close()
+			log.Printf("TFTP: Serving Raspberry Pi override from disk: %s", cleanPath)
+
+			fileInfo, err := file.Stat()
+			if err != nil {
+				return err
 			}
-
-			if data, ok := raspberrypi.Resolve(cleanPath); ok {
-				log.Printf("TFTP: Serving embedded Raspberry Pi boot asset: %s", cleanPath)
-
-				if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
-					rfs.SetSize(int64(len(data)))
-				}
-				n, err := rf.ReadFrom(bytes.NewReader(data))
-				if err != nil {
-					log.Printf("TFTP: Transfer error for %s: %v", filename, err)
-					return err
-				}
-				log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
-				return nil
+			if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
+				rfs.SetSize(fileInfo.Size())
 			}
+			n, err := rf.ReadFrom(file)
+			if err != nil {
+				log.Printf("TFTP: Transfer error for %s: %v", filename, err)
+				return err
+			}
+			log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
+			return nil
+		}
+	}
 
-			return fmt.Errorf("file not found: %s", filename)
-		},
-		nil,
-	)
+	if data, ok := raspberrypi.Resolve(cleanPath); ok {
+		log.Printf("TFTP: Serving embedded Raspberry Pi boot asset: %s", cleanPath)
+
+		if rfs, ok := rf.(interface{ SetSize(int64) error }); ok {
+			rfs.SetSize(int64(len(data)))
+		}
+		n, err := rf.ReadFrom(bytes.NewReader(data))
+		if err != nil {
+			log.Printf("TFTP: Transfer error for %s: %v", filename, err)
+			return err
+		}
+		log.Printf("TFTP: Successfully sent %s (%d bytes)", filename, n)
+		return nil
+	}
+
+	return fmt.Errorf("file not found: %s", filename)
+}
+
+func (s *Server) startTFTPServer() error {
+	log.Printf("Starting TFTP server on port %d...", s.config.TFTPPort)
+
+	server := tftp.NewServer(s.serveTFTPFile, nil)
 
 	server.SetTimeout(5 * time.Second)
 	blockSize := s.config.TFTPBlockSize
@@ -997,9 +1195,15 @@ func (s *Server) startHTTPServer() error {
 			return
 		}
 
-		if customPath := s.resolveBootloaderFile(cleanPath); customPath != "" {
-			log.Printf("HTTP: Serving from set '%s': %s", s.GetActiveBootloaderSet(), cleanPath)
-			ext := filepath.Ext(cleanPath)
+		setName, bootloaderFilename, err := s.resolveBootloaderRequest(cleanPath)
+		if err != nil {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+
+		if customPath := s.resolveBootloaderFile(setName, bootloaderFilename); customPath != "" {
+			log.Printf("HTTP: Serving from set '%s': %s", setName, bootloaderFilename)
+			ext := filepath.Ext(bootloaderFilename)
 			if ext == ".efi" || ext == ".img" || ext == ".iso" || ext == ".kpxe" || ext == ".usb" {
 				w.Header().Set("Content-Type", "application/octet-stream")
 			}
@@ -1007,9 +1211,9 @@ func (s *Server) startHTTPServer() error {
 			return
 		}
 
-		data, resolvedSet, err := bootloaders.Resolve(s.GetActiveBootloaderSet(), cleanPath)
+		data, resolvedSet, err := bootloaders.Resolve(setName, bootloaderFilename)
 		if err == nil {
-			log.Printf("HTTP: Serving embedded bootloader from set '%s': %s", resolvedSet, cleanPath)
+			log.Printf("HTTP: Serving embedded bootloader from set '%s': %s", resolvedSet, bootloaderFilename)
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Write(data)
 			return
@@ -1144,12 +1348,17 @@ func (s *Server) startHTTPServer() error {
 	mux.HandleFunc("/api/isos", s.handleListISOs)
 
 	mux.HandleFunc("/autoinstall/", s.handleAutoInstallScript)
+	mux.HandleFunc("/install/callback", s.handleInstallCallback)
 
 	mux.HandleFunc("/machineconfig", s.handleMachineConfig)
 
 	mux.Handle("/node-images/", http.StripPrefix("/node-images/", http.FileServer(http.Dir(s.provisionAssetDir()))))
 
 	mux.HandleFunc("/files/", s.handleCustomFile)
+	mux.HandleFunc("/diskimage/job", s.handleDiskImageJob)
+	mux.HandleFunc("/diskimage/callback", s.handleDiskImageCallback)
+
+	mux.HandleFunc("/bsd/", s.handleBSDBoot)
 
 	mux.HandleFunc("/bootenv/", func(w http.ResponseWriter, r *http.Request) {
 		urlPath := strings.TrimPrefix(r.URL.Path, "/bootenv/")
@@ -1184,8 +1393,102 @@ func (s *Server) startHTTPServer() error {
 	return nil
 }
 
+func (s *Server) prepareAdminTLS() error {
+	cfg := s.config.AdminTLS
+	if !cfg.Enabled {
+		return nil
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	var load func() (tls.Certificate, error)
+	if cfg.usesSelfSigned() {
+		dir := filepath.Join(s.config.DataDir, "tls")
+		hosts := []string{s.config.ServerAddr}
+		load = func() (tls.Certificate, error) {
+			cert, created, err := tlscert.LoadOrCreateSelfSigned(dir, hosts)
+			if created {
+				log.Printf("Admin TLS: generated a self-signed certificate in %s", dir)
+			}
+			return cert, err
+		}
+		s.adminTLSMode = "self-signed"
+	} else {
+		certFile, keyFile := cfg.CertFile, cfg.KeyFile
+		load = func() (tls.Certificate, error) { return tlscert.Load(certFile, keyFile) }
+		s.adminTLSMode = "certificate"
+	}
+	reloader, err := tlscert.NewReloader(load)
+	if err != nil {
+		return err
+	}
+	s.adminTLS = reloader
+	log.Printf("Admin TLS: enabled (%s), SHA-256 fingerprint %s", s.adminTLSMode, tlscert.Fingerprint(reloader.Certificate()))
+	return nil
+}
+
+func (s *Server) ReloadTLS() error {
+	if s.adminTLS == nil {
+		return nil
+	}
+	if err := s.adminTLS.Reload(); err != nil {
+		return err
+	}
+	log.Printf("Admin TLS: certificate reloaded, SHA-256 fingerprint %s", tlscert.Fingerprint(s.adminTLS.Certificate()))
+	return nil
+}
+
+func (s *Server) AdminTLSStatus() string {
+	if s.adminTLS == nil {
+		return "Disabled (plain HTTP)"
+	}
+	return fmt.Sprintf("Enabled (%s, SHA-256 %s)", s.adminTLSMode, tlscert.Fingerprint(s.adminTLS.Certificate()))
+}
+
+func (s *Server) AdminTLSEnabled() bool {
+	return s.adminTLS != nil
+}
+
+func httpsRedirectHandler(httpsPort int) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		target := url.URL{Scheme: "https", Host: net.JoinHostPort(host, strconv.Itoa(httpsPort)), Path: r.URL.Path, RawQuery: r.URL.RawQuery}
+		http.Redirect(w, r, target.String(), http.StatusMovedPermanently)
+	})
+}
+
+func (s *Server) startAdminRedirectServer() {
+	port := s.config.AdminTLS.RedirectPort
+	if s.adminTLS == nil || port == 0 {
+		return
+	}
+	addr := fmt.Sprintf(":%d", port)
+	s.adminRedirectServer = &http.Server{Addr: addr, Handler: httpsRedirectHandler(s.config.AdminPort)}
+	ln, err := netbind.Listen(s.config.BindInterface, "tcp", addr)
+	if err != nil {
+		log.Printf("Admin TLS: redirect listener on port %d failed: %v", port, err)
+		return
+	}
+	log.Printf("Admin TLS: redirecting plain HTTP on port %d to HTTPS", port)
+	go func() {
+		if err := s.adminRedirectServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("Admin TLS: redirect server error: %v", err)
+		}
+	}()
+}
+
 func (s *Server) startAdminServer() error {
-	log.Printf("Starting Admin server on port %d...", s.config.AdminPort)
+	if err := s.prepareAdminTLS(); err != nil {
+		return fmt.Errorf("Admin TLS: %w", err)
+	}
+	if s.adminTLS != nil {
+		log.Printf("Starting Admin server on port %d (HTTPS)...", s.config.AdminPort)
+	} else {
+		log.Printf("Starting Admin server on port %d...", s.config.AdminPort)
+	}
 
 	mux := http.NewServeMux()
 
@@ -1209,6 +1512,14 @@ func (s *Server) startAdminServer() error {
 	if err != nil {
 		return fmt.Errorf("Admin server failed: %w", err)
 	}
+	if s.adminTLS != nil {
+		s.adminServer.TLSConfig = s.adminTLS.Config()
+		s.startAdminRedirectServer()
+		if err := s.adminServer.ServeTLS(ln, "", ""); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("Admin server failed: %w", err)
+		}
+		return nil
+	}
 	if err := s.adminServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("Admin server failed: %w", err)
 	}
@@ -1220,16 +1531,23 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	log.Println("Setting up admin interface")
 
 	adminHandler := admin.NewHandler(s.config.Storage, s.config.DataDir, s.config.ISODir, s.config.BootDir, Version, s, s.toolsManager, s.config.WOLBroadcastAddr, s.config.ProfileManager, s.config.ProxyDHCPEnabled, s.config.HTTPPort, s.config.ServerAddr, s.config.WindowsSMBPort, s.smbManager, s.config.WindowsSMBEnabled, s.autoInstallLib)
+<<<<<<< HEAD
 	// [bootimus-fork L1] fork-patch: download-resume
 	// Drop leftover .part files nothing is writing to any more, and keep doing it:
 	// a host that stays up for months would otherwise never clean up again.
 	adminHandler.CleanupStaleDownloads()
 	adminHandler.StartDownloadJanitor(6 * time.Hour)
+=======
+	adminHandler.AdminTLSStatus = s.AdminTLSStatus
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 	if s.scheduler != nil {
 		adminHandler.SchedulerReload = s.scheduler.Reload
 		adminHandler.SchedulerRunNow = s.scheduler.RunNow
 	}
 	adminHandler.WebhookNotifier = s.webhookNotifier
+	adminHandler.Housekeeping = s.housekeeping
+	adminHandler.DiskImaging = s.diskImages
+	adminHandler.Catalogue = s.catalogue
 
 	staticFS, err := fs.Sub(web.Static, "static")
 	if err != nil {
@@ -1238,10 +1556,22 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	}
 
 	useAuth := s.config.Auth != nil
+	if s.audit == nil {
+		s.audit = &auditRecorder{store: s.config.Storage, notifier: s.webhookNotifier}
+	}
 
 	adminWrap := func(handler http.HandlerFunc) http.HandlerFunc {
+		handler = s.audit.wrap(s.replicaGuard(handler))
 		if useAuth {
 			return s.config.Auth.AdminMiddleware(handler)
+		}
+		return handler
+	}
+
+	readWrap := func(handler http.HandlerFunc) http.HandlerFunc {
+		handler = s.audit.wrap(s.replicaGuard(handler))
+		if useAuth {
+			return s.config.Auth.ReadMiddleware(handler)
 		}
 		return handler
 	}
@@ -1251,6 +1581,8 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 	})
+
+	mux.HandleFunc("/api/openapi.json", adminHandler.OpenAPI(Version))
 
 	mux.HandleFunc("/api/auth-info", func(w http.ResponseWriter, r *http.Request) {
 		if s.config.Auth != nil {
@@ -1270,14 +1602,39 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 		}
 	})
 
-	mux.HandleFunc("/api/server-info", adminWrap(adminHandler.GetServerInfo))
-	mux.HandleFunc("/api/stats", adminWrap(adminHandler.GetStats))
-	mux.HandleFunc("/api/logs", adminWrap(adminHandler.GetBootLogs))
+	mux.HandleFunc("/api/me", func(w http.ResponseWriter, r *http.Request) {
+		if s.config.Auth != nil {
+			s.config.Auth.HandleMe(w, r)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"success":true,"data":{"username":"admin","is_admin":true,"role":"admin"}}`))
+		}
+	})
+
+	mux.HandleFunc("/api/oidc/login", func(w http.ResponseWriter, r *http.Request) {
+		if s.config.Auth != nil {
+			s.config.Auth.HandleOIDCLogin(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/api/oidc/callback", func(w http.ResponseWriter, r *http.Request) {
+		if s.config.Auth != nil {
+			s.config.Auth.HandleOIDCCallback(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/api/server-info", readWrap(adminHandler.GetServerInfo))
+	mux.HandleFunc("/api/stats", readWrap(adminHandler.GetStats))
+	mux.HandleFunc("/api/logs", readWrap(adminHandler.GetBootLogs))
 	mux.HandleFunc("/api/scan", adminWrap(adminHandler.ScanImages))
 	mux.HandleFunc("/api/images/upload", adminWrap(adminHandler.UploadImage))
 	mux.HandleFunc("/api/assign-images", adminWrap(adminHandler.AssignImages))
 
-	mux.HandleFunc("/api/clients", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/clients", readWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			id := r.URL.Query().Get("id")
@@ -1298,7 +1655,7 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 		}
 	}))
 
-	mux.HandleFunc("/api/images", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/images", readWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			filename := r.URL.Query().Get("filename")
@@ -1316,16 +1673,16 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 		}
 	}))
 
-	mux.HandleFunc("/api/clusters", adminWrap(adminHandler.Clusters))
+	mux.HandleFunc("/api/clusters", readWrap(adminHandler.Clusters))
 	mux.HandleFunc("/api/clusters/update", adminWrap(adminHandler.UpdateCluster))
 	mux.HandleFunc("/api/clusters/delete", adminWrap(adminHandler.DeleteCluster))
 	mux.HandleFunc("/api/clusters/config", adminWrap(adminHandler.ClusterConfig))
 	mux.HandleFunc("/api/clusters/config/template", adminWrap(adminHandler.ConfigTemplate))
-	mux.HandleFunc("/api/clusters/nodes", adminWrap(adminHandler.ClusterNodes))
-	mux.HandleFunc("/api/node-images", adminWrap(adminHandler.NodeImages))
+	mux.HandleFunc("/api/clusters/nodes", readWrap(adminHandler.ClusterNodes))
+	mux.HandleFunc("/api/node-images", readWrap(adminHandler.NodeImages))
 	mux.HandleFunc("/api/node-images/delete", adminWrap(adminHandler.DeleteNodeImage))
 	mux.HandleFunc("/api/node-images/download", adminWrap(adminHandler.DownloadNodeImage))
-	mux.HandleFunc("/api/kubernetes/providers", adminWrap(adminHandler.KubernetesProviders))
+	mux.HandleFunc("/api/kubernetes/providers", readWrap(adminHandler.KubernetesProviders))
 	mux.HandleFunc("/api/clusters/nodes/assign", adminWrap(adminHandler.AssignNode))
 	mux.HandleFunc("/api/clusters/nodes/unassign", adminWrap(adminHandler.UnassignNode))
 	mux.HandleFunc("/api/clusters/nodes/reinstall", adminWrap(adminHandler.ReinstallNode))
@@ -1334,29 +1691,31 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/api/clients/wake", adminWrap(adminHandler.WakeClient))
 	mux.HandleFunc("/api/clients/next-boot", adminWrap(adminHandler.SetNextBootImage))
 	mux.HandleFunc("/api/clients/promote", adminWrap(adminHandler.PromoteClient))
-	mux.HandleFunc("/api/clients/inventory", adminWrap(adminHandler.GetClientInventory))
-	mux.HandleFunc("/api/clients/inventory/history", adminWrap(adminHandler.GetClientInventoryHistory))
+	mux.HandleFunc("/api/clients/inventory", readWrap(adminHandler.GetClientInventory))
+	mux.HandleFunc("/api/clients/inventory/history", readWrap(adminHandler.GetClientInventoryHistory))
+	mux.HandleFunc("/api/clients/installs", readWrap(s.handleClientInstalls))
+	mux.HandleFunc("/api/installs", readWrap(s.handleRecentInstalls))
 
-	mux.HandleFunc("/api/bootloaders", adminWrap(adminHandler.ListBootloaders))
+	mux.HandleFunc("/api/bootloaders", readWrap(adminHandler.ListBootloaders))
 	mux.HandleFunc("/api/bootloaders/create", adminWrap(adminHandler.CreateBootloaderSet))
 	mux.HandleFunc("/api/bootloaders/upload", adminWrap(adminHandler.UploadBootloader))
 	mux.HandleFunc("/api/bootloaders/delete", adminWrap(adminHandler.DeleteBootloader))
 	mux.HandleFunc("/api/bootloaders/select", adminWrap(adminHandler.SelectBootloader))
 
-	mux.HandleFunc("/api/tools", adminWrap(adminHandler.ListTools))
+	mux.HandleFunc("/api/tools", readWrap(adminHandler.ListTools))
 	mux.HandleFunc("/api/tools/toggle", adminWrap(adminHandler.ToggleTool))
 	mux.HandleFunc("/api/tools/download", adminWrap(adminHandler.DownloadTool))
 	mux.HandleFunc("/api/tools/delete", adminWrap(adminHandler.DeleteTool))
-	mux.HandleFunc("/api/tools/progress", adminWrap(adminHandler.ToolProgress))
+	mux.HandleFunc("/api/tools/progress", readWrap(adminHandler.ToolProgress))
 	mux.HandleFunc("/api/tools/url", adminWrap(adminHandler.UpdateToolURL))
 	mux.HandleFunc("/api/tools/custom", adminWrap(adminHandler.CreateCustomTool))
 	mux.HandleFunc("/api/tools/custom/delete", adminWrap(adminHandler.DeleteCustomTool))
 	mux.HandleFunc("/api/tools/update", adminWrap(adminHandler.UpdateTools))
 
 	mux.HandleFunc("/api/images/extract", adminWrap(adminHandler.ExtractImage))
-	mux.HandleFunc("/api/images/extract-progress", adminWrap(adminHandler.ExtractProgress))
+	mux.HandleFunc("/api/images/extract-progress", readWrap(adminHandler.ExtractProgress))
 	mux.HandleFunc("/api/images/redetect", adminWrap(adminHandler.RedetectImage))
-	mux.HandleFunc("/api/images/boot-candidates", adminWrap(adminHandler.BootFileCandidates))
+	mux.HandleFunc("/api/images/boot-candidates", readWrap(adminHandler.BootFileCandidates))
 	mux.HandleFunc("/api/images/patch-smb", adminWrap(adminHandler.PatchImageSMB))
 	mux.HandleFunc("/api/images/unpatch-smb", adminWrap(adminHandler.UnpatchImageSMB))
 	mux.HandleFunc("/api/autoinstall-files", adminWrap(adminHandler.ListAutoInstallFiles))
@@ -1365,23 +1724,50 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/api/autoinstall-files/upload", adminWrap(adminHandler.UploadAutoInstallFile))
 	mux.HandleFunc("/api/autoinstall-files/download", adminWrap(adminHandler.DownloadAutoInstallFile))
 	mux.HandleFunc("/api/autoinstall-files/delete", adminWrap(adminHandler.DeleteAutoInstallFile))
+<<<<<<< HEAD
 	// [bootimus-fork L1] fork-patch: autoinstall-generator
 	mux.HandleFunc("/api/autoinstall-templates", adminWrap(adminHandler.ListAutoInstallTemplates))
 	mux.HandleFunc("/api/autoinstall/render", adminWrap(adminHandler.RenderAutoInstallTemplate))
+=======
+	mux.HandleFunc("/api/autoinstall-files/render", adminWrap(adminHandler.RenderAutoInstallFile))
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 
-	mux.HandleFunc("/api/profiles", adminWrap(adminHandler.ListDistroProfiles))
+	mux.HandleFunc("/api/profiles", readWrap(adminHandler.ListDistroProfiles))
 	mux.HandleFunc("/api/profiles/save", adminWrap(adminHandler.SaveDistroProfile))
 	mux.HandleFunc("/api/profiles/delete", adminWrap(adminHandler.DeleteDistroProfile))
 	mux.HandleFunc("/api/profiles/update", adminWrap(adminHandler.UpdateDistroProfiles))
+<<<<<<< HEAD
 	mux.HandleFunc("/api/iso-catalog", adminWrap(adminHandler.GetISOCatalogue))
 	// [bootimus-fork L1] fork-patch: iso-catalog-resolve
 	mux.HandleFunc("/api/iso-catalog/resolve", adminWrap(adminHandler.ResolveISOCatalogURL))
+=======
+	mux.HandleFunc("/api/iso-catalog", readWrap(adminHandler.GetISOCatalogue))
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 	mux.HandleFunc("/api/images/boot-method", adminWrap(adminHandler.SetBootMethod))
+	mux.HandleFunc("/api/images/winpe", adminWrap(adminHandler.SetWinPEWIM))
 
-	mux.HandleFunc("/api/active-sessions", adminWrap(s.handleActiveSessions))
+	mux.HandleFunc("/api/active-sessions", readWrap(s.handleActiveSessions))
 
 	mux.HandleFunc("/api/logs/stream", adminWrap(s.handleLogsStream))
 	mux.HandleFunc("/api/logs/buffer", adminWrap(s.handleLogsBuffer))
+	mux.HandleFunc("/api/proxydhcp/events", readWrap(s.handleProxyDHCPEvents))
+	mux.HandleFunc("/api/proxydhcp/stream", readWrap(s.handleProxyDHCPStream))
+	mux.HandleFunc("/api/proxydhcp/events/clear", adminWrap(s.handleProxyDHCPEventsClear))
+
+	selfService := func(handler func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if s.config.Auth == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{"success":false,"error":"Authentication is disabled on this server"}`))
+				return
+			}
+			handler(w, r)
+		}
+	}
+	mux.HandleFunc("/api/me/totp/setup", selfService(func(w http.ResponseWriter, r *http.Request) { s.config.Auth.HandleTOTPSetup(w, r) }))
+	mux.HandleFunc("/api/me/totp/enable", selfService(func(w http.ResponseWriter, r *http.Request) { s.config.Auth.HandleTOTPEnable(w, r) }))
+	mux.HandleFunc("/api/me/totp/disable", selfService(func(w http.ResponseWriter, r *http.Request) { s.config.Auth.HandleTOTPDisable(w, r) }))
 
 	mux.HandleFunc("/api/users", adminWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -1398,10 +1784,13 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 		}
 	}))
 	mux.HandleFunc("/api/users/reset-password", adminWrap(adminHandler.ResetUserPassword))
+	mux.HandleFunc("/api/tokens", adminWrap(adminHandler.APITokens))
+	mux.HandleFunc("/api/users/totp/reset", adminWrap(adminHandler.ResetUserTOTP))
 
 	mux.HandleFunc("/api/images/download", adminWrap(adminHandler.DownloadISO))
-	mux.HandleFunc("/api/downloads", adminWrap(adminHandler.ListDownloads))
-	mux.HandleFunc("/api/downloads/progress", adminWrap(adminHandler.GetDownloadProgress))
+	mux.HandleFunc("/api/images/verify", adminWrap(adminHandler.VerifyImage))
+	mux.HandleFunc("/api/downloads", readWrap(adminHandler.ListDownloads))
+	mux.HandleFunc("/api/downloads/progress", readWrap(adminHandler.GetDownloadProgress))
 
 	mux.HandleFunc("/api/images/netboot/download", adminWrap(adminHandler.DownloadNetboot))
 
@@ -1416,7 +1805,7 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 		}
 	}))
 
-	mux.HandleFunc("/api/files", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/files", readWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			if r.URL.Query().Get("id") != "" {
@@ -1432,7 +1821,7 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/update", adminWrap(adminHandler.UpdateCustomFile))
 	mux.HandleFunc("/api/files/delete", adminWrap(adminHandler.DeleteCustomFile))
 
-	mux.HandleFunc("/api/drivers", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/drivers", readWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			adminHandler.ListDriverPacks(w, r)
@@ -1444,7 +1833,7 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/api/drivers/delete", adminWrap(adminHandler.DeleteDriverPack))
 	mux.HandleFunc("/api/drivers/rebuild", adminWrap(adminHandler.RebuildImageBootWim))
 
-	mux.HandleFunc("/api/groups", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/groups", readWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			adminHandler.ListImageGroups(w, r)
@@ -1459,6 +1848,8 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 
 	mux.HandleFunc("/api/clients/import", adminWrap(adminHandler.ImportClientsCSV))
 	mux.HandleFunc("/api/backup/export", adminWrap(adminHandler.ExportBackup))
+	mux.HandleFunc("/api/audit", adminWrap(s.handleAuditList))
+	mux.HandleFunc("/api/backup/import", adminWrap(adminHandler.ImportBackup))
 
 	mux.HandleFunc("/api/webhook", adminWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -1472,6 +1863,7 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	}))
 	mux.HandleFunc("/api/webhook/test", adminWrap(adminHandler.TestWebhook))
 
+<<<<<<< HEAD
 	// [bootimus-fork L1] fork-patch: download-proxy
 	mux.HandleFunc("/api/proxy-config", adminWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -1479,12 +1871,34 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 			adminHandler.GetProxyConfig(w, r)
 		case http.MethodPut, http.MethodPost:
 			adminHandler.UpdateProxyConfig(w, r)
+=======
+	mux.HandleFunc("/api/sync/manifest", readWrap(adminHandler.SyncManifest))
+	mux.HandleFunc("/api/sync/tool-files", readWrap(adminHandler.SyncToolFiles))
+	mux.HandleFunc("/api/sync/asset", readWrap(adminHandler.SyncAsset))
+	mux.HandleFunc("/api/replica/status", readWrap(adminHandler.ReplicaStatus))
+	mux.HandleFunc("/api/replica/sync", adminWrap(adminHandler.ReplicaSync))
+	s.startReplica(adminHandler)
+
+	mux.HandleFunc("/api/housekeeping", readWrap(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			adminHandler.GetHousekeeping(w, r)
+		case http.MethodPut, http.MethodPost:
+			adminHandler.UpdateHousekeeping(w, r)
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	}))
+<<<<<<< HEAD
 
 	mux.HandleFunc("/api/client-groups", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+=======
+	mux.HandleFunc("/api/housekeeping/run", adminWrap(adminHandler.RunHousekeeping))
+	mux.HandleFunc("/api/catalogue/check", adminWrap(adminHandler.CheckCatalogue))
+
+	mux.HandleFunc("/api/client-groups", readWrap(func(w http.ResponseWriter, r *http.Request) {
+>>>>>>> 05e39d6fbd0ec9b60bc77ecad9addc2b47326a83
 		switch r.Method {
 		case http.MethodGet:
 			adminHandler.ListClientGroups(w, r)
@@ -1494,7 +1908,7 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	}))
-	mux.HandleFunc("/api/client-groups/get", adminWrap(adminHandler.GetClientGroup))
+	mux.HandleFunc("/api/client-groups/get", readWrap(adminHandler.GetClientGroup))
 	mux.HandleFunc("/api/client-groups/update", adminWrap(adminHandler.UpdateClientGroup))
 	mux.HandleFunc("/api/client-groups/delete", adminWrap(adminHandler.DeleteClientGroup))
 	mux.HandleFunc("/api/client-groups/membership", adminWrap(adminHandler.SetClientGroupMembership))
@@ -1502,7 +1916,7 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/api/client-groups/next-boot", adminWrap(adminHandler.SetNextBootForClientGroup))
 	mux.HandleFunc("/api/client-groups/power", adminWrap(adminHandler.PowerClientGroup))
 
-	mux.HandleFunc("/api/scheduled-tasks", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/scheduled-tasks", readWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			adminHandler.ListScheduledTasks(w, r)
@@ -1517,9 +1931,16 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 	mux.HandleFunc("/api/scheduled-tasks/run", adminWrap(adminHandler.RunScheduledTask))
 
 	mux.HandleFunc("/api/clients/power", adminWrap(adminHandler.PowerClient))
-	mux.HandleFunc("/api/clients/power/status", adminWrap(adminHandler.PowerStatusClient))
+	mux.HandleFunc("/api/clients/power/status", readWrap(adminHandler.PowerStatusClient))
+	mux.HandleFunc("/api/clients/menu-preview", readWrap(s.handleMenuPreview))
+	mux.HandleFunc("/api/disk-images", readWrap(adminHandler.DiskImages))
+	mux.HandleFunc("/api/disk-images/capture", adminWrap(adminHandler.CaptureDisk))
+	mux.HandleFunc("/api/disk-images/deploy", adminWrap(adminHandler.DeployDiskImage))
+	mux.HandleFunc("/api/disk-images/jobs", readWrap(adminHandler.DiskJobs))
+	mux.HandleFunc("/api/clients/console", s.handleClientConsole)
+	mux.HandleFunc("/api/san-targets", readWrap(adminHandler.SANTargets))
 
-	mux.HandleFunc("/api/theme", adminWrap(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/theme", readWrap(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			adminHandler.GetMenuTheme(w, r)
@@ -1530,10 +1951,10 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 		}
 	}))
 
-	mux.HandleFunc("/api/usb", adminWrap(adminHandler.ListUSBImages))
-	mux.HandleFunc("/api/usb/download", adminWrap(adminHandler.DownloadUSBImage))
+	mux.HandleFunc("/api/usb", readWrap(adminHandler.ListUSBImages))
+	mux.HandleFunc("/api/usb/download", readWrap(adminHandler.DownloadUSBImage))
 
-	mux.HandleFunc("/api/images/files", adminWrap(adminHandler.ListImageFiles))
+	mux.HandleFunc("/api/images/files", readWrap(adminHandler.ListImageFiles))
 	mux.HandleFunc("/api/images/files/delete", adminWrap(adminHandler.DeleteImageFile))
 }
 
@@ -1684,19 +2105,23 @@ func (s *Server) executeScheduledTask(ctx context.Context, t *models.ScheduledTa
 			if !c.Enabled {
 				continue
 			}
-			host, port, user, pass, insecure := resolveRedfishForClient(c, group)
-			if host == "" || user == "" || pass == "" {
+			target, ok := bmc.Resolve(c, group)
+			if !ok {
+				continue
+			}
+			ctrl, err := bmc.New(target)
+			if err != nil {
+				log.Printf("scheduler power %s on %s skipped: %v", action, c.MACAddress, err)
 				continue
 			}
 			dispatched++
-			go func(mac, host string, port int, user, pass string, insecure bool) {
+			go func(mac string, ctrl bmc.Controller) {
 				rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				defer cancel()
-				client := redfish.New(host, port, user, pass, insecure)
-				if err := client.SetPower(rctx, redfish.PowerAction(action)); err != nil {
+				if err := ctrl.SetPower(rctx, bmc.Action(action)); err != nil {
 					log.Printf("scheduler power %s on %s failed: %v", action, mac, err)
 				}
-			}(c.MACAddress, host, port, user, pass, insecure)
+			}(c.MACAddress, ctrl)
 			if stagger > 0 {
 				time.Sleep(stagger)
 			}
@@ -1706,29 +2131,6 @@ func (s *Server) executeScheduledTask(ctx context.Context, t *models.ScheduledTa
 	default:
 		return "failed", "unknown action_type: " + t.ActionType
 	}
-}
-
-func resolveRedfishForClient(c *models.Client, g *models.ClientGroup) (host string, port int, user string, pass string, insecure bool) {
-	host = c.IPMIHost
-	port = c.IPMIPort
-	user = c.IPMIUsername
-	pass = c.IPMIPassword
-	insecure = c.IPMIInsecure
-	if g != nil {
-		if port == 0 {
-			port = g.IPMIPort
-		}
-		if user == "" {
-			user = g.IPMIUsername
-		}
-		if pass == "" {
-			pass = g.IPMIPassword
-		}
-		if !insecure {
-			insecure = g.IPMIInsecure
-		}
-	}
-	return
 }
 
 func (s *Server) refreshMetricsGauges() {
@@ -1778,10 +2180,12 @@ func (s *Server) recordBootIfNew(mac, path, remoteAddr string) {
 	s.bootLogDedupMu.Unlock()
 
 	imageName := imageDir
+	var bootImage *models.Image
 	if images, err := s.config.Storage.ListImages(); err == nil {
 		for _, img := range images {
 			if strings.TrimSuffix(img.Filename, filepath.Ext(img.Filename)) == imageDir {
 				imageName = img.Name
+				bootImage = img
 				break
 			}
 		}
@@ -1795,8 +2199,13 @@ func (s *Server) recordBootIfNew(mac, path, remoteAddr string) {
 		s.config.Storage.UpdateImageBootStats(imageName)
 	}()
 	clientName := ""
+	var bootClient *models.Client
 	if c, err := s.config.Storage.GetClient(mac); err == nil {
 		clientName = c.Name
+		bootClient = c
+	}
+	if bootImage != nil {
+		s.noteImageBoot(mac, bootImage, bootClient)
 	}
 	ip := remoteAddr
 	if i := strings.LastIndex(ip, ":"); i > 0 {
@@ -1892,48 +2301,91 @@ func (s *Server) handleInventoryReport(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(script))
 }
 
-func (s *Server) handleIPXEMenu(w http.ResponseWriter, r *http.Request) {
-	macAddress := r.URL.Query().Get("mac")
+type bootMenuRender struct {
+	MAC           string `json:"mac"`
+	KnownClient   bool   `json:"known_client"`
+	ClientName    string `json:"client_name,omitempty"`
+	NextBootImage string `json:"next_boot_image,omitempty"`
+	DiskJob       string `json:"disk_job,omitempty"`
+	Kind          string `json:"kind"`
+	Script        string `json:"script"`
+}
+
+func normaliseMenuMAC(macAddress string) string {
 	if macAddress == "" {
 		macAddress = "unknown"
 	}
+	return strings.ToLower(strings.ReplaceAll(macAddress, "-", ":"))
+}
 
-	macAddress = strings.ToLower(strings.ReplaceAll(macAddress, "-", ":"))
-
-	s.logAndBroadcast("Client Connected: MAC %s (IP: %s) requesting boot menu", macAddress, r.RemoteAddr)
+func (s *Server) renderBootMenu(macAddress, remoteAddr string, commit bool) bootMenuRender {
+	result := bootMenuRender{MAC: macAddress, Kind: "menu"}
+	if s.diskImages != nil {
+		if job := s.diskImages.ActiveJob(macAddress); job != nil && job.DiskImage != nil {
+			result.Kind = "imaging"
+			result.DiskJob = fmt.Sprintf("%s %s (disk %s)", job.Kind, job.DiskImage.Name, job.Disk)
+			if commit {
+				s.logAndBroadcast("Client %s: disk imaging job %d pending - booting Clonezilla to %s %s", macAddress, job.ID, job.Kind, job.DiskImage.Name)
+			}
+		}
+	}
 
 	var nextBootImageID uint
+	var nextBootSANID uint
 	if s.config.Storage != nil {
 		client, err := s.config.Storage.GetClient(macAddress)
 		if err == nil {
+			result.KnownClient = true
+			result.ClientName = client.Name
 			switch client.EnrollmentState {
 			case models.EnrollmentStateApproved:
 				if script, ok := s.provisionInstallScriptFor(client); ok {
-					s.logAndBroadcast("Client %s: approved cluster node - serving install boot", macAddress)
-					w.Header().Set("Content-Type", "text/plain")
-					w.Write([]byte(script))
-					return
+					if commit {
+						s.logAndBroadcast("Client %s: approved cluster node - serving install boot", macAddress)
+					}
+					result.Kind = "install"
+					result.Script = script
+					return result
 				}
 			case models.EnrollmentStateInstalling:
+				if !commit {
+					break
+				}
 				if stateErr := s.config.Storage.SetClientEnrollmentState(macAddress, models.EnrollmentStateInstalled); stateErr == nil {
 					s.logAndBroadcast("Client %s: install complete - node will default to local boot", macAddress)
 					s.webhookNotifier.Fire(webhook.Event{
 						Event:      webhook.EventInstallCompleted,
 						MAC:        macAddress,
 						ClientName: client.Name,
-						IP:         r.RemoteAddr,
+						IP:         remoteAddr,
 					})
 				}
 			}
 		}
 		if err == nil && client.NextBootImage != "" {
-			img, imgErr := s.config.Storage.GetImage(client.NextBootImage)
-			if imgErr == nil && img.Enabled {
-				s.logAndBroadcast("Client %s: next boot action set - pre-selecting %s", macAddress, img.Name)
-				nextBootImageID = img.ID
-				s.config.Storage.ClearNextBootImage(macAddress)
+			if sanID, ok := models.ParseNextBootSAN(client.NextBootImage); ok {
+				if target, tErr := s.config.Storage.GetSANTarget(sanID); tErr == nil {
+					if commit {
+						s.logAndBroadcast("Client %s: next boot action set - booting from SAN target %s", macAddress, target.Name)
+					}
+					nextBootSANID = sanID
+					result.NextBootImage = "SAN: " + target.Name
+				}
+				if commit {
+					s.config.Storage.ClearNextBootImage(macAddress)
+				}
 			} else {
-				s.config.Storage.ClearNextBootImage(macAddress)
+				img, imgErr := s.config.Storage.GetImage(client.NextBootImage)
+				if imgErr == nil && img.Enabled {
+					if commit {
+						s.logAndBroadcast("Client %s: next boot action set - pre-selecting %s", macAddress, img.Name)
+					}
+					nextBootImageID = img.ID
+					result.NextBootImage = img.Name
+				}
+				if commit {
+					s.config.Storage.ClearNextBootImage(macAddress)
+				}
 			}
 		}
 	}
@@ -1953,9 +2405,29 @@ func (s *Server) handleIPXEMenu(w http.ResponseWriter, r *http.Request) {
 		images = convertISOsToImages(isos)
 	}
 
-	menu := s.generateIPXEMenuWithGroups(images, macAddress, nextBootImageID)
+	result.Script = s.generateIPXEMenuFor(images, macAddress, nextBootImageID, nextBootSANID)
+	return result
+}
+
+func (s *Server) handleIPXEMenu(w http.ResponseWriter, r *http.Request) {
+	macAddress := normaliseMenuMAC(r.URL.Query().Get("mac"))
+
+	s.logAndBroadcast("Client Connected: MAC %s (IP: %s) requesting boot menu", macAddress, r.RemoteAddr)
+
+	rendered := s.renderBootMenu(macAddress, r.RemoteAddr, true)
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(menu))
+	w.Write([]byte(rendered.Script))
+}
+
+func (s *Server) handleMenuPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	macAddress := normaliseMenuMAC(r.URL.Query().Get("mac"))
+	rendered := s.renderBootMenu(macAddress, r.RemoteAddr, false)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": rendered})
 }
 
 func (s *Server) handleListISOs(w http.ResponseWriter, r *http.Request) {
@@ -2101,7 +2573,17 @@ func (s *Server) handleAutoInstallScript(w http.ResponseWriter, r *http.Request)
 	if mac == "" {
 		mac = r.URL.Query().Get("mac")
 	}
-	mac = strings.ToLower(strings.ReplaceAll(mac, "-", ":"))
+	mac = autoinstall.NormaliseMAC(mac)
+
+	var postedMACs []string
+	if r.Method == http.MethodPost && mac == "" {
+		macs, err := autoinstall.ProxmoxInterfaceMACs(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		postedMACs = macs
+	}
 
 	image, err := s.config.Storage.GetImage(path)
 	if err != nil || image == nil {
@@ -2110,9 +2592,14 @@ func (s *Server) handleAutoInstallScript(w http.ResponseWriter, r *http.Request)
 	}
 
 	var client *models.Client
-	if mac != "" {
+	var group *models.ClientGroup
+	if len(postedMACs) > 0 {
+		mac, client = s.matchClientByMACs(postedMACs)
+		group = s.clientGroupOf(client)
+	} else if mac != "" {
 		if c, err := s.config.Storage.GetClient(mac); err == nil {
 			client = c
+			group = s.clientGroupOf(client)
 		}
 	}
 
@@ -2139,31 +2626,31 @@ func (s *Server) handleAutoInstallScript(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	script, scriptType, source, err := s.resolveAutoInstallScript(image, client)
+	script, scriptType, source, err := resolveAutoInstallSource(s.autoInstallLib, image, client, group)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
-	clientName := ""
-	if client != nil {
-		clientName = client.Name
-	}
 	clientIP := r.RemoteAddr
 	if i := strings.LastIndex(clientIP, ":"); i > 0 {
 		clientIP = clientIP[:i]
 	}
-	substitutions := map[string]string{
-		"{{MAC}}":            mac,
-		"{{CLIENT_NAME}}":    clientName,
-		"{{HOSTNAME}}":       clientName,
-		"{{IP}}":             clientIP,
-		"{{SERVER_ADDR}}":    s.config.ServerAddr,
-		"{{IMAGE_NAME}}":     image.Name,
-		"{{IMAGE_FILENAME}}": image.Filename,
-	}
-	for k, v := range substitutions {
-		script = strings.ReplaceAll(script, k, v)
+	installToken := s.noteAutoInstallFetch(mac, image)
+	vars := autoinstall.Context{
+		MAC:        mac,
+		ClientIP:   clientIP,
+		ServerAddr: s.config.ServerAddr,
+		ServerPort: s.config.HTTPPort,
+		Image:      image,
+		Client:     client,
+		Group:      group,
+	}.Variables()
+	vars["CALLBACK_URL"] = s.installCallbackURL(installToken)
+	vars["INSTALL_TOKEN"] = installToken
+	script, unresolved := autoinstall.Render(script, vars)
+	if len(unresolved) > 0 {
+		log.Printf("auto-install script for %s has unresolved placeholders: %s", image.Filename, strings.Join(unresolved, ", "))
 	}
 
 	if image.Distro == "arch" {
@@ -2172,15 +2659,7 @@ func (s *Server) handleAutoInstallScript(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	contentType := "text/plain; charset=utf-8"
-	switch scriptType {
-	case "autounattend":
-		contentType = "application/xml; charset=utf-8"
-	case "autoinstall":
-		contentType = "text/yaml; charset=utf-8"
-	}
-
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", autoinstall.ContentType(scriptType))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(script)))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(script))
@@ -2189,14 +2668,29 @@ func (s *Server) handleAutoInstallScript(w http.ResponseWriter, r *http.Request)
 		image.Filename, source, scriptType, len(script))
 }
 
+func (s *Server) clientGroupOf(client *models.Client) *models.ClientGroup {
+	if client == nil || client.ClientGroupID == nil || s.config.Storage == nil {
+		return nil
+	}
+	group, err := s.config.Storage.GetClientGroup(*client.ClientGroupID)
+	if err != nil {
+		return nil
+	}
+	return group
+}
+
 func (s *Server) resolveAutoInstallScript(image *models.Image, client *models.Client) (string, string, string, error) {
-	if s.autoInstallLib != nil {
+	return resolveAutoInstallSource(s.autoInstallLib, image, client, s.clientGroupOf(client))
+}
+
+func resolveAutoInstallSource(lib *autoinstall.Library, image *models.Image, client *models.Client, group *models.ClientGroup) (string, string, string, error) {
+	if lib != nil {
 		tryFile := func(rel, src string) (string, string, string, error) {
-			content, err := s.autoInstallLib.ReadPath(rel)
+			content, err := lib.ReadPath(rel)
 			if err != nil {
 				return "", "", "", err
 			}
-			return content, scriptTypeForPath(rel), src, nil
+			return content, autoinstall.PathType(rel), src, nil
 		}
 
 		if client != nil && client.AutoInstallFile != "" {
@@ -2204,11 +2698,9 @@ func (s *Server) resolveAutoInstallScript(image *models.Image, client *models.Cl
 				return c, t, src, nil
 			}
 		}
-		if client != nil && client.ClientGroupID != nil {
-			if g, err := s.config.Storage.GetClientGroup(*client.ClientGroupID); err == nil && g.AutoInstallFile != "" {
-				if c, t, src, err := tryFile(g.AutoInstallFile, "group:"+g.Name); err == nil {
-					return c, t, src, nil
-				}
+		if group != nil && group.AutoInstallFile != "" {
+			if c, t, src, err := tryFile(group.AutoInstallFile, "group:"+group.Name); err == nil {
+				return c, t, src, nil
 			}
 		}
 		if image.AutoInstallFile != "" {
@@ -2221,7 +2713,7 @@ func (s *Server) resolveAutoInstallScript(image *models.Image, client *models.Cl
 	if image.AutoInstallEnabled && image.AutoInstallScript != "" {
 		t := image.AutoInstallScriptType
 		if t == "" {
-			t = "generic"
+			t = autoinstall.TypeGeneric
 		}
 		return image.AutoInstallScript, t, "inline:" + image.Filename, nil
 	}
@@ -2237,19 +2729,13 @@ func (s *Server) resolveAutoInstallType(image *models.Image, client *models.Clie
 	return scriptType
 }
 
-func scriptTypeForPath(rel string) string {
-	switch strings.ToLower(filepath.Ext(rel)) {
-	case ".xml":
-		return "autounattend"
-	case ".cfg":
-		return "preseed"
-	case ".ks":
-		return "kickstart"
-	case ".yaml", ".yml":
-		return "autoinstall"
-	default:
-		return "generic"
+func (s *Server) matchClientByMACs(macs []string) (string, *models.Client) {
+	for _, mac := range macs {
+		if c, err := s.config.Storage.GetClient(mac); err == nil && c != nil {
+			return mac, c
+		}
 	}
+	return macs[0], nil
 }
 
 func (s *Server) injectArchFileDownloads(script string, files []*models.CustomFile) string {
@@ -2311,4 +2797,109 @@ func GetOutboundIP() string {
 
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	return localAddr.IP.String()
+}
+
+var replicaWritablePaths = map[string]bool{
+	"/api/replica/sync":           true,
+	"/api/users":                  true,
+	"/api/users/reset-password":   true,
+	"/api/users/totp/reset":       true,
+	"/api/tokens":                 true,
+	"/api/proxydhcp/events/clear": true,
+}
+
+func (s *Server) replicaGuard(next http.HandlerFunc) http.HandlerFunc {
+	if !s.config.Replica.Enabled() {
+		return next
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if !replicaWritablePaths[r.URL.Path] && !strings.HasPrefix(r.URL.Path, "/api/me/") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"success": false,
+					"error":   fmt.Sprintf("This instance is a replica of %s; make changes there", s.config.Replica.DisplayURL()),
+					"replica": s.config.Replica.DisplayURL(),
+				})
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) bootloaderSetExists(name string) bool {
+	if name == "" {
+		return true
+	}
+	if bootloaders.IsBuiltIn(name) {
+		return true
+	}
+	info, err := os.Stat(filepath.Join(s.config.BootDir, name))
+	return err == nil && info.IsDir()
+}
+
+func (s *Server) startReplica(adminHandler *admin.Handler) {
+	if !s.config.Replica.Enabled() || s.config.Storage == nil {
+		return
+	}
+	if s.replica == nil {
+		s.replica = replica.New(*s.config.Replica, replica.Deps{
+			Store:       s.config.Storage,
+			DataDir:     s.config.DataDir,
+			ISODir:      s.config.ISODir,
+			AutoInstall: s.autoInstallLib,
+			Extract:     adminHandler.ExtractImageByFilename,
+			SelectBootloaderSet: func(name string) error {
+				if s.GetActiveBootloaderSet() == name {
+					return nil
+				}
+				s.SetActiveBootloaderSet(name)
+				return s.SaveBootloaderConfig()
+			},
+			BootloaderSetExists: s.bootloaderSetExists,
+			ToolDir:             s.toolsManager.ToolDir,
+		})
+		if s.config.Auth != nil {
+			s.config.Auth.MeExtras = s.replicaMeExtras
+		}
+		s.replica.Start()
+		log.Printf("Replica mode: syncing from %s every %s", s.config.Replica.DisplayURL(), s.config.Replica.Interval)
+	}
+	adminHandler.Replica = s.replica
+}
+
+func (s *Server) replicaMeExtras() map[string]interface{} {
+	if s.replica == nil {
+		return nil
+	}
+	status := s.replica.Status()
+	return map[string]interface{}{
+		"replica": map[string]interface{}{
+			"primary_url": status.PrimaryURL,
+			"last_sync":   status.LastSuccess,
+			"last_run":    status.LastRun,
+			"last_error":  status.LastError,
+			"sync_isos":   status.SyncISOs,
+		},
+	}
+}
+
+func (s *Server) remoteImages(images []models.Image) (string, map[uint]bool) {
+	if s.replica == nil {
+		return "", nil
+	}
+	base := s.replica.BootBaseURL()
+	if base == "" {
+		return "", nil
+	}
+	remote := map[uint]bool{}
+	for _, img := range images {
+		if !s.replica.ImageIsLocal(img.Filename) {
+			remote[img.ID] = true
+		}
+	}
+	return base, remote
 }

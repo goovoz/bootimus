@@ -5,7 +5,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"bootimus/internal/bsdboot"
 )
 
 func detectDistroNameUnified(reader FileSystemReader, isoPath string) string {
@@ -40,6 +43,8 @@ func detectDistroNameUnified(reader FileSystemReader, isoPath string) string {
 		"tails":           "tails",
 		"opensuse":        "opensuse",
 		"freebsd":         "freebsd",
+		"openbsd":         "openbsd",
+		"netbsd":          "netbsd",
 		"nixos":           "nixos",
 		"endeavouros":     "endeavouros",
 		"garuda":          "garuda",
@@ -50,7 +55,9 @@ func detectDistroNameUnified(reader FileSystemReader, isoPath string) string {
 		"blackarch":       "arch",
 		"parabola":        "arch",
 		"truenas":         "debian",
-		"proxmox":         "debian",
+		"proxmox":         "proxmox",
+		"coreos":          "coreos",
+		"flatcar":         "flatcar",
 		"devuan":          "debian",
 		"antix":           "debian",
 		"mx-":             "debian",
@@ -89,23 +96,35 @@ func detectDistroNameUnified(reader FileSystemReader, isoPath string) string {
 		"clear-linux":     "clearlinux",
 	}
 
-	for pattern, distro := range distroPatterns {
-		if strings.Contains(filename, pattern) {
-			return distro
-		}
+	if distro := matchDistroPattern(distroPatterns, filename); distro != "" {
+		return distro
 	}
 
 	if reader.FileExists("/.disk/info") {
 		if content := reader.ReadFileContent("/.disk/info"); content != "" {
-			contentLower := strings.ToLower(content)
-			for pattern, distro := range distroPatterns {
-				if strings.Contains(contentLower, pattern) {
-					return distro
-				}
-			}
+			return matchDistroPattern(distroPatterns, strings.ToLower(content))
 		}
 	}
 
+	return ""
+}
+
+func matchDistroPattern(distroPatterns map[string]string, text string) string {
+	patterns := make([]string, 0, len(distroPatterns))
+	for pattern := range distroPatterns {
+		patterns = append(patterns, pattern)
+	}
+	sort.Slice(patterns, func(i, j int) bool {
+		if len(patterns[i]) != len(patterns[j]) {
+			return len(patterns[i]) > len(patterns[j])
+		}
+		return patterns[i] < patterns[j]
+	})
+	for _, pattern := range patterns {
+		if strings.Contains(text, pattern) {
+			return distroPatterns[pattern]
+		}
+	}
 	return ""
 }
 
@@ -163,38 +182,40 @@ func (e *Extractor) detectUbuntuDebianUnified(reader FileSystemReader) (*BootFil
 	}
 
 	paths := []struct {
-		kernel     string
-		initrd     string
-		distro     string
-		bootParams string
-		netboot    bool
-		netbootURL string
+		kernel      string
+		initrd      string
+		distro      string
+		bootParams  string
+		netbootArch string
 	}{
-		{"/casper/vmlinuz", "/casper/initrd", "ubuntu", "", false, ""},
-		{"/casper/vmlinuz", "/casper/initrd.lz", "ubuntu", "", false, ""},
-		{"/casper/vmlinuz", "/casper/initrd.gz", "ubuntu", "", false, ""},
-		{"/casper/vmlinuz.efi", "/casper/initrd.lz", "ubuntu", "", false, ""},
-		{"/casper/vmlinuz.efi", "/casper/initrd", "ubuntu", "", false, ""},
-		{"/casper/vmlinuz.efi", "/casper/initrd.gz", "ubuntu", "", false, ""},
-		{"/install/vmlinuz", "/install/initrd.gz", "debian", "", true, "http://ftp.debian.org/debian/dists/trixie/main/installer-amd64/current/images/netboot/netboot.tar.gz"},
-		{"/install.amd/vmlinuz", "/install.amd/initrd.gz", "debian", "", true, "http://ftp.debian.org/debian/dists/trixie/main/installer-amd64/current/images/netboot/netboot.tar.gz"},
-		{"/install.a64/vmlinuz", "/install.a64/initrd.gz", "debian", "", true, "http://ftp.debian.org/debian/dists/trixie/main/installer-arm64/current/images/netboot/netboot.tar.gz"},
-		{"/live/vmlinuz", "/live/initrd.img", "debian", "", false, ""},
-		{"/live/vmlinuz1", "/live/initrd1.img", "debian", "", false, ""},
-		{"/vmlinuz", "/initrd.img", "debian", "", false, ""},
-		{"/boot/linux26", "/boot/initrd.img", "debian", "", false, ""},
+		{"/casper/vmlinuz", "/casper/initrd", "ubuntu", "", ""},
+		{"/casper/vmlinuz", "/casper/initrd.lz", "ubuntu", "", ""},
+		{"/casper/vmlinuz", "/casper/initrd.gz", "ubuntu", "", ""},
+		{"/casper/vmlinuz.efi", "/casper/initrd.lz", "ubuntu", "", ""},
+		{"/casper/vmlinuz.efi", "/casper/initrd", "ubuntu", "", ""},
+		{"/casper/vmlinuz.efi", "/casper/initrd.gz", "ubuntu", "", ""},
+		{"/install/netboot/ubuntu-installer/amd64/linux", "/install/netboot/ubuntu-installer/amd64/initrd.gz", "ubuntu", "", ""},
+		{"/install/netboot/ubuntu-installer/arm64/linux", "/install/netboot/ubuntu-installer/arm64/initrd.gz", "ubuntu", "", ""},
+		{"/install/netboot/ubuntu-installer/i386/linux", "/install/netboot/ubuntu-installer/i386/initrd.gz", "ubuntu", "", ""},
+		{"/install/vmlinuz", "/install/initrd.gz", "debian", "", "amd64"},
+		{"/install.amd/vmlinuz", "/install.amd/initrd.gz", "debian", "", "amd64"},
+		{"/install.a64/vmlinuz", "/install.a64/initrd.gz", "debian", "", "arm64"},
+		{"/live/vmlinuz", "/live/initrd.img", "debian", "", ""},
+		{"/live/vmlinuz1", "/live/initrd1.img", "debian", "", ""},
+		{"/vmlinuz", "/initrd.img", "debian", "", ""},
+		{"/boot/linux26", "/boot/initrd.img", "proxmox", "", ""},
 	}
 
 	for _, p := range paths {
 		if reader.FileExists(p.kernel) && reader.FileExists(p.initrd) {
 			bootFiles := &BootFiles{
-				Kernel:          p.kernel,
-				Initrd:          p.initrd,
-				Distro:          p.distro,
-				BootParams:      p.bootParams,
-				NetbootRequired: p.netboot,
-				NetbootURL:      p.netbootURL,
+				Kernel:      p.kernel,
+				Initrd:      p.initrd,
+				Distro:      p.distro,
+				BootParams:  p.bootParams,
+				NetbootArch: p.netbootArch,
 			}
+			resolveNetboot(bootFiles)
 			squashfs := parentDir(p.kernel) + "/filesystem.squashfs"
 			if reader.FileExists(squashfs) {
 				bootFiles.SquashfsPath = squashfs
@@ -204,6 +225,23 @@ func (e *Extractor) detectUbuntuDebianUnified(reader FileSystemReader) (*BootFil
 	}
 
 	return nil, fmt.Errorf("kernel/initrd not found in common Ubuntu/Debian paths")
+}
+
+var netbootSources = map[string]string{
+	"debian": "http://ftp.debian.org/debian/dists/trixie/main/installer-%s/current/images/netboot/netboot.tar.gz",
+	"kali":   "http://http.kali.org/dists/kali-rolling/main/installer-%s/current/images/netboot/netboot.tar.gz",
+}
+
+func resolveNetboot(files *BootFiles) {
+	if files.NetbootArch == "" {
+		return
+	}
+	source, ok := netbootSources[files.Distro]
+	files.NetbootRequired = ok
+	files.NetbootURL = ""
+	if ok {
+		files.NetbootURL = fmt.Sprintf(source, files.NetbootArch)
+	}
 }
 
 func (e *Extractor) detectFedoraRHELUnified(reader FileSystemReader) (*BootFiles, error) {
@@ -434,6 +472,17 @@ func (e *Extractor) detectClearLinuxUnified(reader FileSystemReader) (*BootFiles
 	return nil, fmt.Errorf("not Clear Linux")
 }
 
+func (e *Extractor) detectFlatcarUnified(reader FileSystemReader) (*BootFiles, error) {
+	kernel := "/flatcar/vmlinuz"
+	initrd := "/flatcar/cpio.gz"
+
+	if reader.FileExists(kernel) && reader.FileExists(initrd) {
+		return &BootFiles{Kernel: kernel, Initrd: initrd, Distro: "flatcar"}, nil
+	}
+
+	return nil, fmt.Errorf("not Flatcar Container Linux")
+}
+
 func (e *Extractor) detectSystemRescueUnified(reader FileSystemReader) (*BootFiles, error) {
 	kernel := "/sysresccd/boot/x86_64/vmlinuz"
 	initrd := "/sysresccd/boot/x86_64/sysresccd.img"
@@ -505,17 +554,33 @@ func (e *Extractor) detectWindowsUnified(reader FileSystemReader) (*BootFiles, e
 		}
 	}
 
-	if bcdPath != "" && bootSdiPath != "" && bootWimPath != "" {
-		return &BootFiles{
-			Kernel:     bcdPath,
-			Initrd:     bootSdiPath,
-			Distro:     "windows",
-			BootWim:    bootWimPath,
-			InstallWim: installWimPath,
-		}, nil
+	if bcdPath == "" || bootSdiPath == "" {
+		return nil, fmt.Errorf("not Windows ISO (found: BCD=%v, boot.sdi=%v)", bcdPath != "", bootSdiPath != "")
 	}
 
-	return nil, fmt.Errorf("not Windows ISO")
+	wimPaths := findWIMFiles(reader)
+	if bootWimPath == "" && len(wimPaths) > 0 {
+		bootWimPath = wimPaths[0]
+	}
+	if bootWimPath == "" {
+		return nil, fmt.Errorf("not Windows ISO (BCD and boot.sdi present but no .wim found)")
+	}
+
+	distro := "windows"
+	if installWimPath == "" {
+		distro = "winpe"
+	}
+	files := &BootFiles{
+		Kernel:     bcdPath,
+		Initrd:     bootSdiPath,
+		Distro:     distro,
+		BootWim:    bootWimPath,
+		InstallWim: installWimPath,
+	}
+	for _, p := range wimPaths {
+		files.WIMFiles = append(files.WIMFiles, WIMFile{Path: strings.TrimPrefix(p, "/")})
+	}
+	return files, nil
 }
 
 func (e *Extractor) cacheBootFilesUnified(files *BootFiles, reader FileSystemReader, isoPath string) error {
@@ -526,35 +591,12 @@ func (e *Extractor) cacheBootFilesUnified(files *BootFiles, reader FileSystemRea
 		return fmt.Errorf("failed to create boot files subdirectory: %w", err)
 	}
 
-	if files.Distro == "windows" {
-		extractedDir := filepath.Join(bootFilesDir, "iso")
-		if err := os.MkdirAll(extractedDir, 0755); err != nil {
-			return fmt.Errorf("failed to create extracted ISO directory: %w", err)
-		}
+	if bsdboot.IsBSD(files.Distro) {
+		return e.cacheBSDFiles(files, reader, bootFilesDir)
+	}
 
-		log.Printf("Extracting full Windows ISO contents to %s", extractedDir)
-		if err := reader.ExtractAll(extractedDir); err != nil {
-			return fmt.Errorf("failed to extract full ISO contents: %w", err)
-		}
-
-		files.ExtractedDir = extractedDir
-
-		bcdDest := filepath.Join(extractedDir, strings.TrimPrefix(files.Kernel, "/"))
-		files.Kernel = bcdDest
-
-		bootSdiDest := filepath.Join(extractedDir, strings.TrimPrefix(files.Initrd, "/"))
-		files.Initrd = bootSdiDest
-
-		bootWimDest := filepath.Join(extractedDir, strings.TrimPrefix(files.BootWim, "/"))
-		files.BootWim = bootWimDest
-
-		if files.InstallWim != "" {
-			installDest := filepath.Join(extractedDir, strings.TrimPrefix(files.InstallWim, "/"))
-			files.InstallWim = installDest
-		}
-
-		log.Printf("Windows ISO extraction complete")
-		return nil
+	if isWindowsDistro(files.Distro) {
+		return e.cacheWindowsFiles(files, reader, bootFilesDir)
 	}
 
 	kernelDest := filepath.Join(bootFilesDir, "vmlinuz")

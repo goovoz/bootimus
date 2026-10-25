@@ -36,21 +36,6 @@ type File struct {
 	Size     int64  `json:"size"`
 }
 
-func scriptTypeFromExt(name string) string {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".xml":
-		return "autounattend"
-	case ".cfg":
-		return "preseed"
-	case ".ks":
-		return "kickstart"
-	case ".yaml", ".yml":
-		return "autoinstall"
-	default:
-		return "generic"
-	}
-}
-
 func (l *Library) List() ([]File, error) {
 	entries, err := os.ReadDir(l.root)
 	if err != nil {
@@ -78,7 +63,7 @@ func (l *Library) List() ([]File, error) {
 				Distro:   distro,
 				Filename: f.Name(),
 				Path:     filepath.ToSlash(filepath.Join(distro, f.Name())),
-				Type:     scriptTypeFromExt(f.Name()),
+				Type:     FileType(distro, f.Name()),
 				Size:     info.Size(),
 			})
 		}

@@ -21,7 +21,7 @@ Bootimus 使用发行版 profile 来检测 ISO 类型并生成正确的引导参
 - **如何检测** ISO 属于哪个发行版(文件名模式匹配)
 - **从哪里查找** ISO 内部的 kernel、initrd 和 squashfs
 - **使用什么引导参数** 进行 PXE 引导
-- **支持哪种无人值守安装类型**(preseed、kickstart、autoinstall 等)
+- **支持哪种无人值守安装类型**(preseed、kickstart、autoinstall、autoyast、agama、ignition、proxmox 等)
 
 ### Profile 类型
 
@@ -182,7 +182,7 @@ curl -H "Authorization: Bearer $TOKEN" -X DELETE "http://localhost:8081/api/prof
 | `squashfs_paths` | 否 | squashfs 根文件系统的尝试路径 |
 | `default_boot_params` | 否 | 默认的 kernel 引导参数(支持占位符) |
 | `boot_params_with_squashfs` | 否 | 检测到 squashfs 时使用的备选引导参数 |
-| `auto_install_type` | 否 | 无人值守安装格式:`preseed`、`kickstart`、`autoinstall`、`autounattend` |
+| `auto_install_type` | 否 | 无人值守安装格式:`preseed`、`kickstart`、`autoinstall`、`autounattend`、`autoyast`、`agama`、`ignition`、`proxmox`(见 [无人值守安装](auto-install.md#支持的格式)) |
 | `boot_method` | 否 | 覆盖引导方法(例如 Windows 用 `wimboot`) |
 
 ## 占位符

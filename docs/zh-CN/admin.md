@@ -9,6 +9,8 @@
 - [客户端管理](#客户端管理)
 - [镜像管理](#镜像管理)
 - [引导日志](#引导日志)
+- [维护与数据保留](#维护与数据保留)
+- [审计日志](#审计日志)
 - [REST API](#rest-api)
 - [自动化示例](#自动化示例)
 - [安全最佳实践](#安全最佳实践)
@@ -24,7 +26,7 @@ http://your-server:8081/
 **要求**:
 - 管理界面运行在独立端口(默认 8081)
 - 兼容 SQLite 或 PostgreSQL
-- 基于 JWT token 的身份认证(可选 LDAP/AD 后端)
+- 基于 JWT token 的身份认证(可选 LDAP/AD 后端和 OIDC 单点登录)
 
 ### 首次登录
 
@@ -48,7 +50,7 @@ http://your-server:8081/
 - **用户名**:`admin`
 - **密码**:查看服务器启动日志
 
-如果配置了 LDAP,登录页面会出现下拉菜单,可在本地认证和 LDAP 认证之间选择。详见 [身份认证指南](authentication.md)。
+如果配置了 LDAP,登录页面会出现下拉菜单,可在本地认证和 LDAP 认证之间选择。如果配置了 OIDC,会出现 **Sign in with …** 按钮用于单点登录。非管理员用户获得只读访问权限:他们可以浏览面板,但无法更改任何内容。详见 [身份认证指南](authentication.md)。
 
 ### 快速开始
 
@@ -316,13 +318,78 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/logs?limit=10
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/logs?limit=500
 ```
 
+## 维护与数据保留
+
+每次 PXE 引导都会累积引导日志和硬件清单提交记录,而每次管理操作都会让审计日志增长。维护任务每天运行一次(以及在启动后几分钟运行一次),清理超过 **Settings** → **Housekeeping** 中所设保留期的记录。保留期设为 `0` 表示永久保留这些记录。
+
+| 设置 | 默认值 | 清理内容 |
+|------|--------|----------|
+| 引导日志保留期 | 90 天 | 超过保留期的引导尝试记录 |
+| 清单历史保留期 | 90 天 | 较旧的清单提交记录;每个客户端最新的一份清单始终保留 |
+| 删除多久未出现的已发现客户端 | 0(关闭) | 最后一次引导早于保留期的自动发现客户端。静态客户端和集群节点永远不会被删除 |
+| 审计日志保留期 | 365 天 | 超过保留期的管理操作审计记录 |
+| 每天检查目录 | 开启 | 不是清理任务:标记目录中已有更新版本的已安装镜像和工具(见[镜像管理指南](images.md#校验和与更新通知)) |
+
+该卡片还显示上次运行中每个任务的结果,以及数据目录中每个顶层条目占用的空间,便于看出是哪个 ISO 分组或缓存占了地方。
+
+**通过 API**:
+```bash
+# Current settings, last report and data directory usage
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/housekeeping
+
+# Keep boot logs for 30 days, inventory history for a year, never prune clients
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"boot_log_days":30,"inventory_history_days":365,"discovered_client_days":0,"audit_log_days":365}' \
+  http://localhost:8081/api/housekeeping
+
+# Run housekeeping now
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/housekeeping/run
+
+# Compare installed images and tools with the catalogue now
+curl -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/catalogue/check
+```
+
+## 审计日志
+
+通过管理 API 做出的每一次更改都会被记录:用户、HTTP 方法和路径、查询字符串、服务器返回的状态码,以及调用方的 IP 地址。读取操作(`GET` 请求)和登录端点本身不会被记录。看起来像密码或令牌的查询值会以 `[redacted]` 存储。
+
+**Audit Log** 标签页仅管理员可见。可以按用户、按路径和按起始时间筛选,并通过 **Load more** 翻看更早的记录。
+
+勾选 **Settings → Webhook** 下的 `admin.action` 事件,即可把同样的记录作为 webhook 事件转发出去。负载在 `metadata` 映射中携带用户、方法、路径、查询、状态和一段简短摘要。
+
+**通过 API**:
+```bash
+# Latest 100 entries
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/audit
+
+# Everything alice did to clients since a point in time
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8081/api/audit?username=alice&path=/api/clients&since=2026-10-01T00:00:00Z&limit=500"
+```
+
+响应包含 `entries`(最新在前)和 `total`,因此可以用 `offset` 翻页。
+
 ## REST API
 
 所有管理功能均可通过 REST API 进行自动化。
 
+### OpenAPI 文档
+
+服务器会在 `GET /api/openapi.json` 以 OpenAPI 3.0 文档的形式描述自己的 API(无需认证)。同一份文档已提交为 [docs/openapi.json](../openapi.json),可以用 `bootimus openapi` 或 `make openapi` 重新生成。每个操作带有两个扩展字段:`x-bootimus-public` 标记无需令牌的端点,`x-bootimus-readonly` 标记只读用户可以调用的端点。管理界面中的 **API Reference** 标签页就是由这份文档渲染的,因此会自动与服务器保持一致。
+
+```bash
+# Save the document from a running server
+curl -s http://localhost:8081/api/openapi.json > bootimus-openapi.json
+
+# Or print it from the binary without a server
+bootimus openapi > bootimus-openapi.json
+```
+
+把它导入 Postman、Insomnia、Swagger UI 或任意 OpenAPI 客户端生成器,即可用你自己的工具链使用这套 API。
+
 ### 身份认证
 
-所有端点都要求 HTTP Basic 认证:
+除 `/api/login` 和 `/api/auth-info` 之外的所有端点都需要一个 bearer 令牌,以 `Authorization: Bearer <token>` 发送。它可以是 `POST /api/login` 签发的 24 小时 JWT(见[身份认证](authentication.md#获取-token)),也可以是在 **Users** → **API Tokens** 下创建的长期有效的 [API 令牌](authentication.md#api-令牌),后者更适合脚本。登录方式:
 - **用户名**:`admin`
 - **密码**:首次运行时自动生成
 
@@ -366,6 +433,7 @@ GET /api/stats
 | `PUT` | `/api/clients?mac=<MAC>` | 更新客户端 |
 | `DELETE` | `/api/clients?mac=<MAC>` | 删除客户端 |
 | `POST` | `/api/assign-images` | 为客户端分配镜像 |
+| `GET` | `/api/clients/menu-preview?mac=<MAC>` | 渲染客户端将收到的 iPXE 脚本(无副作用;省略 `mac` 则为匿名菜单) |
 
 #### Images
 
@@ -376,10 +444,28 @@ GET /api/stats
 | `PUT` | `/api/images?filename=<name>` | 更新镜像 |
 | `DELETE` | `/api/images?filename=<name>` | 删除镜像 |
 | `POST` | `/api/images/upload` | 上传 ISO |
-| `POST` | `/api/images/download` | 从 URL 下载 ISO |
+| `POST` | `/api/images/download` | 从 URL 下载 ISO,给出 `sha256` 或 `checksum_url` 时据此校验 |
+| `POST` | `/api/images/verify?filename=<name>` | 在后台按校验和计算镜像哈希 |
+| `GET` | `/api/images/verify?filename=<name>` | 校验进度和结果 |
+| `POST` | `/api/catalogue/check` | 标记目录中有更新版本的镜像和工具 |
 | `POST` | `/api/images/extract` | 提取 kernel/initrd |
 | `POST` | `/api/images/netboot/download` | 下载 netboot 文件 |
+| `PUT` | `/api/images/winpe?filename=<name>` | 选择 Windows 或 WinPE 镜像引导的 WIM 文件和映像索引。请求体:`{wim_path, wim_index}` |
 | `POST` | `/api/scan` | 扫描新 ISO |
+
+#### Disk Images
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| `GET` | `/api/disk-images` | 就绪状态和已捕获磁盘镜像列表 |
+| `PUT` | `/api/disk-images?id=<id>` | 更新镜像的描述 |
+| `DELETE` | `/api/disk-images?id=<id>` | 删除镜像及其文件 |
+| `POST` | `/api/disk-images/capture` | 排队一次捕获:`{mac_address, name, description, disk, wake}` |
+| `POST` | `/api/disk-images/deploy` | 排队一次部署:`{mac_address` 或 `client_group_id, image_id, disk, wake}` |
+| `GET` | `/api/disk-images/jobs?mac=<MAC>&limit=<n>` | 最近的捕获和部署任务 |
+| `DELETE` | `/api/disk-images/jobs?id=<id>` | 取消等待中或运行中的任务 |
+
+工作流程请参阅[磁盘镜像指南](disk-imaging.md)。
 
 #### Downloads
 

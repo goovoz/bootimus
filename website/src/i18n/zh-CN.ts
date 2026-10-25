@@ -68,7 +68,7 @@ const zhCN = {
       },
       '03': {
         title: '50+ 发行版',
-        body: '自动提取 Ubuntu、Debian、Arch、Fedora、NixOS、Alpine、FreeBSD、Windows (wimboot) 等系统的 kernel/initrd。',
+        body: '自动提取 Ubuntu、Debian、Arch、Fedora、NixOS、Alpine、FreeBSD、Windows (wimboot) 等系统的 kernel/initrd。还支持 OpenBSD 与 NetBSD 网络启动,以及 WinPE 救援介质。',
       },
       '04': {
         title: '按 MAC 地址 ACL',
@@ -79,12 +79,12 @@ const zhCN = {
         body: 'GParted、Clonezilla、Memtest86+、SystemRescue、ShredOS、netboot.xyz。UI 里勾选,菜单立即出现。',
       },
       '06': {
-        title: 'JWT + LDAP',
-        body: 'bcrypt 加密的 token 认证。可选 LDAP/AD 后端,基于组的管理员权限。本地账号始终作为兜底。',
+        title: 'JWT + LDAP + OIDC + 2FA',
+        body: 'bcrypt 加密的 token 认证、TOTP 双因素,多次失败后自动锁定。可选 LDAP/AD 或 OpenID Connect 登录,基于组的管理员权限。为脚本签发带权限范围的 API 令牌。',
       },
       '07': {
-        title: 'REST API',
-        body: 'UI 能做的事,API 全都能做。脚本化引导分配、扫描、WoL 触发。通过 SSE 实时推送日志流。',
+        title: 'REST API + OpenAPI',
+        body: 'UI 能做的事,API 全都能做,并由自动生成的 OpenAPI 文档描述。脚本化引导分配、扫描、WoL 触发。通过 SSE 实时推送日志流。每次管理员改动都记入审计日志。',
       },
       '08': {
         title: '到处都能跑',
@@ -93,6 +93,18 @@ const zhCN = {
       '09': {
         title: '无人值守安装',
         body: '把 autounattend.xml、kickstart、preseed 或 cloud-init 文件丢进去。挂到镜像做默认,按客户端覆盖。Bootimus 在引导时自动投放 — 无需点击,无需向导。',
+      },
+      '10': {
+        title: '磁盘镜像',
+        body: '用内置的 Clonezilla 采集客户端磁盘,并在下次 PXE 启动时部署到一台机器或整个组。任务完成后自动回报。',
+      },
+      '11': {
+        title: '带外控制',
+        body: '通过 Redfish 或 Intel AMT 开机、关机、重启,在浏览器中打开 AMT Serial-over-LAN 或 IPMI 控制台,并在调试页面实时查看每个 PXE 请求。',
+      },
+      '12': {
+        title: '多站点',
+        body: '一个主节点管理一切,各分支站点的只读副本镜像主节点,并用本地副本引导本地客户端。',
       },
     },
   },

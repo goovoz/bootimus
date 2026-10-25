@@ -21,7 +21,7 @@ Bootimus использует профили дистрибутивов для �
 - **Как определить**, к какому дистрибутиву относится ISO (сопоставление по шаблону имени файла)
 - **Где искать** kernel, initrd и squashfs внутри ISO
 - **Какие параметры загрузки** использовать при PXE-загрузке
-- **Какой тип автоустановки** поддерживается (preseed, kickstart, autoinstall и т. д.)
+- **Какой тип автоустановки** поддерживается (preseed, kickstart, autoinstall, autoyast, agama, ignition, proxmox и т. д.)
 
 ### Типы профилей
 
@@ -182,7 +182,7 @@ curl -H "Authorization: Bearer $TOKEN" -X DELETE "http://localhost:8081/api/prof
 | `squashfs_paths` | Нет | Пути для поиска корневой ФС squashfs |
 | `default_boot_params` | Нет | Параметры загрузки kernel по умолчанию (с поддержкой плейсхолдеров) |
 | `boot_params_with_squashfs` | Нет | Альтернативные параметры загрузки, когда обнаружен squashfs |
-| `auto_install_type` | Нет | Формат автоустановки: `preseed`, `kickstart`, `autoinstall`, `autounattend` |
+| `auto_install_type` | Нет | Формат автоустановки: `preseed`, `kickstart`, `autoinstall`, `autounattend`, `autoyast`, `agama`, `ignition`, `proxmox` (см. [Автоустановка](auto-install.md#поддерживаемые-форматы)) |
 | `boot_method` | Нет | Переопределение метода загрузки (например, `wimboot` для Windows) |
 
 ## Плейсхолдеры

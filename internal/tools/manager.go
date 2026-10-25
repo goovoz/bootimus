@@ -421,6 +421,9 @@ func (m *Manager) download(name string, progressCh chan<- string) error {
 		return err
 	}
 	tool.Downloaded = true
+	tool.DownloadedURL = downloadURL
+	tool.UpdateAvailable = false
+	tool.UpdateURL = ""
 	if err := m.store.SaveBootTool(tool); err != nil {
 		return err
 	}

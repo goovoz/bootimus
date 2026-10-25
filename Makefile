@@ -1,4 +1,4 @@
-.PHONY: help build run clean docker-build docker-up docker-down docker-push release binaries bootloaders sync-profiles bump appliance appliance-amd64 appliance-arm64 test-appliance build-website push-website deploy-website
+.PHONY: help build run test test-integration openapi clean docker-build docker-up docker-down docker-push release binaries bootloaders sync-profiles bump appliance appliance-amd64 appliance-arm64 test-appliance build-website push-website deploy-website
 
 VERSION     ?= $(shell cat VERSION)
 DOCKER_USER ?= garybowers
@@ -16,6 +16,12 @@ CLOUDRUN_SERVICE ?= bootimus
 WEBSITE_VERSION  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
 WEBSITE_IMAGE    := $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT)/$(GCP_REPO)/website
 
+# --- Integration tests --------------------------------------------------------
+# Throwaway OIDC provider used by the auth integration tests.
+OIDC_TEST_IMAGE     ?= ghcr.io/navikt/mock-oauth2-server:6.0.4
+OIDC_TEST_PORT      ?= 18080
+OIDC_TEST_CONTAINER := bootimus-oidc-test
+
 ## Help -----------------------------------------------------------------------
 
 help:
@@ -25,6 +31,9 @@ help:
 	@echo "  make build            - Build binary for current platform"
 	@echo "  make run              - Build and run locally"
 	@echo "  make clean            - Remove build artifacts"
+	@echo "  make test             - Run unit tests"
+	@echo "  make test-integration - Run integration tests against a throwaway OIDC provider (needs Docker)"
+	@echo "  make openapi          - Write the OpenAPI document to docs/openapi.json"
 	@echo ""
 	@echo "Local (container):"
 	@echo "  make docker-build     - Build container image locally"
@@ -54,6 +63,25 @@ help:
 	@echo "  make bump NEW_VERSION=X.Y.Z  - Bump VERSION + sync into both *-profiles.json"
 	@echo ""
 	@echo "Override version:  VERSION=1.0.0 make build"
+
+test:
+	go test ./...
+
+openapi:
+	go run -ldflags="$(LDFLAGS)" . openapi > docs/openapi.json
+
+test-integration:
+	@docker rm -f $(OIDC_TEST_CONTAINER) >/dev/null 2>&1 || true
+	docker run -d --rm --name $(OIDC_TEST_CONTAINER) -p $(OIDC_TEST_PORT):8080 \
+	    -e 'JSON_CONFIG={"interactiveLogin":true}' $(OIDC_TEST_IMAGE) >/dev/null
+	@trap 'docker rm -f $(OIDC_TEST_CONTAINER) >/dev/null' EXIT; \
+	echo "Waiting for OIDC provider on port $(OIDC_TEST_PORT)..."; \
+	for i in $$(seq 1 60); do \
+	    curl -sf http://localhost:$(OIDC_TEST_PORT)/bootimus/.well-known/openid-configuration >/dev/null && break; \
+	    if [ $$i -eq 60 ]; then echo "OIDC provider did not start"; docker logs $(OIDC_TEST_CONTAINER); exit 1; fi; \
+	    sleep 1; \
+	done; \
+	BOOTIMUS_TEST_OIDC_URL=http://localhost:$(OIDC_TEST_PORT) go test -count=1 -v -run Integration ./internal/auth/
 
 bootloaders:
 	@echo "Building iPXE bootloaders and downloading Secure Boot binaries..."

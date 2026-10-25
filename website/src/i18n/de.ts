@@ -68,7 +68,7 @@ const de = {
       },
       '03': {
         title: '50+ Distros',
-        body: 'Automatische Kernel/initrd-Extraktion für Ubuntu, Debian, Arch, Fedora, NixOS, Alpine, FreeBSD, Windows (wimboot) und mehr.',
+        body: 'Automatische Kernel/initrd-Extraktion für Ubuntu, Debian, Arch, Fedora, NixOS, Alpine, FreeBSD, Windows (wimboot) und mehr. Dazu OpenBSD- und NetBSD-Netboot sowie WinPE-Rettungsmedien.',
       },
       '04': {
         title: 'MAC-basierte ACL',
@@ -79,12 +79,12 @@ const de = {
         body: 'GParted, Clonezilla, Memtest86+, SystemRescue, ShredOS, netboot.xyz. Im UI aktivieren — und sie erscheinen im Menü.',
       },
       '06': {
-        title: 'JWT + LDAP',
-        body: 'Token-Auth mit bcrypt. Optionales LDAP/AD-Backend mit gruppenbasierter Admin-Vergabe. Lokale Accounts bleiben als Fallback.',
+        title: 'JWT + LDAP + OIDC + 2FA',
+        body: 'Token-Auth mit bcrypt, TOTP-Zwei-Faktor und Sperre nach wiederholten Fehlversuchen. Optionale Anmeldung per LDAP/AD oder OpenID Connect mit gruppenbasierter Admin-Vergabe. API-Token mit Scope für Skripte.',
       },
       '07': {
-        title: 'REST-API',
-        body: 'Alles, was das UI kann, ist auch ein API-Call. Boot-Zuweisungen, Scans, WoL-Trigger scriptbar. Live-Log-Stream per SSE.',
+        title: 'REST-API + OpenAPI',
+        body: 'Alles, was das UI kann, ist auch ein API-Call — beschrieben in einem generierten OpenAPI-Dokument. Boot-Zuweisungen, Scans, WoL-Trigger scriptbar. Live-Log-Stream per SSE. Jede Admin-Änderung landet im Audit-Log.',
       },
       '08': {
         title: 'Läuft überall',
@@ -93,6 +93,18 @@ const de = {
       '09': {
         title: 'Unbeaufsichtigte Installationen',
         body: 'autounattend.xml, Kickstart, Preseed oder cloud-init reinwerfen. Pro Image als Standard hinterlegen, pro Client überschreiben. Bootimus reicht es beim Boot durch — kein Klick, kein Setup-Wizard.',
+      },
+      '10': {
+        title: 'Disk-Imaging',
+        body: 'Die Platte eines Clients mit dem mitgelieferten Clonezilla sichern und beim nächsten PXE-Boot auf eine Maschine oder eine ganze Gruppe ausrollen. Jobs melden sich zurück, wenn sie fertig sind.',
+      },
+      '11': {
+        title: 'Lights-out-Steuerung',
+        body: 'Ein-, Ausschalten und Neustart per Redfish oder Intel AMT, AMT-Serial-over-LAN- oder IPMI-Konsole direkt im Browser, und jede PXE-Anfrage live auf der Debug-Seite.',
+      },
+      '12': {
+        title: 'Multi-Site',
+        body: 'Ein Primary, auf dem du alles verwaltest, und schreibgeschützte Replikate an den Standorten, die ihn spiegeln und lokale Clients aus lokalen Kopien booten.',
       },
     },
   },

@@ -39,6 +39,10 @@ services:
       # Uncomment to enable Windows unattended install (SMB share + boot.wim patch).
       # Also uncomment the 445 port mapping below.
       # BOOTIMUS_WINDOWS_SMB_ENABLED: "true"
+      # Uncomment to serve the admin interface over HTTPS with a self-signed
+      # certificate kept in /data/tls. Point BOOTIMUS_ADMIN_TLS_CERT_FILE and
+      # BOOTIMUS_ADMIN_TLS_KEY_FILE at mounted PEM files to use your own.
+      # BOOTIMUS_ADMIN_TLS_ENABLED: "true"
     networks:
       bootimus_net:
         ipv4_address: 172.20.0.3

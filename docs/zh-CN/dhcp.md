@@ -47,6 +47,7 @@ proxy_dhcp:
   bootfile_uefi: bootimus.efi            # UEFI x64
   bootfile_arm64: bootimus-arm64.efi     # UEFI ARM64
   no_bootfile_option: false              # true:为拒绝该选项的固件省略 option 67
+  no_vendor_option: false                # true:为会忽略带 option 43 的 Offer 的固件省略该选项
 ```
 
 默认关闭,以免让已经跑着 dnsmasq/ISC-DHCP/等的现有安装感到意外。
@@ -55,7 +56,7 @@ proxy_dhcp:
 
 - **绑定 UDP/67 和 UDP/4011。** UDP/67 需要 `CAP_NET_BIND_SERVICE` 或 root 权限;UDP/4011 是 PXE boot-server 发现端口,某些 UEFI ROM(尤其是 AMI/Supermicro)会在最初的 offer 之后从这个端口继续。Docker 中,默认镜像已经以 root 运行,所以无需额外 capability;仅在 rootless 设置中才需要 `--cap-add NET_BIND_SERVICE`。
 - **同一广播域。** proxyDHCP 依赖于看到客户端 DHCP 广播。它在扁平局域网或单个 VLAN 上工作。如果你的网络使用 DHCP 中继(`ip helper-address`)跨 VLAN 转发 DHCP,中继会转发到你的主 DHCP 但不转发到 Bootimus — 把 Bootimus 加为额外的中继目标,或把目标保持在与 Bootimus 同一个 VLAN。Bootimus 会按 RFC 2131 的要求,以单播方式把对中继请求的回复发送到中继地址(`giaddr`),由中继转交给客户端。
-- **并非所有固件都会合并两个 Offer。** 部分 UEFI PXE ROM 会忽略 Bootimus 的 Offer,或拒绝其中的 bootfile 选项,于是不断重发 `DHCPDISCOVER`,却始终不发送 `DHCPREQUEST`。先试试 `--proxy-dhcp-no-bootfile-option`(`BOOTIMUS_PROXY_DHCP_NO_BOOTFILE_OPTION=true`,或在 `proxy_dhcp` 下设置 `no_bootfile_option: true`):它会省略 option 67,只在传统 BOOTP `file` 字段中发送 bootfile,较旧或有缺陷的固件对此处理得更好。如果客户端仍然循环,请关闭 proxyDHCP,改为在主 DHCP 服务器上设置 `next-server` 和 bootfile(option 66/67),具体见下方各服务器的章节。
+- **并非所有固件都会合并两个 Offer。** 部分 UEFI PXE ROM 会忽略 Bootimus 的 Offer,或拒绝其中的 bootfile 选项,于是不断重发 `DHCPDISCOVER`,却始终不发送 `DHCPREQUEST`。先试试 `--proxy-dhcp-no-bootfile-option`(`BOOTIMUS_PROXY_DHCP_NO_BOOTFILE_OPTION=true`,或在 `proxy_dhcp` 下设置 `no_bootfile_option: true`):它会省略 option 67,只在传统 BOOTP `file` 字段中发送 bootfile,较旧或有缺陷的固件对此处理得更好。另一些固件(例如 Intel I219-V 的 UEFI PXE)则会忽略任何带有 option 43 的 Offer:设置 `--proxy-dhcp-no-vendor-option`(`BOOTIMUS_PROXY_DHCP_NO_VENDOR_OPTION=true`,或在 `proxy_dhcp` 下设置 `no_vendor_option: true`)可对所有客户端省略它,也可以只在受影响的客户端上勾选 **Omit PXE vendor option (43)**。如果客户端仍然循环,请关闭 proxyDHCP,改为在主 DHCP 服务器上设置 `next-server` 和 bootfile(option 66/67),具体见下方各服务器的章节。
 - **Docker 网络。** 使用 `macvlan`、`ipvlan` 或 `network_mode: host`,这样容器才是广播域里的一等参与者。默认桥接网络不行 — 广播会被困在 `docker0` 里。
 - **同一局域网上的两个 proxyDHCP 服务器是合法的,但调试是噩梦。** 如果你启用了 Bootimus 内置的 proxyDHCP,请在同一网络上禁用任何现有的、为 PXE 通告的 dnsmasq proxyDHCP。
 
@@ -508,6 +509,18 @@ Set-DhcpServerv4OptionValue -PolicyName "BIOS" -OptionId 67 -Value "undionly.kpx
 
 ## 故障排查
 
+### PXE Debug 页面
+
+在抓包之前,先打开管理侧边栏中的 **PXE Debug**。启用内建 proxyDHCP 后,Bootimus 会记录它在 UDP/67 和 UDP/4011 上收到的每一个 DHCP 数据包,并显示对每一个包做了什么:
+
+- **Replied**:它提供的引导文件(BIOS、UEFI 或 ARM64,根据选项 93 或厂商类别选择)、发送的是 OFFER 还是 ACK,以及回复发往了哪里(广播、中继地址,或直接发给客户端)。
+- **Ignored**:厂商类别不是 `PXEClient` 或 `HTTPClient`,也就是说该数据包只是一台已启动机器的普通 DHCP 请求,或者消息类型是 proxyDHCP 从不应答的类型。
+- **Failed**:回复无法构造或发送,并附带错误信息。
+
+每一行还显示来源地址、DHCP 中继转发请求时的中继地址(`giaddr`)、客户端架构、原始厂商类别、是否对该客户端省略了选项 43,以及是否检测到 Raspberry Pi 固件阶段。已发现的客户端会匹配到其名称。**Start Live** 每两秒刷新一次表格;**Clear** 清空历史。同样的数据也可以通过 `GET /api/proxydhcp/events` 获取。
+
+如果某个客户端从未出现在这个页面上,说明它的广播根本没有到达 Bootimus:请检查所绑定的接口(`--bind-interface`)、VLAN 和 DHCP 中继配置。如果它出现了并且有回复却仍然无法引导,说明固件没有接受该 offer;见下一节。
+
 ### 客户端未收到 DHCP Offer
 
 ```bash
@@ -528,7 +541,7 @@ sudo tcpdump -i eth0 port 67 or port 68
 
 ### 反复 DISCOVER 却没有 DHCPREQUEST(proxyDHCP)
 
-如果抓包显示客户端一次又一次发送 `DHCPDISCOVER`,同时收到了你的 DHCP 服务器和 Bootimus 的 Offer,却始终不发送 `DHCPREQUEST`(UDP/4011 上也没有任何流量),说明固件没有合并这两个 Offer。试试 `--proxy-dhcp-no-bootfile-option`;如果仍然无效,请关闭 proxyDHCP,并在主 DHCP 服务器上配置 option 66/67。
+如果抓包显示客户端一次又一次发送 `DHCPDISCOVER`,同时收到了你的 DHCP 服务器和 Bootimus 的 Offer,却始终不发送 `DHCPREQUEST`(UDP/4011 上也没有任何流量),说明固件没有合并这两个 Offer。试试 `--proxy-dhcp-no-bootfile-option`,然后试 `--proxy-dhcp-no-vendor-option`(或在客户端上勾选 **Omit PXE vendor option (43)**);如果仍然无效,请关闭 proxyDHCP,并在主 DHCP 服务器上配置 option 66/67。
 
 ```bash
 sudo tcpdump -i eth0 -n port 67 or port 68 or port 4011

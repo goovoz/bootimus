@@ -9,9 +9,12 @@
 - [二进制部署](#二进制部署)
 - [网络配置](#网络配置)
 - [存储配置](#存储配置)
+- [备份与恢复](#备份与恢复)
+- [保护管理界面](#保护管理界面)
 - [数据库选项](#数据库选项)
 - [远程更新与隐私](#远程更新与隐私)
 - [生产环境部署](#生产环境部署)
+- [多站点](#多站点)
 
 ## 快速开始
 
@@ -286,6 +289,88 @@ sudo journalctl -u bootimus -f
 3. **监控磁盘空间**:为低磁盘空间设置告警
 4. **清理旧 ISO**:删除未使用的 ISO 以释放空间
 
+## 备份与恢复
+
+### 创建备份
+
+**Settings → Backup → Download Backup**(或 `GET /api/backup/export`)会生成一个 `.tar.gz`,其中包含数据库的一致性快照(SQLite 为 `bootimus.db`,PostgreSQL 为以 `bootimus.sql` 保存的 `pg_dump`),以及数据目录中除 `isos/` 和 `tools/` 文件夹之外的所有内容,这两个文件夹里的内容都可以重新下载。
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -o bootimus-backup.tar.gz \
+  http://localhost:8081/api/backup/export
+```
+
+### 恢复备份
+
+从 **Settings → Backup → Upload and Restore** 上传备份,或使用 API:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -F backup=@bootimus-backup.tar.gz \
+  http://localhost:8081/api/backup/import
+```
+
+归档会先经过校验(gzip tar、没有绝对路径或 `..` 路径、没有符号链接、顶层有一个数据库、2 GiB 上限),然后解压到 `<data_dir>/.restore-pending/`。Bootimus 运行期间不会有任何改变:正在使用的数据库无法在运行中的服务器下被替换。恢复会在 Bootimus 下一次启动、打开数据库之前执行:
+
+1. **SQLite**:当前的 `bootimus.db` 被重命名为 `bootimus.db.pre-restore`(替换任何更早的副本),删除 WAL 和日志文件,然后由恢复的数据库取而代之。
+2. **PostgreSQL**:用 `psql` 把转储回放到所配置的数据库。`psql` 必须在 `PATH` 中;Docker 镜像自带 `postgresql-client`,独立安装需要在 `pg_dump` 之外一并安装。备份类型必须与所配置的数据库一致,因此 SQLite 备份无法恢复到 PostgreSQL 部署中。
+3. 其余文件(引导加载程序集、自动安装文件、自定义文件、驱动包)会复制到数据目录上。同名的现有文件会被替换;备份中没有的文件保持不变。
+
+如果任何一步失败,Bootimus 会记录错误并退出而不启动,暂存的恢复会原地保留,以便你修复原因(例如缺少 `psql`)后重新启动。要放弃恢复,请手动删除 `<data_dir>/.restore-pending/`,或在重启前使用 Settings 页面中的 **Cancel**。
+
+在重启发生之前,Settings 页面会显示 **Restore staged** 提示。`GET /api/backup/import` 报告同样的状态,`DELETE /api/backup/import` 则丢弃它。
+
+## 保护管理界面
+
+管理界面默认使用明文 HTTP,因此登录令牌、BMC 密码和备份都会未加密地穿过网络。除了放在自己桌上的实验环境之外,都应该开启 TLS。
+
+### 自签名证书
+
+```bash
+./bootimus serve --admin-tls
+```
+
+首次启动时,Bootimus 会生成一张有效期十年的 ECDSA P-256 证书,保存为 `<data_dir>/tls/admin.crt` 和 `admin.key`(权限 0600),并在之后每次启动时复用。主体备用名称涵盖服务器地址、主机名、`localhost` 和回环地址。SHA-256 指纹会在启动时写入日志并显示在 **Server Info** 下,方便与浏览器报告的指纹比对。
+
+在你信任该证书之前,浏览器会发出警告:
+
+- **Firefox**:打开管理地址,选择 *Advanced* → *Accept the Risk and Continue*。
+- **Chrome / Edge**:打开管理地址,点击 *Advanced* → *Proceed*,或把 `admin.crt` 导入系统信任存储以永久消除警告。
+- **curl**:传入 `--cacert data/tls/admin.crt`,或用 `-k` 跳过校验。
+
+删除这两个文件并重启即可生成新证书,例如在更改服务器地址之后。
+
+### 使用你自己的证书
+
+```bash
+./bootimus serve --admin-tls --admin-tls-cert /etc/bootimus/admin.pem --admin-tls-key /etc/bootimus/admin-key.pem
+```
+
+两个文件都必须是 PEM 格式。证书文件可以包含完整的证书链。Bootimus 要求 TLS 1.2 或更高版本。更新文件后,向进程发送 `SIGHUP`,新证书会在不重启的情况下生效:
+
+```bash
+kill -HUP $(pidof bootimus)
+```
+
+如果重新加载失败,之前的证书继续使用,并记录错误。
+
+配置文件中的等价写法:
+
+```yaml
+admin_tls:
+  enabled: true
+  cert_file: /etc/bootimus/admin.pem
+  key_file: /etc/bootimus/admin-key.pem
+  redirect_port: 8082   # optional: plain HTTP here redirects to HTTPS
+```
+
+环境变量:`BOOTIMUS_ADMIN_TLS_ENABLED`、`BOOTIMUS_ADMIN_TLS_CERT_FILE`、`BOOTIMUS_ADMIN_TLS_KEY_FILE`、`BOOTIMUS_ADMIN_TLS_SELF_SIGNED`、`BOOTIMUS_ADMIN_TLS_REDIRECT_PORT`。
+
+### 说明
+
+- 只有管理端口会改变。引导端口保持 HTTP,因为 iPXE 客户端要从它获取内核和菜单,管理界面也因此继续用 `http://` 构造 ISO 和文件链接。
+- 只要请求经由 TLS 到达,OIDC 登录就会为其状态 cookie 设置 `Secure` 标志,所以请把 `oidc.redirect_url` 设为管理界面的 `https://` 地址。
+- 如果你已经在运行 Caddy、nginx 或 Traefik 之类的反向代理,把它放在管理端口前面仍是不错的替代方案;这种情况下保持 `admin_tls.enabled` 关闭,在代理处终止 TLS。
+
 ## 数据库选项
 
 ### SQLite 模式(默认)
@@ -461,6 +546,7 @@ db:
 export BOOTIMUS_TFTP_PORT=69
 export BOOTIMUS_HTTP_PORT=8080
 export BOOTIMUS_ADMIN_PORT=8081
+export BOOTIMUS_ADMIN_TLS_ENABLED=true          # HTTPS admin interface, self-signed unless cert and key are set
 export BOOTIMUS_DATA_DIR=/var/lib/bootimus/data
 export BOOTIMUS_SERVER_ADDR=192.168.1.100
 
@@ -534,6 +620,10 @@ rm /opt/bootimus/data/isos/old-image.iso
 # Scan for new ISOs to update database
 curl -u admin:password -X POST http://localhost:8081/api/scan
 ```
+
+## 多站点
+
+分支机构可以运行一个只读副本,镜像本实例并用本地副本引导本地客户端。请参阅[多站点指南](multi-site.md)。
 
 ## 下一步
 

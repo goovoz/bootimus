@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"bootimus/internal/auth"
+	"bootimus/internal/models"
 	"bootimus/internal/storage"
 
 	"github.com/spf13/cobra"
@@ -26,7 +28,7 @@ Useful for emergency recovery if you've locked yourself out of the admin UI
 
 var userListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all local users",
+	Short: "List all users",
 	Run: func(cmd *cobra.Command, args []string) {
 		store := openStoreOrExit()
 		users, err := store.ListUsers()
@@ -34,9 +36,9 @@ var userListCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Failed to list users: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("%-20s %-8s %-8s\n", "USERNAME", "ENABLED", "ADMIN")
+		fmt.Printf("%-20s %-8s %-8s %-8s\n", "USERNAME", "SOURCE", "ENABLED", "ADMIN")
 		for _, u := range users {
-			fmt.Printf("%-20s %-8v %-8v\n", u.Username, u.Enabled, u.IsAdmin)
+			fmt.Printf("%-20s %-8s %-8v %-8v\n", u.Username, u.AuthSource(), u.Enabled, u.IsAdmin)
 		}
 	},
 }
@@ -95,8 +97,35 @@ for non-interactive/scripted use.`,
 	},
 }
 
+var userResetTOTPCmd = &cobra.Command{
+	Use:   "reset-totp <username>",
+	Short: "Remove two-factor authentication from a local user",
+	Long: `Turn off TOTP two-factor authentication for a user who has lost their
+authenticator and recovery codes, so they can sign in with their password again.`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		store := openStoreOrExit()
+		user, err := store.GetUser(args[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "User not found: %s\n", args[0])
+			os.Exit(1)
+		}
+		if !user.TOTPEnabled && user.TOTPSecret == "" {
+			fmt.Printf("Two-factor authentication is not enabled for %s\n", user.Username)
+			return
+		}
+		auth.ClearTOTP(user)
+		if err := store.UpdateUser(user.Username, user); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to update user: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Two-factor authentication removed for %s\n", user.Username)
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(userCmd)
+	userCmd.AddCommand(userResetTOTPCmd)
 	userCmd.AddCommand(userListCmd)
 	userCmd.AddCommand(userEnableCmd)
 	userCmd.AddCommand(userDisableCmd)
@@ -186,6 +215,10 @@ func setUserPassword(username string) {
 	user, err := store.GetUser(username)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "User not found: %s\n", username)
+		os.Exit(1)
+	}
+	if user.AuthSource() != models.UserSourceLocal {
+		fmt.Fprintf(os.Stderr, "%s is a %s user; their password is managed by the identity provider\n", username, strings.ToUpper(user.AuthSource()))
 		os.Exit(1)
 	}
 

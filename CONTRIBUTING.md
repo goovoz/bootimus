@@ -50,6 +50,7 @@ We're building test coverage incrementally — there's no expectation that every
 - **Stick to the standard library `testing` package.** `t.Errorf` and `t.Fatalf` cover what we need; no extra runners or assertion libraries.
 - **Flakes get fixed or deleted.** A test that passes 99/100 times is worse than no test.
 - **Run `go test ./...`** before pushing.
+- **Integration tests** that need an external service skip themselves unless it's available. `make test-integration` starts a throwaway OIDC provider ([mock-oauth2-server](https://github.com/navikt/mock-oauth2-server)) in Docker and runs the OIDC sign-in tests against it; CI runs this on every pull request.
 
 If your PR changes behaviour in a tested package, ideally add a test that fails on the old behaviour and passes on the new. If that's hard without an invasive refactor, just call it out in the PR description.
 

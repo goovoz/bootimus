@@ -1,5 +1,5 @@
 # Stage 1: Build the binary
-FROM golang:1.25 AS builder
+FROM golang:1.27.1 AS builder
 
 WORKDIR /build
 
@@ -31,7 +31,7 @@ COPY --from=builder /out/ /
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wimtools samba ca-certificates libarchive-tools \
+    wimtools samba ca-certificates libarchive-tools postgresql-client ipmitool \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/bootimus /bootimus
