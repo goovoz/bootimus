@@ -47,7 +47,7 @@ func TestDownloadRemovesFileOnChecksumMismatch(t *testing.T) {
 	h := &Handler{isoDir: t.TempDir()}
 	dest := filepath.Join(h.isoDir, "test.iso")
 	downloadMgr.TryBegin(srv.URL+"/pub/test.iso", "test.iso")
-	h.downloadISO(srv.URL+"/pub/test.iso", "test.iso", dest, downloadOptions{SHA256: strings.Repeat("0", 64)})
+	h.downloadISO(srv.URL+"/pub/test.iso", "test.iso", dest, downloadOptions{SHA256: strings.Repeat("0", 64)}, false)
 	p := waitForDownload(t, "test.iso")
 	if p.Status != "error" || p.Verification != "mismatch" || !strings.Contains(p.Error, "mismatch") {
 		t.Fatalf("progress = %+v", p)
@@ -64,7 +64,7 @@ func TestDownloadVerifiesAgainstDiscoveredChecksumFile(t *testing.T) {
 	h := &Handler{isoDir: t.TempDir()}
 	dest := filepath.Join(h.isoDir, "test.iso")
 	downloadMgr.TryBegin(srv.URL+"/pub/test.iso", "test.iso")
-	h.downloadISO(srv.URL+"/pub/test.iso", "test.iso", dest, downloadOptions{CatalogueID: "demo"})
+	h.downloadISO(srv.URL+"/pub/test.iso", "test.iso", dest, downloadOptions{CatalogueID: "demo"}, false)
 	p := waitForDownload(t, "test.iso")
 	if p.Status != "completed" || p.Verification != "verified" {
 		t.Fatalf("progress = %+v", p)
@@ -84,7 +84,7 @@ func TestDownloadWithoutChecksumIsUnverified(t *testing.T) {
 	h := &Handler{isoDir: t.TempDir()}
 	dest := filepath.Join(h.isoDir, "test.iso")
 	downloadMgr.TryBegin(srv.URL+"/plain/test.iso", "test.iso")
-	h.downloadISO(srv.URL+"/plain/test.iso", "test.iso", dest, downloadOptions{})
+	h.downloadISO(srv.URL+"/plain/test.iso", "test.iso", dest, downloadOptions{}, false)
 	p := waitForDownload(t, "test.iso")
 	if p.Status != "completed" || p.Verification != "unverified" {
 		t.Fatalf("progress = %+v", p)
