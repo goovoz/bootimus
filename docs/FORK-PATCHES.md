@@ -27,10 +27,13 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
    | 判定 | 含义 | 自动动作 |
    |---|---|---|
    | `NEEDED` | 上游仍未实现 | `git rebase upstream/main` 重放补丁 |
-   | `SUSPECT` | 出现相关痕迹但证据不足 | 照常重放，同时在总结里**告警**要求人工确认 |
-   | `IMPLEMENTED` | 上游自己实现了 | `reset` 到上游、删除补丁、写退役记录（上游实现直接顶替我们的） |
+   | `SUSPECT` | 出现相关痕迹但证据不足 / 能力部分重叠 | 照常重放，同时在总结里**告警**要求人工确认 |
+   | `IMPLEMENTED` | 上游自己实现了 | **只摘掉该补丁的那组提交**：以上游为新基线，按原顺序 cherry-pick 其余提交，再写退役记录 |
+   | `UNKNOWN` | 探测不了（上游结构大改 / 探测器崩） | **停手**：不 rebase、不推送，直接失败等人工 |
 
-5. `go build ./...` + `go test ./internal/admin/` 通过后才推送
+5. `go build ./...` + `go vet ./...` + `go test ./...` 通过后才推送
+   （2026-10-25 起是全量测试；以前只跑 `./internal/admin/`，`internal/autoinstall` 的 13 个
+   用例在 CI 里从来没被执行过）
 6. rebase 冲突 → 不开天窗：把冲突原样提交到 `sync-conflict-*` 分支并开 PR 标 `[需人工]`，
    工作流故意失败提醒
 
@@ -77,13 +80,23 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 
 ### 退役是安全的
 
-退役前会先把补丁提交原样推到归档分支 `fork-archive/iso-url-no-suffix-<日期>`，
-再 `reset` 到上游。万一自动判定错了，一条命令就能拿回来：
+退役前会先把当前 `main` 原样推到归档分支 `fork-archive/<补丁 id>-<时间戳>`，再从上游重建。
+万一自动判定错了，一条命令就能拿回来：
 
 ```bash
-git checkout -b restore-iso-url-no-suffix fork-archive/iso-url-no-suffix-YYYYMMDD
+git checkout -b restore-iso-url-no-suffix fork-archive/iso-url-no-suffix-YYYYMMDD-HHMMSS
 # 或：git cherry-pick <归档分支上的补丁提交>
 ```
+
+**退役不是 `git reset --hard <上游>`**（2026-10-25 修正）。这个仓库有 6 组补丁 + 20 多个
+元数据提交，`reset --hard` 会把它们一次性全部丢掉——那不叫「让一个补丁让位」，叫清空 fork。
+现在实现为：
+
+1. 从上游 `<UP>` 建分支
+2. `git rev-list --reverse <UP>..<旧 HEAD>` 按原顺序遍历超出的提交
+3. 跳过 trailer 等于 `Fork-Patch: <目标 id>` 的提交，其余全部 `cherry-pick`
+4. 任一步冲突 → `cherry-pick --abort`，**main 不动**，工作流失败等人工
+5. 全部重放成功后才 `mark_retired.py` 写记录并提交（`Fork-Meta: retire-<id>`）
 
 同时 `docs/FORK-PATCHES.md` 的退役记录会写清「哪天、上游哪个 commit、为什么退役」。
 
@@ -456,6 +469,47 @@ preseed 是更早的 debian-installer 路线：Ubuntu 到 20.04 为止用它，D
 - **兼容单引号与绝对地址**：`href` 以前只认双引号，Apache 风格的目录页一律解析失败。
 - **失败短缓存（2 分钟）**：解析失败时以前每次下载前都打三个请求（HEAD + 列目录 + HEAD）。
 - **HEAD 405/501 不再当成「文件没了」**：这类服务器直接按原样放行，不做改写。
+
+## 加固（2026-10-25）：同步机制 + 四处代码
+
+### 同步机制（这三条是当天的头号问题）
+
+- **`git log ... | head -30` 会杀死整个 job**：`head` 读满 30 行关管道 → `git log` 收 SIGPIPE
+  → 退出 141 → 配 `set -euo pipefail` 直接整步失败。2026-10-24 上游一次推了 115 个提交，
+  同步就此停摆，fork 静默落后 126 个提交，而每天的定时任务只会重复这个失败。
+  现在用 `git log --oneline --max-count=30`（不产生管道），并把总条数打进日志。
+- **退役不再 `reset --hard`**：见上文「退役是安全的」。顺带把写死的 `iso-url-no-suffix`
+  改成从 `PATCH_ID` 变量取，为后续多补丁退役留出口子。
+- **`UNKNOWN` 停手**：以前 `result != IMPLEMENTED` 就 rebase，探测器崩了也照推。现在三态
+  之外的一切结果都走「判定失败 → 停手」步骤。
+- `编译与测试` 从 `go test ./internal/admin/` 改成 `go build ./... && go vet ./... && go test ./...`。
+
+### `autoinstall-generator`
+
+- **符号改名避让上游**：上游 2026-10-24 的 PR #201 新增了
+  `internal/autoinstall/render.go`（`Render(content, vars)`）与 `validate.go`（`Validate(filename, content)`）。
+  同一个包里同名会直接编译失败，而 `git rebase` 是行级的、不会报冲突。现在改成
+  `RenderTemplate(id, values)` / `ValidateAnswerFile(format, content)`，并已用「把上游三个文件
+  塞进本包再编译」的方式预演验证：不再有 `redeclared`。
+- **`select` 字段开始校验白名单**：以前 `Type: "select"` 的字段完全不校验，一个手写请求就能把
+  任意单行文本写进答案文件（实测 `recipe="<script>alert(1)</script>"` → 200 且写入
+  `d-i partman-auto/choose_recipe select <script>alert(1)</script>`）。现在必须命中
+  `Var.Options` 里的某个 value，否则 400。
+- 探测器改为**三态 + SUSPECT**：上游有 `render.go` / `validate.go` / `autoinstall-files/render`
+  但**没有内置模板库**时返回 `SUSPECT`（能力互补、需人工合并），不再误报 `NEEDED`。
+
+### `iso-url-no-suffix` / `iso-catalog-resolve` / `download-resume`
+
+- **解析与探测走同一条链路**：`resolveLatestISOURL` 和 `probeRemoteISOFilename` 以前各自新建
+  裸 `http.Client`，忽略代理配置——用户正是因为直连不到才配代理，结果下载前的两次解析仍直连，
+  表现成「解析失败 → 原 URL → 404」。现在两者都接收调用方传入的 client
+  （`h.resolveClient(useProxy)`，复用下载 Transport + 25s 整体超时），`/api/iso-catalog/resolve`
+  也支持 `use_proxy` 字段。
+- **统一 UA**：探测原本用 `bootimus/iso-download-probe`，解析用 Chrome UA。镜像站按 UA 拦人是
+  已知坑，现在共用 `isoUserAgent`。
+- **完成前校验字节数**：读到 `io.EOF` 就 rename 的旧逻辑在 chunked 响应（`ContentLength = -1`）
+  下挡不住截断——中间代理把半条响应「正常」收尾，残缺文件就会被当成 ISO 入库。现在
+  `meta.Total > 0` 时必须 `written == meta.Total`，否则保留 `.part` 并报错。
 
 ## 新增一个补丁的步骤
 
