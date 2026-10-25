@@ -85,11 +85,11 @@ func TestResolveLatestISOURLPicksNewest(t *testing.T) {
 	srv := fakeMirror(t)
 	defer srv.Close()
 
-	if _, _, err := resolveLatestISOURL(srv.URL + "/iso-cd/missing-1.0-amd64-netinst.iso"); err == nil {
+	if _, _, err := resolveLatestISOURL(testHTTPClient(), srv.URL+"/iso-cd/missing-1.0-amd64-netinst.iso"); err == nil {
 		t.Fatal("expected an error when nothing matches")
 	}
 
-	got, changed, err := resolveLatestISOURL(srv.URL + "/iso-cd/debian-13.5.0-amd64-netinst.iso")
+	got, changed, err := resolveLatestISOURL(testHTTPClient(), srv.URL+"/iso-cd/debian-13.5.0-amd64-netinst.iso")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestResolveLatestISOURLKeepsWorkingURL(t *testing.T) {
 	defer srv.Close()
 
 	raw := srv.URL + "/iso-cd/debian-13.7.0-amd64-netinst.iso"
-	got, changed, err := resolveLatestISOURL(raw)
+	got, changed, err := resolveLatestISOURL(testHTTPClient(), raw)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestResolveKeepsQueryString(t *testing.T) {
 	defer srv.Close()
 
 	raw := srv.URL + "/iso-cd/app-1.0-amd64.iso?token=abc"
-	got, changed, err := resolveLatestISOURL(raw)
+	got, changed, err := resolveLatestISOURL(testHTTPClient(), raw)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestResolveAcceptsSingleQuotedHrefs(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	got, changed, err := resolveLatestISOURL(srv.URL + "/iso/tool-8.0-amd64.iso")
+	got, changed, err := resolveLatestISOURL(testHTTPClient(), srv.URL+"/iso/tool-8.0-amd64.iso")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -193,10 +193,10 @@ func TestResolveCachesFailures(t *testing.T) {
 	defer srv.Close()
 
 	raw := srv.URL + "/iso/none-1.0-amd64.iso"
-	if _, _, err := resolveLatestISOURL(raw); err == nil {
+	if _, _, err := resolveLatestISOURL(testHTTPClient(), raw); err == nil {
 		t.Fatal("expected an error")
 	}
-	if _, _, err := resolveLatestISOURL(raw); err == nil {
+	if _, _, err := resolveLatestISOURL(testHTTPClient(), raw); err == nil {
 		t.Fatal("expected an error on the cached path too")
 	}
 	if n := atomic.LoadInt32(&listHits); n != 1 {

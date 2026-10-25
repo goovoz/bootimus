@@ -84,6 +84,7 @@
       "touches": [
         "internal/autoinstall/generate.go",
         "internal/autoinstall/generate_test.go",
+        "internal/autoinstall/sanitize.go",
         "internal/autoinstall/templates/preseed.tmpl",
         "internal/autoinstall/templates/kickstart.tmpl",
         "internal/autoinstall/templates/ubuntu-autoinstall.tmpl",
@@ -98,7 +99,7 @@
         "go.mod",
         "go.sum"
       ],
-      "retire_policy": "探测到 IMPLEMENTED（上游出现 autoinstall-templates 接口或 generate.go）→ 只告警不自动退役，需人工比对模板覆盖面后再移除",
+      "retire_policy": "SUSPECT（上游有 render.go / validate.go / autoinstall-files/render 但没有内置模板库）→ 保留并告警，需人工合并：同包同名符号已在 2026-10-25 改名为 RenderTemplate / ValidateAnswerFile 避让；IMPLEMENTED（上游直接提供 autoinstall-templates 或 generate.go）→ 只告警不自动退役，人工比对模板覆盖面后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
     },
