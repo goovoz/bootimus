@@ -99,7 +99,7 @@ func TestDownloadISOPlain(t *testing.T) {
 	defer srv.Close()
 
 	h, dir := newTestHandler(t)
-	h.downloadISO(srv.URL+"/plain.iso", "plain.iso", filepath.Join(dir, "plain.iso"), "", false)
+	h.downloadISO(srv.URL+"/plain.iso", "plain.iso", filepath.Join(dir, "plain.iso"), downloadOptions{}, false)
 
 	if got := readISO(t, dir, "plain.iso"); !bytes.Equal(got, payload) {
 		t.Fatalf("downloaded %d bytes, want %d", len(got), len(payload))
@@ -123,7 +123,7 @@ func TestDownloadISOResumesFromPartial(t *testing.T) {
 	name := "resume.iso"
 	writePartial(t, dir, name, payload[:120*1024], srv.URL+"/"+name)
 
-	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), "", false)
+	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), downloadOptions{}, false)
 
 	if seenRange != "bytes=122880-" {
 		t.Errorf("Range header = %q, want %q (partial was not resumed)", seenRange, "bytes=122880-")
@@ -153,7 +153,7 @@ func TestDownloadISORestartsWhenSourceIgnoresRange(t *testing.T) {
 	name := "norange.iso"
 	writePartial(t, dir, name, payload[:40*1024], srv.URL+"/"+name)
 
-	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), "", false)
+	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), downloadOptions{}, false)
 
 	got := readISO(t, dir, name)
 	if !bytes.Equal(got, payload) {
@@ -176,7 +176,7 @@ func TestDownloadISORestartsWhenEntityChanged(t *testing.T) {
 		t.Fatalf("write meta: %v", err)
 	}
 
-	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), "", false)
+	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), downloadOptions{}, false)
 
 	if got := readISO(t, dir, name); !bytes.Equal(got, payload) {
 		t.Fatalf("file has %d bytes, want %d (If-Range mismatch not handled)", len(got), len(payload))
@@ -193,7 +193,7 @@ func TestDownloadISODiscardsPartialFromOtherURL(t *testing.T) {
 	name := "otherurl.iso"
 	writePartial(t, dir, name, bytes.Repeat([]byte("z"), 30*1024), "https://elsewhere.invalid/"+name)
 
-	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), "", false)
+	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), downloadOptions{}, false)
 
 	if got := readISO(t, dir, name); !bytes.Equal(got, payload) {
 		t.Fatalf("file has %d bytes, want %d (partial from another URL was reused)", len(got), len(payload))
@@ -228,7 +228,7 @@ func TestDownloadISOFinishesCompletePartial(t *testing.T) {
 	// The partial already holds every byte; a Range request gets 416.
 	writePartial(t, dir, name, payload, srv.URL+"/"+name)
 
-	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), "", false)
+	h.downloadISO(srv.URL+"/"+name, name, filepath.Join(dir, name), downloadOptions{}, false)
 
 	if seenStatus != "416" {
 		t.Errorf("status = %s, want 416", seenStatus)
