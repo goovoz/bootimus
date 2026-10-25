@@ -224,7 +224,9 @@ jobs:
           git log --oneline -3
 
       - name: 判定失败 → 停手
-        if: steps.inspect.outputs.result != 'IMPLEMENTED' && steps.inspect.outputs.result != 'NEEDED' && steps.inspect.outputs.result != 'SUSPECT'
+        # 只有「上游确实有新提交、但探测器没给出可用判定」才停手。
+        # 上游无新提交时判定步骤根本不会跑，outputs 是空的，不能把它当成 UNKNOWN。
+        if: steps.gate.outputs.changed == 'true' && steps.inspect.outputs.result != 'IMPLEMENTED' && steps.inspect.outputs.result != 'NEEDED' && steps.inspect.outputs.result != 'SUSPECT'
         run: |
           echo "::error::补丁判定为 '${{ steps.inspect.outputs.result }}'（UNKNOWN/空），按约定停手：不 rebase、不推送，等人工确认上游结构变化"
           echo "判定依据：${{ steps.inspect.outputs.reason }}"
@@ -336,20 +338,24 @@ jobs:
             echo "| 项 | 值 |"
             echo "|---|---|"
             echo "| 上游 HEAD | \`${{ steps.gate.outputs.sha }}\` |"
-            echo "| 是否有新提交 | ${{ steps.gate.outputs.changed }} |"
-            echo "| 本地补丁提交数 | ${{ steps.inspect.outputs.patches }} |"
-            echo "| 补丁判定 | **${{ steps.inspect.outputs.result }}** |"
-            echo "| 判定依据 | ${{ steps.inspect.outputs.reason }} |"
-            if [ "${{ steps.inspect.outputs.result }}" = "IMPLEMENTED" ]; then
-              echo "| 采取动作 | 上游已实现，补丁已退役（其余补丁已重放） |"
-            elif [ "${{ steps.inspect.outputs.result }}" != "NEEDED" ] && [ "${{ steps.inspect.outputs.result }}" != "SUSPECT" ]; then
-              echo "| 采取动作 | **判定失败（${{ steps.inspect.outputs.result }}），已停手** |"
-            elif [ "${{ steps.keep.outputs.conflict }}" = "true" ]; then
-              echo "| 采取动作 | **冲突待人工**（分支 \`${{ steps.keep.outputs.conflict_branch }}\`） |"
-            elif [ "${{ steps.gate.outputs.changed }}" = "true" ]; then
-              echo "| 采取动作 | 补丁已重放到新上游 |"
+            if [ "${{ steps.gate.outputs.changed }}" != "true" ]; then
+              # 没有新提交时判定步骤不会执行，outputs 全空，别把空值当成判定结果
+              echo "| 是否有新提交 | false |"
+              echo "| 采取动作 | 无（已是最新，未做判定） |"
             else
-              echo "| 采取动作 | 无（已是最新） |"
+              echo "| 是否有新提交 | true |"
+              echo "| 本地补丁提交数 | ${{ steps.inspect.outputs.patches }} |"
+              echo "| 补丁判定 | **${{ steps.inspect.outputs.result }}** |"
+              echo "| 判定依据 | ${{ steps.inspect.outputs.reason }} |"
+              if [ "${{ steps.inspect.outputs.result }}" = "IMPLEMENTED" ]; then
+                echo "| 采取动作 | 上游已实现，补丁已退役（其余补丁已重放） |"
+              elif [ "${{ steps.inspect.outputs.result }}" != "NEEDED" ] && [ "${{ steps.inspect.outputs.result }}" != "SUSPECT" ]; then
+                echo "| 采取动作 | **判定失败（${{ steps.inspect.outputs.result }}），已停手** |"
+              elif [ "${{ steps.keep.outputs.conflict }}" = "true" ]; then
+                echo "| 采取动作 | **冲突待人工**（分支 \`${{ steps.keep.outputs.conflict_branch }}\`） |"
+              else
+                echo "| 采取动作 | 补丁已重放到新上游 |"
+              fi
             fi
             echo ""
             echo "机制说明见 [docs/FORK-PATCHES.md](../blob/main/docs/FORK-PATCHES.md)。"
