@@ -10,6 +10,7 @@
 .github/scripts/detect-download-resume.sh
 .github/scripts/mark_retired.py
 .github/scripts/prune-caches.py
+.github/scripts/prune-conflict-branches.sh
 .github/workflows/sync-upstream.yml
 .github/workflows/fork-release.yml
 .github/workflows/fork-follow-upstream-release.yml

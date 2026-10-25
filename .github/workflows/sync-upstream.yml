@@ -17,10 +17,14 @@ on:
           - pr
         default: direct
         required: false
+      keep_days:
+        description: "过期冲突分支保留天数（默认 7）"
+        required: false
+        default: "7"
 
 permissions:
   contents: write
-  pull-requests: write
+  pull-requests: write # 清理冲突分支时要查有没有开着的 PR
 
 concurrency:
   group: sync-upstream
@@ -360,3 +364,13 @@ jobs:
             echo ""
             echo "机制说明见 [docs/FORK-PATCHES.md](../blob/main/docs/FORK-PATCHES.md)。"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # 冲突分支只是「给人看现场」的临时载体，解决完就没用了。这里兜底清掉过期的：
+      # 超过 keep_days 天且没有开着的 PR 才删，只碰 sync-conflict/*，绝不动 fork-archive/*。
+      # 放在最后并 always()：即使本次同步失败/冲突，也要把更老的那些清掉。
+      - name: 清理过期冲突分支
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          KEEP_DAYS: ${{ inputs.keep_days || '7' }}
+        run: bash .github/scripts/prune-conflict-branches.sh
