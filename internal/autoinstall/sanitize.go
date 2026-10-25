@@ -120,6 +120,28 @@ func sanitizeValue(format string, v Var, val string) (string, error) {
 		}
 	}
 
+	// select 字段只能取模板声明过的选项。以前这里完全没有校验：一个手写（或被抓包重放）
+	// 的请求就能把任意单行文本塞进答案文件——例如
+	//   d-i partman-auto/choose_recipe select <script>alert(1)</script>
+	// 结果不是 400，而是静默产出一份装不起来的配置。换行虽然被 checkCharacters 挡住，
+	// 但那只能防「多插一行指令」，防不住「把这一行写坏」。
+	if v.Type == "select" && len(v.Options) > 0 {
+		allowed := false
+		for _, o := range v.Options {
+			if o.Value == val {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			names := make([]string, 0, len(v.Options))
+			for _, o := range v.Options {
+				names = append(names, o.Value)
+			}
+			return "", fmt.Errorf("%s: %q is not one of: %s", v.Label, val, strings.Join(names, ", "))
+		}
+	}
+
 	if re := patternFor(format, v.Name); re != nil && !re.MatchString(val) {
 		if reTokenRef.MatchString(val) {
 			return "", fmt.Errorf("%s: %s is a per-client token, but this field does not support it", v.Label, val)

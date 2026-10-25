@@ -52,8 +52,11 @@ jobs:
             echo "上游无新提交（${UP}），本次不做任何改动"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "上游有新提交："
-            git log --oneline "HEAD..${UP}" | head -30
+            echo "上游有新提交（共 $(git rev-list --count "HEAD..${UP}") 个，最多列 30 个）："
+            # 不要写成 `git log ... | head -30`：head 读满就关管道，git 吃 SIGPIPE 退出 141，
+            # 配上 set -o pipefail 会让整步失败。2026-10-24 上游一次推了 115 个提交，
+            # 同步就是被这一行卡死的（之后每次都红在门禁，fork 静默落后 126 个提交）。
+            git log --oneline --max-count=30 "HEAD..${UP}"
           fi
 
       - name: Set up Go
@@ -96,22 +99,24 @@ jobs:
           # 判定跑在【上游代码】上，不跑自己的实现
           mkdir -p /tmp/upstream-tree
           git archive "${UP}" | tar -x -C /tmp/upstream-tree
-          bash .github/scripts/detect-iso-url-no-suffix.sh /tmp/upstream-tree | tee /tmp/detect.txt
+          # 探测器崩溃不能把整步拖死：结果为空会被后面当成 UNKNOWN，而 UNKNOWN 现在是停手，
+          # 比「管道失败导致 job 直接红掉、什么信息都没有」好排查。
+          bash .github/scripts/detect-iso-url-no-suffix.sh /tmp/upstream-tree | tee /tmp/detect.txt || true
 
           # [bootimus-fork] 第二个补丁：中文覆盖。只做判定与告警，不参与自动退役逻辑
-          bash .github/scripts/detect-i18n-zh-full.sh /tmp/upstream-tree | tee /tmp/detect-i18n.txt
+          bash .github/scripts/detect-i18n-zh-full.sh /tmp/upstream-tree | tee /tmp/detect-i18n.txt || true
 
           # [bootimus-fork] 下载代理补丁：只判定与告警
-          bash .github/scripts/detect-download-proxy.sh /tmp/upstream-tree | tee /tmp/detect-dlproxy.txt
+          bash .github/scripts/detect-download-proxy.sh /tmp/upstream-tree | tee /tmp/detect-dlproxy.txt || true
 
           # [bootimus-fork] 断点续传补丁：只判定与告警
-          bash .github/scripts/detect-download-resume.sh /tmp/upstream-tree | tee /tmp/detect-resume.txt
+          bash .github/scripts/detect-download-resume.sh /tmp/upstream-tree | tee /tmp/detect-resume.txt || true
 
           # [bootimus-fork] 自动安装生成器补丁：只判定与告警
-          bash .github/scripts/detect-autoinstall-generator.sh /tmp/upstream-tree | tee /tmp/detect-aigen.txt
+          bash .github/scripts/detect-autoinstall-generator.sh /tmp/upstream-tree | tee /tmp/detect-aigen.txt || true
 
           # [bootimus-fork] ISO 目录版本号解析补丁：只判定与告警
-          bash .github/scripts/detect-iso-catalog-resolve.sh /tmp/upstream-tree | tee /tmp/detect-isores.txt
+          bash .github/scripts/detect-iso-catalog-resolve.sh /tmp/upstream-tree | tee /tmp/detect-isores.txt || true
 
 
           RESULT=$(sed -n 's/^RESULT=//p' /tmp/detect.txt | head -1)
@@ -170,27 +175,60 @@ jobs:
         run: |
           set -euo pipefail
           UP="${{ steps.gate.outputs.sha }}"
-          echo "上游已自行实现该能力，删除 fork 补丁，让上游实现在位"
+          PATCH_ID="iso-url-no-suffix"
+          OLD="$(git rev-parse HEAD)"
+          echo "上游已自行实现 ${PATCH_ID}，从 main 上摘掉这组补丁，其余补丁与元数据照常保留"
 
-          # 先把补丁原样存进归档分支：自动退役判断错了也能一条命令拿回来
-          ARCH="fork-archive/iso-url-no-suffix-$(date -u +%Y%m%d)"
-          git branch -f "${ARCH}" HEAD
+          # 先把当前 main 原样存进归档分支：自动判定错了也能一条命令拿回来
+          ARCH="fork-archive/${PATCH_ID}-$(date -u +%Y%m%d-%H%M%S)"
+          git branch -f "${ARCH}" "${OLD}"
           git push origin "${ARCH}"
           echo "补丁已归档到 ${ARCH}"
 
-          git reset --hard "${UP}"
-          python3 .github/scripts/mark_retired.py iso-url-no-suffix "${UP}" \
+          # 关键：这里曾经是 `git reset --hard "${UP}"`。那会把 main 上「超出上游的全部提交」
+          # 一次性丢掉 —— 6 组补丁（28 个提交）加 21 个元数据提交（发布流水线、watchdog、
+          # 文档、i18n 工具链）全没了。退役的语义是「只让这一组补丁让位」，
+          # 所以正确做法是以上游为新基线，按原顺序重放「除目标补丁之外」的全部提交。
+          REPLAY=()
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            if git log -1 --format='%B' "$c" | grep -qx "Fork-Patch: ${PATCH_ID}"; then
+              echo "跳过 ${c:0:8} $(git log -1 --format=%s "$c")"
+              continue
+            fi
+            REPLAY+=("$c")
+          done < <(git rev-list --reverse "${UP}..${OLD}")
+          echo "待重放 ${#REPLAY[@]} 个提交（已排除 ${PATCH_ID} 的全部提交）"
+
+          git checkout -q -B "retire/${PATCH_ID}" "${UP}"
+          for c in "${REPLAY[@]}"; do
+            if ! git cherry-pick "$c" >/dev/null 2>&1; then
+              echo "::error::重放 ${c:0:8} 时冲突，退役中止：main 未改动，补丁已完整归档到 ${ARCH}"
+              git cherry-pick --abort || true
+              exit 1
+            fi
+          done
+
+          python3 .github/scripts/mark_retired.py "${PATCH_ID}" "${UP}" \
             "上游在 ${UP:0:8} 自行实现同等能力，补丁自动退役（归档 ${ARCH}）"
           git add -A
-          git commit -m "chore(fork): retire patch iso-url-no-suffix" \
-            -m "上游 ${UP:0:8} 已自行实现「不带 .iso 后缀的链接也能下载」，按约定让上游实现在位，删除 fork 补丁（含锚点注释与回归测试）。补丁原文归档在 ${ARCH}。" \
-            -m "Fork-Meta: retire-iso-url-no-suffix"
-          git log --oneline -2
+          git commit -m "chore(fork): retire patch ${PATCH_ID}" \
+            -m "上游 ${UP:0:8} 已自行实现该能力，按约定让上游实现在位：只摘掉 ${PATCH_ID} 这组提交，其余补丁与元数据原样重放。补丁原文归档在 ${ARCH}。" \
+            -m "Fork-Meta: retire-${PATCH_ID}"
           echo "archive_branch=${ARCH}" >> "$GITHUB_OUTPUT"
+          git log --oneline -3
+
+      - name: 判定失败 → 停手
+        if: steps.inspect.outputs.result != 'IMPLEMENTED' && steps.inspect.outputs.result != 'NEEDED' && steps.inspect.outputs.result != 'SUSPECT'
+        run: |
+          echo "::error::补丁判定为 '${{ steps.inspect.outputs.result }}'（UNKNOWN/空），按约定停手：不 rebase、不推送，等人工确认上游结构变化"
+          echo "判定依据：${{ steps.inspect.outputs.reason }}"
+          exit 1
 
       - name: 上游未实现 → 重放补丁
         id: keep
-        if: steps.inspect.outputs.result != 'IMPLEMENTED'
+        # UNKNOWN 不再走到这里（上面有专门的停手步骤）：判定不清时宁可不动
+        if: steps.inspect.outputs.result == 'NEEDED' || steps.inspect.outputs.result == 'SUSPECT'
         run: |
           set -uo pipefail
           UP="${{ steps.gate.outputs.sha }}"
@@ -221,8 +259,12 @@ jobs:
           set -euo pipefail
           echo "=== go build ./... ==="
           go build ./...
-          echo "=== go test ./internal/admin/ ==="
-          go test ./internal/admin/ -count=1
+          # 全量测试：以前只跑 ./internal/admin/，autoinstall 的渲染/校验用例（13 个）
+          # 只有在本地 make 时才会被跑到，重放补丁把模板改坏了也发现不了。
+          echo "=== go vet ./... ==="
+          go vet ./...
+          echo "=== go test ./... ==="
+          go test ./... -count=1
 
       - name: 推送 main
         if: steps.gate.outputs.changed == 'true' && github.event.inputs.mode != 'pr' && steps.keep.outputs.conflict != 'true'
@@ -275,7 +317,9 @@ jobs:
             echo "| 补丁判定 | **${{ steps.inspect.outputs.result }}** |"
             echo "| 判定依据 | ${{ steps.inspect.outputs.reason }} |"
             if [ "${{ steps.inspect.outputs.result }}" = "IMPLEMENTED" ]; then
-              echo "| 采取动作 | 上游已实现，补丁已退役 |"
+              echo "| 采取动作 | 上游已实现，补丁已退役（其余补丁已重放） |"
+            elif [ "${{ steps.inspect.outputs.result }}" != "NEEDED" ] && [ "${{ steps.inspect.outputs.result }}" != "SUSPECT" ]; then
+              echo "| 采取动作 | **判定失败（${{ steps.inspect.outputs.result }}），已停手** |"
             elif [ "${{ steps.keep.outputs.conflict }}" = "true" ]; then
               echo "| 采取动作 | **冲突待人工**（分支 \`${{ steps.keep.outputs.conflict_branch }}\`） |"
             elif [ "${{ steps.gate.outputs.changed }}" = "true" ]; then

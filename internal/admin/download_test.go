@@ -4,7 +4,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+// testHTTPClient mirrors what the handler passes in production (proxy omitted,
+// a bounded timeout). The probe helpers take the client as an argument so the
+// real code can share the download transport.
+func testHTTPClient() *http.Client { return &http.Client{Timeout: 10 * time.Second} }
 
 func TestISODownloadFilename(t *testing.T) {
 	cases := []struct {
@@ -40,20 +46,20 @@ func TestISODownloadFilename(t *testing.T) {
 // 与实现同生共死；上游接管实现后这两个测试一并删除。
 func TestResolveDownloadFilenameExplicitAndSuffixed(t *testing.T) {
 	// An explicit name is used verbatim (and never probed).
-	got, err := resolveDownloadFilename("https://example.com/d/abc123?v=tok", "custom.iso")
+	got, err := resolveDownloadFilename(testHTTPClient(), "https://example.com/d/abc123?v=tok", "custom.iso")
 	if err != nil || got != "custom.iso" {
 		t.Errorf("explicit name = %q, %v; want \"custom.iso\", nil", got, err)
 	}
 
 	// A .iso suffix needs no network round trip - example.com is unreachable
 	// in the test sandbox, so a probe here would fail.
-	got, err = resolveDownloadFilename("https://example.com/pub/ubuntu-24.04.iso", "")
+	got, err = resolveDownloadFilename(testHTTPClient(), "https://example.com/pub/ubuntu-24.04.iso", "")
 	if err != nil || got != "ubuntu-24.04.iso" {
 		t.Errorf("suffixed url = %q, %v; want \"ubuntu-24.04.iso\", nil", got, err)
 	}
 
 	// Unsafe explicit names are still rejected instead of being guessed around.
-	if _, err := resolveDownloadFilename("https://example.com/x.iso", "../evil.iso"); err == nil {
+	if _, err := resolveDownloadFilename(testHTTPClient(), "https://example.com/x.iso", "../evil.iso"); err == nil {
 		t.Error("expected path traversal in filename to be rejected")
 	}
 }
@@ -84,7 +90,7 @@ func TestResolveDownloadFilenameProbesOpaqueLinks(t *testing.T) {
 	defer srv.Close()
 
 	// Opaque URL, ISO content type -> name derived from the final path.
-	got, err := resolveDownloadFilename(srv.URL+"/d/iso9660", "")
+	got, err := resolveDownloadFilename(testHTTPClient(), srv.URL+"/d/iso9660", "")
 	if err != nil {
 		t.Fatalf("iso9660 probe returned error: %v", err)
 	}
@@ -96,7 +102,7 @@ func TestResolveDownloadFilenameProbesOpaqueLinks(t *testing.T) {
 	}
 
 	// Content-Disposition wins over the path when the server provides it.
-	got, err = resolveDownloadFilename(srv.URL+"/d/disposition", "")
+	got, err = resolveDownloadFilename(testHTTPClient(), srv.URL+"/d/disposition", "")
 	if err != nil {
 		t.Fatalf("disposition probe returned error: %v", err)
 	}
@@ -105,7 +111,7 @@ func TestResolveDownloadFilenameProbesOpaqueLinks(t *testing.T) {
 	}
 
 	// An HTML page is not an ISO and must be refused before downloading.
-	if _, err := resolveDownloadFilename(srv.URL+"/d/login", ""); err == nil {
+	if _, err := resolveDownloadFilename(testHTTPClient(), srv.URL+"/d/login", ""); err == nil {
 		t.Error("expected an HTML response to be rejected")
 	}
 }

@@ -78,7 +78,7 @@ func TestEveryTemplateRenders(t *testing.T) {
 		"windows-autounattend": {"<ComputerName>*</ComputerName>", "<AcceptEula>true</AcceptEula>", "<LocalAccount"},
 	}
 	for _, tpl := range Templates() {
-		out, err := Render(tpl.ID, fillValues(t, tpl))
+		out, err := RenderTemplate(tpl.ID, fillValues(t, tpl))
 		if err != nil {
 			t.Fatalf("%s: render failed: %v", tpl.ID, err)
 		}
@@ -87,7 +87,7 @@ func TestEveryTemplateRenders(t *testing.T) {
 				t.Errorf("%s: output missing %q\n%s", tpl.ID, want, out)
 			}
 		}
-		if err := Validate(tpl.Format, out); err != nil {
+		if err := ValidateAnswerFile(tpl.Format, out); err != nil {
 			t.Errorf("%s: produced invalid output: %v", tpl.ID, err)
 		}
 		if tpl.Format != "autounattend" && strings.Contains(out, "Sup3rSecret!") {
@@ -97,7 +97,7 @@ func TestEveryTemplateRenders(t *testing.T) {
 }
 
 func TestRenderHonoursValues(t *testing.T) {
-	out, err := Render("rhel-kickstart", map[string]string{
+	out, err := RenderTemplate("rhel-kickstart", map[string]string{
 		"hostname":      "node-42",
 		"username":      "ops",
 		"password":      "hunter2hunter2",
@@ -123,7 +123,7 @@ func TestRenderHonoursValues(t *testing.T) {
 }
 
 func TestPreseedUsesCryptedPasswords(t *testing.T) {
-	out, err := Render("debian-preseed", map[string]string{"password": "only-one-pass"})
+	out, err := RenderTemplate("debian-preseed", map[string]string{"password": "only-one-pass"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestPreseedUsesCryptedPasswords(t *testing.T) {
 }
 
 func TestKickstartLocksRootWhenNoRootPassword(t *testing.T) {
-	out, err := Render("rhel-kickstart", map[string]string{"password": "pw12345678"})
+	out, err := RenderTemplate("rhel-kickstart", map[string]string{"password": "pw12345678"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestKickstartLocksRootWhenNoRootPassword(t *testing.T) {
 }
 
 func TestRenderRejectsMissingRequired(t *testing.T) {
-	_, err := Render("ubuntu-autoinstall", map[string]string{"hostname": "x"})
+	_, err := RenderTemplate("ubuntu-autoinstall", map[string]string{"hostname": "x"})
 	if err == nil {
 		t.Fatal("expected an error when the password is missing")
 	}
@@ -160,13 +160,13 @@ func TestRenderRejectsMissingRequired(t *testing.T) {
 }
 
 func TestRenderRejectsUnknownTemplate(t *testing.T) {
-	if _, err := Render("nope", nil); err == nil {
+	if _, err := RenderTemplate("nope", nil); err == nil {
 		t.Fatal("expected an error for an unknown template")
 	}
 }
 
 func TestAutoinstallPasswordIsHashed(t *testing.T) {
-	out, err := Render("ubuntu-autoinstall", map[string]string{"password": "Sup3rSecret!"})
+	out, err := RenderTemplate("ubuntu-autoinstall", map[string]string{"password": "Sup3rSecret!"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestAutoinstallPasswordIsHashed(t *testing.T) {
 }
 
 func TestWindowsCreatesLocalAccount(t *testing.T) {
-	out, err := Render("windows-autounattend", map[string]string{
+	out, err := RenderTemplate("windows-autounattend", map[string]string{
 		"password":       "AdminPass123",
 		"local_user":     "labuser",
 		"local_password": "LabPass456",
@@ -206,7 +206,7 @@ func TestWindowsCreatesLocalAccount(t *testing.T) {
 }
 
 func TestAutoinstallPackageList(t *testing.T) {
-	out, err := Render("ubuntu-autoinstall", map[string]string{
+	out, err := RenderTemplate("ubuntu-autoinstall", map[string]string{
 		"password": "Sup3rSecret!",
 		"packages": "curl, htop\njq",
 	})
@@ -243,7 +243,7 @@ func TestPerClientHostnameKeepsToken(t *testing.T) {
 
 		values := fillValues(t, tpl)
 		values["hostname"] = hostnameVar.Placeholder
-		out, err := Render(tpl.ID, values)
+		out, err := RenderTemplate(tpl.ID, values)
 		if err != nil {
 			t.Fatalf("%s: 按客户端渲染失败: %v", tpl.ID, err)
 		}
@@ -253,7 +253,7 @@ func TestPerClientHostnameKeepsToken(t *testing.T) {
 		if strings.Contains(out, "\x00") {
 			t.Errorf("%s: 哨兵字符泄漏到输出里\n%s", tpl.ID, out)
 		}
-		if err := Validate(tpl.Format, out); err != nil {
+		if err := ValidateAnswerFile(tpl.Format, out); err != nil {
 			t.Errorf("%s: 带占位符的产物没通过校验: %v\n%s", tpl.ID, err, out)
 		}
 	}
@@ -262,7 +262,7 @@ func TestPerClientHostnameKeepsToken(t *testing.T) {
 // 只有声明了 Placeholder 的字段才支持「按客户端取值」。以前这种记号会被原样
 // 写进答案文件（--name={{HOSTNAME}}），装上系统后才发现用户名错了；现在直接拒绝。
 func TestPerClientTokenIsOnlyForDeclaredVars(t *testing.T) {
-	_, err := Render("rhel-kickstart", map[string]string{
+	_, err := RenderTemplate("rhel-kickstart", map[string]string{
 		"password": "Sup3rSecret!",
 		"username": "{{HOSTNAME}}",
 	})
@@ -278,11 +278,11 @@ func TestPerClientTokenIsOnlyForDeclaredVars(t *testing.T) {
 // 表现成「渲染失败：XML syntax error」——用户根本不知道是自己口令的问题。
 func TestWindowsPasswordWithXMLSpecialsStaysWellFormed(t *testing.T) {
 	const pw = `P&ss<w0>rd"'!`
-	out, err := Render("windows-autounattend", map[string]string{"password": pw})
+	out, err := RenderTemplate("windows-autounattend", map[string]string{"password": pw})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if err := Validate("autounattend", out); err != nil {
+	if err := ValidateAnswerFile("autounattend", out); err != nil {
 		t.Fatalf("produced invalid XML: %v", err)
 	}
 	if strings.Contains(out, "P&ss<w0>") {
@@ -306,7 +306,7 @@ func TestNumericFieldsAreValidated(t *testing.T) {
 		for k, v := range extra {
 			values[k] = v
 		}
-		if _, err := Render("windows-autounattend", values); err == nil {
+		if _, err := RenderTemplate("windows-autounattend", values); err == nil {
 			t.Errorf("%s: 应该被拒绝", name)
 		}
 	}
@@ -315,7 +315,7 @@ func TestNumericFieldsAreValidated(t *testing.T) {
 // preseed 是「一行一条指令」，值里带换行就等于注入了一条新指令。
 func TestSingleLineValuesAreEnforced(t *testing.T) {
 	for _, bad := range []string{"node\nmalicious directive", "node\tx"} {
-		if _, err := Render("debian-preseed", map[string]string{
+		if _, err := RenderTemplate("debian-preseed", map[string]string{
 			"password": "pw12345678",
 			"hostname": bad,
 		}); err == nil {
@@ -326,7 +326,7 @@ func TestSingleLineValuesAreEnforced(t *testing.T) {
 
 // Linux 用户名允许大写（useradd / Anaconda 都接受），只是不允许空格与引号。
 func TestLinuxIdentifiersRejectSpaces(t *testing.T) {
-	out, err := Render("rhel-kickstart", map[string]string{
+	out, err := RenderTemplate("rhel-kickstart", map[string]string{
 		"password": "pw12345678",
 		"username": "Admin",
 	})
@@ -336,13 +336,13 @@ func TestLinuxIdentifiersRejectSpaces(t *testing.T) {
 	if !strings.Contains(out, "user --name=Admin") {
 		t.Errorf("缺少大写用户名:\n%s", out)
 	}
-	if _, err := Render("rhel-kickstart", map[string]string{
+	if _, err := RenderTemplate("rhel-kickstart", map[string]string{
 		"password": "pw12345678",
 		"username": "my user",
 	}); err == nil {
 		t.Error("用户名带空格应被拒绝")
 	}
-	if _, err := Render("debian-preseed", map[string]string{
+	if _, err := RenderTemplate("debian-preseed", map[string]string{
 		"password": "pw12345678",
 		"hostname": "my host",
 	}); err == nil {
@@ -352,7 +352,7 @@ func TestLinuxIdentifiersRejectSpaces(t *testing.T) {
 
 // preseed 的 pkgsel 是空格分隔，kickstart 是一行一个包——不能把 textarea 原样塞进去。
 func TestPackageListIsNormalisedPerFormat(t *testing.T) {
-	out, err := Render("debian-preseed", map[string]string{
+	out, err := RenderTemplate("debian-preseed", map[string]string{
 		"password": "pw12345678",
 		"packages": "curl\nhtop\njq",
 	})
@@ -363,7 +363,7 @@ func TestPackageListIsNormalisedPerFormat(t *testing.T) {
 		t.Errorf("preseed 的包列表应为空格分隔:\n%s", out)
 	}
 
-	out, err = Render("rhel-kickstart", map[string]string{
+	out, err = RenderTemplate("rhel-kickstart", map[string]string{
 		"password": "pw12345678",
 		"packages": "curl, htop\njq",
 	})
@@ -378,7 +378,7 @@ func TestPackageListIsNormalisedPerFormat(t *testing.T) {
 }
 
 func TestPackagesWithShellMetacharsRejected(t *testing.T) {
-	if _, err := Render("debian-preseed", map[string]string{
+	if _, err := RenderTemplate("debian-preseed", map[string]string{
 		"password": "pw12345678",
 		"packages": "curl; rm -rf /",
 	}); err == nil {
@@ -390,7 +390,7 @@ func TestPackagesWithShellMetacharsRejected(t *testing.T) {
 func TestSSHKeysExpandPerLine(t *testing.T) {
 	keys := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIalpha lab\nssh-rsa AAAAB3NzaC1yc2EAAAAIbeta ops@host"
 
-	out, err := Render("debian-preseed", map[string]string{"password": "pw12345678", "ssh_key": keys})
+	out, err := RenderTemplate("debian-preseed", map[string]string{"password": "pw12345678", "ssh_key": keys})
 	if err != nil {
 		t.Fatalf("preseed render: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestSSHKeysExpandPerLine(t *testing.T) {
 		t.Errorf("preseed 缺少公钥:\n%s", out)
 	}
 
-	out, err = Render("rhel-kickstart", map[string]string{"password": "pw12345678", "ssh_key": keys})
+	out, err = RenderTemplate("rhel-kickstart", map[string]string{"password": "pw12345678", "ssh_key": keys})
 	if err != nil {
 		t.Fatalf("kickstart render: %v", err)
 	}
@@ -409,11 +409,11 @@ func TestSSHKeysExpandPerLine(t *testing.T) {
 		t.Errorf("kickstart 应有两条 sshkey，实际:\n%s", out)
 	}
 
-	out, err = Render("ubuntu-autoinstall", map[string]string{"password": "pw12345678", "ssh_key": keys})
+	out, err = RenderTemplate("ubuntu-autoinstall", map[string]string{"password": "pw12345678", "ssh_key": keys})
 	if err != nil {
 		t.Fatalf("autoinstall render: %v", err)
 	}
-	if err := Validate("autoinstall", out); err != nil {
+	if err := ValidateAnswerFile("autoinstall", out); err != nil {
 		t.Fatalf("autoinstall 产物不是合法 YAML: %v", err)
 	}
 	if strings.Count(out, ">> /root/.ssh/authorized_keys'") != 2 {
@@ -429,7 +429,7 @@ func TestBrokenSSHKeyRejected(t *testing.T) {
 		"not-a-key",
 		`ssh-ed25519 AAAA"'; rm -rf /`,
 	} {
-		if _, err := Render("ubuntu-autoinstall", map[string]string{
+		if _, err := RenderTemplate("ubuntu-autoinstall", map[string]string{
 			"password": "pw12345678",
 			"ssh_key":  bad,
 		}); err == nil {
@@ -446,14 +446,14 @@ func TestWindowsHostnameCleanedBeforeEscaping(t *testing.T) {
 		"abcdefghijklmn&": "abcdefghijklmn&amp;",
 	}
 	for in, want := range cases {
-		out, err := Render("windows-autounattend", map[string]string{
+		out, err := RenderTemplate("windows-autounattend", map[string]string{
 			"password": "AdminPass123",
 			"hostname": in,
 		})
 		if err != nil {
 			t.Fatalf("%q: render: %v", in, err)
 		}
-		if err := Validate("autounattend", out); err != nil {
+		if err := ValidateAnswerFile("autounattend", out); err != nil {
 			t.Fatalf("%q: 产物不是合法 XML: %v", in, err)
 		}
 		if got := between(out, "<ComputerName>", "</ComputerName>"); got != want {
@@ -490,14 +490,14 @@ func TestWindowsFirmwareSelectsPartitionLayout(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		out, err := Render("windows-autounattend", map[string]string{
+		out, err := RenderTemplate("windows-autounattend", map[string]string{
 			"password": "AdminPass123",
 			"firmware": c.firmware,
 		})
 		if err != nil {
 			t.Fatalf("%s: render: %v", c.firmware, err)
 		}
-		if err := Validate("autounattend", out); err != nil {
+		if err := ValidateAnswerFile("autounattend", out); err != nil {
 			t.Fatalf("%s: produced invalid XML: %v", c.firmware, err)
 		}
 		for _, want := range c.want {
@@ -514,7 +514,7 @@ func TestWindowsFirmwareSelectsPartitionLayout(t *testing.T) {
 }
 
 func TestWindowsFirmwareDefaultsToUEFI(t *testing.T) {
-	out, err := Render("windows-autounattend", map[string]string{"password": "AdminPass123"})
+	out, err := RenderTemplate("windows-autounattend", map[string]string{"password": "AdminPass123"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -532,7 +532,7 @@ func TestWindowsComputerNameIsSanitised(t *testing.T) {
 		"{{HOSTNAME}}":         "HOSTNAME", // 花括号被清掉后还能救回来
 	}
 	for in, want := range cases {
-		out, err := Render("windows-autounattend", map[string]string{
+		out, err := RenderTemplate("windows-autounattend", map[string]string{
 			"password": "AdminPass123",
 			"hostname": in,
 		})
@@ -547,7 +547,7 @@ func TestWindowsComputerNameIsSanitised(t *testing.T) {
 }
 
 func TestWindowsComputerNameKeepsStar(t *testing.T) {
-	out, err := Render("windows-autounattend", map[string]string{"password": "AdminPass123"})
+	out, err := RenderTemplate("windows-autounattend", map[string]string{"password": "AdminPass123"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -581,14 +581,14 @@ func TestValidateRejectsBrokenFiles(t *testing.T) {
 		{"nonsense", "whatever"},
 	}
 	for _, c := range cases {
-		if err := Validate(c.format, c.content); err == nil {
-			t.Errorf("Validate(%s) accepted invalid input: %q", c.format, c.content)
+		if err := ValidateAnswerFile(c.format, c.content); err == nil {
+			t.Errorf("ValidateAnswerFile(%s) accepted invalid input: %q", c.format, c.content)
 		}
 	}
 }
 
 func TestOptionalDiskIsOmitted(t *testing.T) {
-	out, err := Render("debian-preseed", map[string]string{"password": "pw12345678", "disk": ""})
+	out, err := RenderTemplate("debian-preseed", map[string]string{"password": "pw12345678", "disk": ""})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestOptionalDiskIsOmitted(t *testing.T) {
 		t.Errorf("empty disk should not emit partman-auto/disk:\n%s", out)
 	}
 
-	out, err = Render("debian-preseed", map[string]string{"password": "pw12345678", "disk": "/dev/vda"})
+	out, err = RenderTemplate("debian-preseed", map[string]string{"password": "pw12345678", "disk": "/dev/vda"})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestPreseedMirrorRendersHostAndPath(t *testing.T) {
 		{"hust", "debian", "mirrors.hust.edu.cn", "debian"},
 	}
 	for _, c := range cases {
-		out, err := Render("debian-preseed", map[string]string{
+		out, err := RenderTemplate("debian-preseed", map[string]string{
 			"password":      "pw12345678",
 			"mirror":        c.mirror,
 			"mirror_family": c.family,
@@ -679,7 +679,7 @@ func TestPreseedMirrorRendersHostAndPath(t *testing.T) {
 }
 
 func TestAutoinstallMirrorEmitsAptPrimary(t *testing.T) {
-	out, err := Render("ubuntu-autoinstall", map[string]string{
+	out, err := RenderTemplate("ubuntu-autoinstall", map[string]string{
 		"password": "pw12345678",
 		"mirror":   "official",
 	})
@@ -690,7 +690,7 @@ func TestAutoinstallMirrorEmitsAptPrimary(t *testing.T) {
 		t.Errorf("选 Official 时不应写 apt 段（交回 subiquity 默认）:\n%s", out)
 	}
 
-	out, err = Render("ubuntu-autoinstall", map[string]string{
+	out, err = RenderTemplate("ubuntu-autoinstall", map[string]string{
 		"password": "pw12345678",
 		"mirror":   "aliyun",
 	})
@@ -702,13 +702,13 @@ func TestAutoinstallMirrorEmitsAptPrimary(t *testing.T) {
 			t.Errorf("缺少 %q\n%s", want, out)
 		}
 	}
-	if err := Validate("autoinstall", out); err != nil {
+	if err := ValidateAnswerFile("autoinstall", out); err != nil {
 		t.Errorf("带 apt 段的产物不是合法 YAML: %v\n%s", err, out)
 	}
 }
 
 func TestKickstartMirrorRewritesRepo(t *testing.T) {
-	out, err := Render("rhel-kickstart", map[string]string{
+	out, err := RenderTemplate("rhel-kickstart", map[string]string{
 		"password":    "pw12345678",
 		"mirror":      "official",
 		"repo_family": "rocky",
@@ -720,7 +720,7 @@ func TestKickstartMirrorRewritesRepo(t *testing.T) {
 		t.Errorf("选 Official 时不应改 dnf 源:\n%s", out)
 	}
 
-	out, err = Render("rhel-kickstart", map[string]string{
+	out, err = RenderTemplate("rhel-kickstart", map[string]string{
 		"password":    "pw12345678",
 		"mirror":      "aliyun",
 		"repo_family": "rocky",
@@ -738,7 +738,7 @@ func TestKickstartMirrorRewritesRepo(t *testing.T) {
 		}
 	}
 
-	out, err = Render("rhel-kickstart", map[string]string{
+	out, err = RenderTemplate("rhel-kickstart", map[string]string{
 		"password":    "pw12345678",
 		"mirror":      "tencent",
 		"repo_family": "almalinux",
