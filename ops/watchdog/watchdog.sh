@@ -13,6 +13,8 @@
 #   KEEP_IMAGES=3        本地保留最近 3 个镜像，回滚随时可用
 #   FORCE_FAIL_HEALTH=1  演练用：强制健康检查失败，验证回滚路径
 #   CHECK_ONLY=1         只看有没有新版本，不动容器
+#   HEALTH_URL=...       健康检查地址。留空则自动探测（见 resolve_health_url）
+#   HEALTH_PORT=8081     自动探测用的端口
 #   HEALTH_TIMEOUT=60    等就绪的最长秒数
 #   SC_SENDKEY=...       Server酱 SendKey（SCT 开头），设了才会推送；不设则只写日志
 #
@@ -27,7 +29,12 @@ DIR=${DIR:-/opt/bootimus}
 COMPOSE=${COMPOSE:-$DIR/docker-compose.yml}
 HELPER=${HELPER:-$DIR/replace_image.py}
 CONTAINER=${CONTAINER:-bootimus}
-HEALTH_URL=${HEALTH_URL:-http://172.20.0.205:8081/}
+# 健康检查地址：这里**故意不给具体 IP 的默认值**。
+# 容器用 host 网络并绑到某块网卡时（bootimus --bind-interface eth0），loopback 是连不上的，
+# 写死某个 IP 又会把部署机的地址带进仓库。留空时按「8081 实际监听的地址 → loopback」自动探测，
+# 需要固定就显式配 HEALTH_URL（/etc/default/bootimus-watchdog 里写一行即可）。
+HEALTH_URL=${HEALTH_URL:-}
+HEALTH_PORT=${HEALTH_PORT:-8081}
 STATE_DIR=${STATE_DIR:-/var/lib/bootimus-watchdog}
 LOG=${LOG:-/var/log/bootimus-watchdog.log}
 KEEP_IMAGES=${KEEP_IMAGES:-3}
@@ -42,10 +49,15 @@ SC_API=${SC_API:-https://sctapi.ftqq.com}
 # 统一按北京时间记日志与推送（宿主机是 UTC，不设的话日志里全是 UTC）
 export TZ=${TZ:-Asia/Shanghai}
 
-# systemd 通过 EnvironmentFile 注入；手动执行时从同一个文件里补一次，
-# 只取 SC_SENDKEY，避免把命令行传入的其他参数覆盖掉
-if [ -z "${SC_SENDKEY:-}" ] && [ -r /etc/default/bootimus-watchdog ]; then
-    SC_SENDKEY=$(sed -n 's/^SC_SENDKEY=//p' /etc/default/bootimus-watchdog | head -1 | tr -d '"'"'"' ')
+# systemd 通过 EnvironmentFile 注入；手动执行时从同一个文件里补一次。
+# 只补「当前为空」的项，避免把命令行传入的参数覆盖掉。
+if [ -r /etc/default/bootimus-watchdog ]; then
+    if [ -z "${HEALTH_URL:-}" ]; then
+        HEALTH_URL=$(sed -n 's/^HEALTH_URL=//p' /etc/default/bootimus-watchdog | head -1 | tr -d '"'"'"' ')
+    fi
+    if [ -z "${SC_SENDKEY:-}" ]; then
+        SC_SENDKEY=$(sed -n 's/^SC_SENDKEY=//p' /etc/default/bootimus-watchdog | head -1 | tr -d '"'"'"' ')
+    fi
 fi
 
 mkdir -p "$STATE_DIR"
@@ -79,6 +91,68 @@ host_label() {
     printf '%s（%s）' "$(hostname 2>/dev/null || echo unknown)" "${HEALTH_URL}"
 }
 
+# 探一次地址，只返回 HTTP 状态码（连不上返回 000）。
+# 注意不能写成 `code=$(curl ... || echo 000)`：curl 失败时 -w 已经输出了 000，
+# 再追加一个 000 会变成两行，后面任何字符串比较都会判错。
+probe_code() {
+    local c
+    c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$1" 2>/dev/null)
+    printf '%s' "${c:-000}"
+}
+
+# 确定健康检查地址。
+#   1) 显式配置的 HEALTH_URL 优先，不做任何探测（避免"猜错地址"盖过人的判断）
+#   2) 否则看 8081 实际监听在哪：通配未绑网卡 → loopback；绑定某块网卡 →
+#      那块网卡的 IPv4（`ss` 对 SO_BINDTODEVICE 的显示形如 `*%eth0:8081`）
+#   3) 每个候选都实探一次，只接受有响应的
+# 之所以不是简单写死 loopback：host 网络 + --bind-interface eth0 时只有 eth0 在听，
+# 127.0.0.1 连不通，健康检查会误判成"服务挂了"并把好镜像回滚掉。
+resolve_health_url() {
+    if [ -n "${HEALTH_URL:-}" ]; then
+        log "健康检查地址（显式配置）：${HEALTH_URL}"
+        return 0
+    fi
+    local raw host port dev ip c
+    local -a cands=()
+    while read -r raw; do
+        [ -n "$raw" ] || continue
+        dev=""
+        case "$raw" in
+            *%*) dev=$(printf '%s' "$raw" | sed -n 's/^[^%]*%\([^:]*\):.*$/\1/p') ;;
+        esac
+        host=$(printf '%s' "$raw" | sed 's/%.*//; s/:[0-9]*$//')
+        port=${raw##*:}
+        case "$host" in
+            ""|"*"|"0.0.0.0"|"[::]"|"::")
+                if [ -n "$dev" ]; then
+                    for ip in $(ip -4 -o addr show dev "$dev" scope global 2>/dev/null \
+                        | awk '{print $4}' | cut -d/ -f1); do
+                        cands+=("http://${ip}:${port}/")
+                    done
+                else
+                    cands+=("http://127.0.0.1:${port}/")
+                fi
+                ;;
+            [0-9]*.[0-9]*.[0-9]*.[0-9]*)
+                cands+=("http://${host}:${port}/") ;;
+        esac
+    done < <(ss -Hltn 2>/dev/null | awk -v p=":${HEALTH_PORT}\$" '$4 ~ p {print $4}')
+    # 兜底：loopback，然后本机所有全局 IPv4
+    cands+=("http://127.0.0.1:${HEALTH_PORT}/")
+    for ip in $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1); do
+        cands+=("http://${ip}:${HEALTH_PORT}/")
+    done
+    for c in "${cands[@]}"; do
+        if [ "$(probe_code "$c")" != "000" ]; then
+            HEALTH_URL="$c"
+            log "健康检查地址（自动探测）：${HEALTH_URL}"
+            return 0
+        fi
+    done
+    HEALTH_URL="http://127.0.0.1:${HEALTH_PORT}/"
+    log "健康检查地址探测失败，回落到 ${HEALTH_URL}；若不可达请在 /etc/default/bootimus-watchdog 显式配置 HEALTH_URL"
+}
+
 # 日志超过 5MB 轮转
 if [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 5242880 ]; then
     mv -f "$LOG" "$LOG.1"
@@ -90,6 +164,9 @@ if ! flock -n 9; then
     log "上一轮还没跑完，跳过"
     exit 4
 fi
+
+# 0. 确定健康检查地址（显式 HEALTH_URL 优先，否则按实际监听地址自动探测）
+resolve_health_url
 
 # 1. registry 上 latest 的 digest
 if ! docker pull -q "$REPO:latest" >/dev/null 2>&1; then
@@ -180,7 +257,8 @@ while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
         ok=0
         break
     fi
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" 2>/dev/null || echo 000)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" 2>/dev/null)
+    code=${code:-000}
     if [ "$code" = "200" ]; then
         ok=1
         break
@@ -195,7 +273,8 @@ if [ "$ok" -ne 1 ]; then
     back_ok=0
     if docker compose -f "$COMPOSE" up -d >/dev/null 2>&1; then
         sleep 8
-        after_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" 2>/dev/null || echo 000)
+        after_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" 2>/dev/null)
+        after_code=${after_code:-000}
         log "回滚完成，回滚后 HTTP $after_code"
         [ "$after_code" = "200" ] && back_ok=1
     else
