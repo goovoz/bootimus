@@ -1,0 +1,50 @@
+name: Cache housekeeping (fork)
+
+# [bootimus-fork L0] 缓存清理。
+#
+# 为什么要有它：镜像构建走 buildkit 的 gha 缓存，每次多架构构建都会新增几十条
+# `buildkit-blob-*` 层缓存。仓库缓存配额 10 GB，顶到上限后 GitHub 开始随机淘汰，
+# 下一个构建可能刚好丢掉自己要用的层，白跑十几分钟（曾经出现过构建贴着 20 分钟阈值）。
+#
+# 这里只是「兜底日程」；真正贴着构建跑的是 fork-release.yml 里的
+# 「构建前腾空间」步骤，两者共用 .github/scripts/prune-caches.py。
+#
+# 手动用法：Actions → Cache housekeeping (fork) → Run workflow
+#   budget_gb  预算（GB），默认 7；只有当前占用超过它才会真删
+#   dry_run    true 只看计划，不删
+
+on:
+  schedule:
+    - cron: "23 20 * * *" # 每天 20:23 UTC（北京时间次日 04:23）
+  workflow_dispatch:
+    inputs:
+      budget_gb:
+        description: "缓存预算（GB），低于当前占用才会清理"
+        required: false
+        default: "7"
+      dry_run:
+        description: "true = 只打印计划，不删除"
+        required: false
+        default: "false"
+
+permissions:
+  actions: write # 列出并删除 Actions 缓存
+  contents: read
+
+concurrency:
+  group: cache-housekeeping
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: 清理超出预算的缓存
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7 # node24
+
+      - name: 按预算清理
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          BUDGET_GB: ${{ inputs.budget_gb || '7' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: python3 .github/scripts/prune-caches.py
