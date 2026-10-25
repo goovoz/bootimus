@@ -298,7 +298,10 @@ jobs:
       - name: 开 PR（pr 模式或冲突）
         if: steps.gate.outputs.changed == 'true' && (github.event.inputs.mode == 'pr' || steps.keep.outputs.conflict == 'true')
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 用 SYNC_TOKEN 时 PR 才能建出来：仓库默认不允许 GITHUB_TOKEN 创建 PR
+          # （2026-10-25 实测：gh pr create → GraphQL "Resource not accessible by integration"）。
+          # 没有 secret 时退回默认 token，创建失败只会告警、不阻塞冲突分支的推送。
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -uo pipefail
           if [ "${{ steps.keep.outputs.conflict }}" = "true" ]; then
