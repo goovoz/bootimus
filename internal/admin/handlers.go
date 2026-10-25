@@ -3340,7 +3340,7 @@ var isoContentTypes = map[string]bool{
 // suffix, so before rejecting the request we ask the origin what it is about to
 // send. Only an ISO-ish Content-Type gets through, which keeps typos and
 // mistyped page URLs failing fast.
-func resolveDownloadFilename(rawURL, requested string) (string, error) {
+func resolveDownloadFilename(client *http.Client, rawURL, requested string) (string, error) {
 	filename, err := isoDownloadFilename(rawURL, requested)
 	if err == nil {
 		return filename, nil
@@ -3350,7 +3350,7 @@ func resolveDownloadFilename(rawURL, requested string) (string, error) {
 		return "", err
 	}
 
-	name, probeErr := probeRemoteISOFilename(rawURL)
+	name, probeErr := probeRemoteISOFilename(client, rawURL)
 	if probeErr != nil {
 		return "", fmt.Errorf("%w. The server did not identify the content as a disc image either (%v); set the file name explicitly to override", err, probeErr)
 	}
@@ -3360,15 +3360,20 @@ func resolveDownloadFilename(rawURL, requested string) (string, error) {
 // probeRemoteISOFilename issues a 2-byte ranged GET (servers that ignore Range
 // simply get their body closed early) and derives a .iso file name from the
 // response headers.
-func probeRemoteISOFilename(rawURL string) (string, error) {
-	client := &http.Client{Timeout: 20 * time.Second}
+//
+// client 由调用方传入：它必须和随后真正下载用的是同一个（含代理配置与超时），
+// 否则「探测直连、下载走代理」会出现探测失败而下载本来能成的情况。
+func probeRemoteISOFilename(client *http.Client, rawURL string) (string, error) {
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Range", "bytes=0-1")
-	req.Header.Set("User-Agent", "bootimus/iso-download-probe")
+	req.Header.Set("User-Agent", isoUserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -3426,6 +3431,10 @@ func (h *Handler) ResolveISOCatalogURL(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		URL string `json:"url"`
+		// [bootimus-fork L1] fork-patch: iso-catalog-resolve
+		// 解析请求要和随后的下载用同一条链路（含代理），否则直连不通的用户拿到的
+		// 永远是「解析失败 → 原 URL → 404」。
+		UseProxy bool `json:"use_proxy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid body"})
@@ -3436,7 +3445,7 @@ func (h *Handler) ResolveISOCatalogURL(w http.ResponseWriter, r *http.Request) {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "URL is required"})
 		return
 	}
-	resolved, changed, err := resolveLatestISOURL(raw)
+	resolved, changed, err := resolveLatestISOURL(h.resolveClient(req.UseProxy), raw)
 	data := map[string]any{"url": resolved, "changed": changed}
 	if err != nil {
 		data["url"] = raw
@@ -3486,7 +3495,7 @@ func (h *Handler) DownloadISO(w http.ResponseWriter, r *http.Request) {
 
 	// [bootimus-fork L1] 上游此处若不再直接依赖 isoDownloadFilename 的后缀校验，
 	// 说明上游已实现等价能力，本行改回上游写法即可（本补丁随之退役）。
-	filename, err := resolveDownloadFilename(req.URL, req.Filename)
+	filename, err := resolveDownloadFilename(h.resolveClient(req.UseProxy), req.URL, req.Filename)
 	if err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
 		return
@@ -3644,6 +3653,19 @@ func (h *Handler) downloadClient(useProxy bool) (*http.Client, string) {
 	return &http.Client{Transport: tr}, "using proxy " + pu.Redacted()
 }
 
+// resolveClient is the client used by the "is this URL still alive?" helpers
+// (ISO catalogue resolution and the no-.iso-suffix filename probe).
+//
+// 它复用下载链路的 Transport（因而也复用代理设置），但额外加一个整体超时：
+// 这两个请求是用户在弹窗里等着的交互，不能因为没有 Timeout 而挂到天荒地老。
+// Client 是值类型，浅拷贝一份再改 Timeout 不会影响真正下载用的那个。
+func (h *Handler) resolveClient(useProxy bool) *http.Client {
+	base, _ := h.downloadClient(useProxy)
+	c := *base
+	c.Timeout = isoResolveTimeout
+	return &c
+}
+
 func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptions, useProxy bool) {
 	log.Printf("Starting ISO download: %s from %s", filename, url)
 
@@ -3749,6 +3771,7 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 			_, _, total, ok := parseContentRange(resp.Header.Get("Content-Range"))
 			if ok && total > 0 && offset == total {
 				log.Printf("Partial %s already holds the whole file (%d bytes)", filename, total)
+				meta.Total = total
 				alreadyComplete = true
 				usable = true
 			} else {
@@ -3915,6 +3938,15 @@ func (h *Handler) downloadISO(url, filename, destPath string, opts downloadOptio
 		out.Close()
 		resp.Body.Close()
 		written = downloaded
+	}
+
+	// 完整性收口：长度已知时字节数必须对得上。源站用 Content-Length 时 Go 会对
+	// 提前结束返回 io.ErrUnexpectedEOF，但 chunked（Total<0）没有这层保护——
+	// 中间代理把一条截断的响应「正常」收尾，我们就会把它 rename 成可用 ISO 入库。
+	if meta.Total > 0 && written != meta.Total {
+		log.Printf("Failed to download ISO %s: expected %d bytes, got %d (partial kept for resume)", filename, meta.Total, written)
+		downloadMgr.Error(filename, fmt.Sprintf("incomplete download: expected %d bytes, got %d", meta.Total, written))
+		return
 	}
 
 	// 校验值在 .part 上比对：不一致就丢掉半成品，别让它被 rename 成可用镜像
@@ -4414,7 +4446,7 @@ func (h *Handler) RenderAutoInstallTemplate(w http.ResponseWriter, r *http.Reque
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Unknown template: " + req.Template})
 		return
 	}
-	content, err := autoinstall.Render(req.Template, req.Values)
+	content, err := autoinstall.RenderTemplate(req.Template, req.Values)
 	if err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
 		return
