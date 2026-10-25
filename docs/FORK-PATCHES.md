@@ -38,6 +38,14 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
    工作流故意失败提醒
 
 > 用 `--force-with-lease` 推送：重放或退役都会改写补丁提交的 SHA，这是预期行为。
+>
+> **需要一个 `SYNC_TOKEN` 仓库 secret**（2026-10-25 补）：`GITHUB_TOKEN` 是 GitHub App
+> 的 installation token，GitHub **禁止**它修改 `.github/workflows/**`（推冲突分支时上游的
+> `ci.yml` 改动会一起带进去 → `remote rejected ... without 'workflows' permission`）。
+> 解决方式是配一个带 **Workflows: Read and write** 权限的 fine-grained PAT 存成 secret：
+> Settings → Secrets and variables → Actions → New repository secret，名字 `SYNC_TOKEN`。
+> workflow 里写的是 `secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN`，没配时会退回默认 token，
+> 其余步骤照常，只有涉及 workflow 文件的推送会失败并给出明确提示。
 
 ## 补丁清单
 
