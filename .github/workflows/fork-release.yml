@@ -39,6 +39,7 @@ on:
 permissions:
   contents: write # 创建 Release、上传资产
   packages: write # 推 ghcr 镜像
+  actions: write # 构建前清理缓存（删 Actions 缓存要这个权限）
 
 concurrency:
   group: fork-release-${{ github.ref }}
@@ -151,6 +152,21 @@ jobs:
 
       - name: 同步内嵌 profiles 版本
         run: make sync-profiles VERSION=${{ steps.version.outputs.base }}
+
+      # 缓存配额 10 GB，多架构构建每次都会往里堆 buildkit 层缓存；顶到上限后 GitHub
+      # 开始随机淘汰，构建可能刚好丢掉自己要用的层而白跑。开跑前先按预算腾空间，
+      # 清理逻辑与 cache-housekeeping.yml 共用同一个脚本。
+      - name: 构建前腾缓存空间
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          BUDGET_GB: "6"
+        run: |
+          if [ -f .github/scripts/prune-caches.py ]; then
+            python3 .github/scripts/prune-caches.py || echo "::warning::缓存清理失败，不影响本次构建"
+          else
+            echo "跳过：仓库里没有 .github/scripts/prune-caches.py"
+          fi
 
       - uses: docker/setup-qemu-action@v4  # node24
 
