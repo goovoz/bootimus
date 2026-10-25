@@ -38,6 +38,11 @@ jobs:
         uses: actions/checkout@v7  # node24
         with:
           fetch-depth: 0
+          # GITHUB_TOKEN 推不了 .github/workflows/** ：GitHub 硬性禁止 installation token
+          # 带 `workflows` 权限（2026-10-25 实测：冲突分支含 ci.yml 改动 → remote rejected）。
+          # 所以优先用带 workflows 写权限的 PAT（仓库 secret SYNC_TOKEN）；
+          # 没配置时退回默认 token，其余步骤照常，只有涉及 workflow 文件的推送会失败并给出明确提示。
+          token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: 上游是否有新提交
         id: gate
@@ -247,7 +252,15 @@ jobs:
           git commit -m "wip: 上游 ${UP:0:8} 与 fork 补丁冲突，待人工解决" \
             -m "冲突标记已原样提交，便于在 PR 里逐块处理。解决后请保留 Fork-Patch trailer。" \
             -m "Fork-Meta: conflict" || true
-          git push -u origin "${BR}"
+          if ! git push -u origin "${BR}" 2>/tmp/push.err; then
+            if grep -q 'without .workflows. permission' /tmp/push.err; then
+              echo "::error::推送被拒：GITHUB_TOKEN 不能修改 .github/workflows/**（GitHub 硬限制）。请配置仓库 secret SYNC_TOKEN（带 workflows 写权限的 PAT）后重跑；重跑会重新生成冲突分支。"
+            else
+              tail -5 /tmp/push.err | sed 's/^/  /'
+              echo "::error::冲突分支 ${BR} 推送失败"
+            fi
+            exit 1
+          fi
           {
             echo "conflict=true"
             echo "conflict_branch=${BR}"
@@ -271,7 +284,15 @@ jobs:
         run: |
           set -euo pipefail
           # rebase / 退役都会改写补丁提交的 SHA，这里用 force-with-lease 而不是 force
-          git push --force-with-lease origin HEAD:main
+          if ! git push --force-with-lease origin HEAD:main 2>/tmp/push.err; then
+            if grep -q 'without .workflows. permission' /tmp/push.err; then
+              echo "::error::推送被拒：GITHUB_TOKEN 不能修改 .github/workflows/**（GitHub 硬限制）。请配置仓库 secret SYNC_TOKEN（带 workflows 写权限的 PAT）后重跑。"
+            else
+              tail -5 /tmp/push.err | sed 's/^/  /'
+              echo "::error::推送 main 失败"
+            fi
+            exit 1
+          fi
           echo "main 已更新到 $(git rev-parse --short HEAD)"
 
       - name: 开 PR（pr 模式或冲突）
