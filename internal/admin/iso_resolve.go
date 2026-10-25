@@ -27,8 +27,10 @@ const (
 	isoResolveFailTTL = 2 * time.Minute
 	isoResolveMaxBody = 1 << 20
 	isoResolveTimeout = 25 * time.Second
-	// 部分镜像站会拦 Go 默认 UA（和 ISO 下载那次的坑一样）
-	isoResolveUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+	// 部分镜像站会拦 Go 默认 UA（和 ISO 下载那次的坑一样）。
+	// 同一个 UA 也给 probeRemoteISOFilename 用：解析和探测打的是同一批站，UA 不一致会
+	// 出现「HEAD 能过、带 Range 的探测被 403」这种只在部分站上复现的怪现象。
+	isoUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
 		"(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
 
@@ -46,16 +48,12 @@ type isoResolveEntry struct {
 	errMsg string // 非空 = 这次解析失败；短时间内不必再用三个请求重试
 }
 
-func isoResolveClient() *http.Client {
-	return &http.Client{Timeout: isoResolveTimeout}
-}
-
 func headStatus(client *http.Client, raw string) (int, error) {
 	req, err := http.NewRequest(http.MethodHead, raw, nil)
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("User-Agent", isoResolveUA)
+	req.Header.Set("User-Agent", isoUserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
@@ -146,7 +144,7 @@ func listDirectoryISO(client *http.Client, dir *url.URL) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", isoResolveUA)
+	req.Header.Set("User-Agent", isoUserAgent)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -181,7 +179,13 @@ func listDirectoryISO(client *http.Client, dir *url.URL) ([]string, error) {
 
 // resolveLatestISOURL returns the newest sibling of raw when raw itself is gone.
 // changed reports whether the returned URL differs from the input.
-func resolveLatestISOURL(raw string) (resolved string, changed bool, err error) {
+// client is supplied by the caller so this path honours the same proxy setting as
+// the download it is about to trigger — a user who needs a proxy to reach the
+// mirror needs it for the HEAD/listing requests too.
+func resolveLatestISOURL(client *http.Client, raw string) (resolved string, changed bool, err error) {
+	if client == nil {
+		client = &http.Client{Timeout: isoResolveTimeout}
+	}
 	if e, ok := isoResolveCache.Load(raw); ok {
 		entry := e.(isoResolveEntry)
 		ttl := isoResolveTTL
@@ -202,7 +206,6 @@ func resolveLatestISOURL(raw string) (resolved string, changed bool, err error) 
 		return raw, false, err
 	}
 
-	client := isoResolveClient()
 	code, headErr := headStatus(client, raw)
 	if headErr == nil {
 		if code == http.StatusOK {
