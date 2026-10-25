@@ -581,3 +581,28 @@ housekeeping、安装记录、副本同步等），fork 的补丁在这个基线
 **验收**：`go build ./...`、`go vet ./...`、`go test ./...` 全绿；`node --check` 通过
 （`app.js` / `i18n.js`）；YAML 全部可解析；6 个探测器自测全 PASS；
 `upstream/main` 已是 `main` 的祖先（下次上游提交即可正常 rebase）。
+
+## 缓存清理（`cache-housekeeping.yml` + `prune-caches.py`）
+
+镜像构建用 buildkit 的 gha 缓存，每次多架构构建都会新增几十条 `buildkit-blob-*`
+层缓存（每条几十到几百 MB）。仓库缓存配额 10 GB，顶到上限后 GitHub 开始**随机淘汰**，
+下一个构建可能刚好丢掉自己要用的层，白跑十几分钟。
+
+清理脚本按「预算 + 家族」删，**不按年龄**——构建机每天把每条缓存都刷新成「刚刚访问过」，
+年龄阈值一条也删不掉（实测 431 条缓存全部 < 1 天）。
+
+| 家族 | 护住最新 |
+|---|---|
+| `buildkit-blob-*` | 120 条 |
+| `index-*` | 10 条 |
+| `setup-go-*` | 4 条 |
+| 其它 | 3 条 |
+
+超出预算时，从「最久没访问」的开始删，回到预算内就停；本来就在预算内则一条不删
+（不打掉热缓存）。两处调用：
+
+- `fork-release.yml` 的 docker job 里「构建前腾缓存空间」（`BUDGET_GB=6`，`continue-on-error`
+  保证清理失败不挡发布）——这是**跑构建前的机制性清理**
+- `cache-housekeeping.yml`：每天 04:23（北京时间）+ 手动，兜底扫一遍
+
+手动演练：Actions → `Cache housekeeping (fork)` → `dry_run=true`。
