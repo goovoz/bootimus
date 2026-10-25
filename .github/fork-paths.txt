@@ -9,9 +9,11 @@
 .github/scripts/detect-iso-catalog-resolve.sh
 .github/scripts/detect-download-resume.sh
 .github/scripts/mark_retired.py
+.github/scripts/prune-caches.py
 .github/workflows/sync-upstream.yml
 .github/workflows/fork-release.yml
 .github/workflows/fork-follow-upstream-release.yml
+.github/workflows/cache-housekeeping.yml
 docs/FORK-PATCHES.md
 ops/i18n/rebuild.sh
 ops/i18n/build_i18n_patch.py
