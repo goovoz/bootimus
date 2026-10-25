@@ -32,6 +32,10 @@ DRY_RUN = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
 # 每个家族护住最新的条数
 KEEP_NEWEST = {"buildkit-blob": 120, "index": 10, "setup-go": 4}
 KEEP_DEFAULT = 3
+# 第一轮（只删不受保护的）删完仍然超预算时，允许从保护集里继续删，
+# 但不能低于这个下限 —— 兜底保住「最近一两次构建」的层缓存，否则下次构建等于冷启动
+KEEP_FLOOR = {"buildkit-blob": 60, "index": 5, "setup-go": 4}
+FLOOR_DEFAULT = 2
 
 if not TOKEN:
     print("::error::缺少 GH_TOKEN / GITHUB_TOKEN", file=sys.stderr)
@@ -82,18 +86,32 @@ def fetch_all():
         page += 1
 
 
+def delete_one(cache_id):
+    """删一条缓存；已经不存在（404）也算删成功。"""
+    try:
+        api("DELETE", "/actions/caches/%s" % cache_id)
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return True
+        print("  删除失败 %s: HTTP %s" % (cache_id, e.code))
+        return False
+
+
 def main():
     items = fetch_all()
     total = sum(c["size_in_bytes"] for c in items)
     print("缓存：%d 条 / %s，预算 %s%s" % (
         len(items), human(total), human(BUDGET), "（dry-run）" if DRY_RUN else ""))
 
-    protected = set()
     by_fam = {}
     for c in items:
         by_fam.setdefault(family(c["key"]), []).append(c)
-    for fam, lst in by_fam.items():
+    for lst in by_fam.values():
         lst.sort(key=lambda c: c["last_accessed_at"], reverse=True)
+
+    protected = set()
+    for fam, lst in by_fam.items():
         for c in lst[:KEEP_NEWEST.get(fam, KEEP_DEFAULT)]:
             protected.add(c["id"])
 
@@ -102,38 +120,47 @@ def main():
         _summary(len(items), total)
         return 0
 
-    candidates = [c for c in items if c["id"] not in protected]
-    candidates.sort(key=lambda c: c["last_accessed_at"])  # 最久没访问的优先删
-
     deleted = freed = 0
-    for c in candidates:
-        if total <= BUDGET:
-            break
-        if DRY_RUN:
-            deleted += 1
-            freed += c["size_in_bytes"]
-            total -= c["size_in_bytes"]
-            if deleted <= 10:
-                print("  将删除 %-12s %-9s %s" % (
-                    c["id"], human(c["size_in_bytes"]), c["key"][:56]))
-            continue
-        try:
-            api("DELETE", "/actions/caches/%s" % c["id"])
-            deleted += 1
-            freed += c["size_in_bytes"]
-            total -= c["size_in_bytes"]
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
+
+    def sweep(candidates, tag):
+        nonlocal total, deleted, freed
+        candidates = sorted(candidates, key=lambda c: c["last_accessed_at"])
+        for c in candidates:
+            if total <= BUDGET:
+                return
+            if DRY_RUN:
                 deleted += 1
                 freed += c["size_in_bytes"]
                 total -= c["size_in_bytes"]
-            else:
-                print("  删除失败 %s: HTTP %s" % (c["id"], e.code))
+                if deleted <= 10:
+                    print("  将删除[%s] %-12s %-9s %s" % (
+                        tag, c["id"], human(c["size_in_bytes"]), c["key"][:52]))
+                continue
+            if delete_one(c["id"]):
+                deleted += 1
+                freed += c["size_in_bytes"]
+                total -= c["size_in_bytes"]
+
+    # 第一轮：只动不受保护的
+    sweep([c for c in items if c["id"] not in protected], "非保护")
+
+    # 第二轮：还超预算就动保护集，但守住下限
+    if total > BUDGET:
+        print("::warning::删完非保护缓存仍超预算（%s > %s），从保护集里继续删到下限" % (
+            human(total), human(BUDGET)))
+        extra = []
+        for fam, lst in by_fam.items():
+            floor = KEEP_FLOOR.get(fam, FLOOR_DEFAULT)
+            extra.extend(lst[floor:])  # 下标 >= floor 的都是可牺牲的
+        sweep(extra, "跌破保护线")
 
     print("%s %d 条，释放 %s" % (
         "计划删除" if DRY_RUN else "已删除", deleted, human(freed)))
-    _summary(len(items) - (0 if DRY_RUN else deleted),
-             total if DRY_RUN else sum(c["size_in_bytes"] for c in fetch_all()))
+    remaining = total if DRY_RUN else sum(c["size_in_bytes"] for c in fetch_all())
+    print("%s剩余约 %s" % ("（预估）" if DRY_RUN else "", human(remaining)))
+    if remaining > BUDGET:
+        print("::warning::仍未回到预算内（保护下限挡着），下次构建后继续清")
+    _summary(len(items) - (0 if DRY_RUN else deleted), remaining)
     return 0
 
 
