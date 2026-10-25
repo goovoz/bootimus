@@ -546,8 +546,9 @@ preseed 是更早的 debian-installer 路线：Ubuntu 到 20.04 为止用它，D
 
 ## Fork 新增端点在「API 参考」页的登记
 
-上游的 `API_REFERENCE` 清单（`web/static/app.js`）只列上游自己的端点，fork 新增的四个
-能力以前在页面上查不到。现已补进对应分类，措辞与格式保持与上游一致：
+上游已把这一页改成**从 `/api/openapi.json` 动态生成**：真源是 `internal/admin/openapi.go` 的
+`APISections`，`web/static/app.js` 里的静态 `API_REFERENCE` 数组已被上游删除。fork 原先往静态数组里
+补的四条随之失效，改为登记在 `APISections`：
 
 | 端点 | 分类 | 说明 |
 |---|---|---|
@@ -556,5 +557,27 @@ preseed 是更早的 debian-installer 路线：Ubuntu 到 20.04 为止用它，D
 | `POST /api/autoinstall/render` | Auto-Install Files | 渲染并校验答案文件 |
 | `GET` / `PUT` / `POST /api/proxy-config` | Settings | 下载代理配置（口令只回掩码） |
 
-清单从 114 条变成 119 条。改动只在这个数组里，属纯文档性质，因此用 `Fork-Meta: docs` 提交；
-若上游改动同一段，冲突按普通文本冲突处理即可。
+上游的 `internal/server/openapi_test.go` 会断言「`server.go` 里注册的每条路由都必须出现在
+`APISections`」，所以漏登记会直接测试失败 —— 比原来靠人记得改 JSON 数组可靠，也不会再出现
+「接口能用但页面上查不到」。
+
+## 同步记录：2026-10-25 首次真同步（上游一次 +126 提交）
+
+上游在 10-24 一次性推了 126 个提交（autoinstall 模板/格式、multi-site、wimboot、UKI、
+housekeeping、安装记录、副本同步等），fork 的补丁在这个基线上全部重放。
+
+**整条跳过的死补丁**：国内镜像站那条线（`增加四家国内镜像站` → `恢复紧凑格式` → `只保留能下载的`
+→ `回退国内镜像站改动`）四个提交净变化为零，全部跳过，不占历史。
+
+**冲突处理原则**（按“谁负责这块”划分，不做机械覆盖）：
+
+| 区域 | 处理 |
+|---|---|
+| 下载链路 | 以 fork 为准（代理、`.part` 续传、停滞看门狗、字节数收口），**并叠加上游新加的 SHA-256 校验**：校验值在整份文件上算（续传时先把已有 `.part` 过一遍哈希），比对放在 `rename` 之前，不一致就删掉半成品 |
+| 自动安装 | 以上游为主；fork 的内置模板生成器改名避让（`Render`→`RenderTemplate`、`Validate`→`ValidateAnswerFile`），两套能力并存（上游是“自带文件+变量渲染”，fork 是“内置四套模板生成”） |
+| 存储与路由 | 上游新增的一律保留（housekeeping、install record、replica、SAN、审计日志…），fork 的 `proxy_config` 表与 `/api/proxy-config` 端点并排加上 |
+| API 参考页 | 采用上游的 openapi 动态实现，fork 四个端点登记进 `APISections`（见上一节） |
+
+**验收**：`go build ./...`、`go vet ./...`、`go test ./...` 全绿；`node --check` 通过
+（`app.js` / `i18n.js`）；YAML 全部可解析；6 个探测器自测全 PASS；
+`upstream/main` 已是 `main` 的祖先（下次上游提交即可正常 rebase）。
