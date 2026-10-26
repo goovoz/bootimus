@@ -3262,12 +3262,64 @@ const SOURCE_TEXT = {
         "Kubernetes": "Kubernetes",
         "Webhooks": "Webhook",
         "READ-ONLY OK": "只读可用",
-        "Copy curl command": "复制 curl 命令"
+        "Copy curl command": "复制 curl 命令",
+        "Login": "登录"
     }
 };
 
 // 带变量的文案（数字、端口、发行版名）没法精确匹配，用正则兜住。
 // 只在整串完全符合这个形态时才替换，避免误伤 "files" 这类普通单词。
+// 审计日志的「动作」列是服务端拼的：<动词> <资源> [<标识符>]。
+// 动词来自 API 路径第二段（已 humanise：连字符换空格、只有首字母大写），
+// 资源来自首段（单数化、全小写），两者都可能多词。纯正则的 [a-z]+ 会把
+// 标识符的前半截吞进资源名（「Download image ubuntu-24.04.iso」会解析成
+// 资源 "image ubuntu"），所以只能靠词表定界。
+const AUDIT_VERBS_ZH = {
+    'Created': '创建了', 'Deleted': '删除了', 'Updated': '更新了',
+    'Apply': '应用', 'Asset': '资源', 'Autoinstall': '自动安装',
+    'Boot candidates': '启动候选', 'Boot method': '启动方式', 'Buffer': '缓冲',
+    'Callback': '回调', 'Capture': '抓取', 'Check': '检查', 'Config': '配置',
+    'Console': '控制台', 'Create': '创建', 'Custom': '自定义', 'Delete': '删除',
+    'Deploy': '部署', 'Download': '下载', 'Effective': '生效', 'Events': '事件',
+    'Export': '导出', 'Extract': '解压', 'Extract progress': '解压进度',
+    'Files': '文件', 'Get': '获取', 'Import': '导入', 'Installs': '安装记录',
+    'Inventory': '硬件清单', 'Jobs': '任务', 'Login': '登录', 'Manifest': '清单',
+    'Membership': '成员', 'Menu preview': '菜单预览', 'Netboot': 'netboot',
+    'Next boot': '下次启动', 'Nodes': '节点', 'Patch smb': '打 SMB 补丁',
+    'Power': '电源控制', 'Progress': '进度', 'Promote': '转为静态', 'Providers': '提供方',
+    'Rebuild': '重建', 'Redetect': '重新探测', 'Render': '渲染',
+    'Reset password': '重置密码', 'Resolve': '解析', 'Run': '运行', 'Save': '保存',
+    'Select': '选择', 'Status': '状态', 'Stream': '流式传输', 'Sync': '同步',
+    'Test': '测试', 'Timeline': '时间线', 'Toggle': '切换', 'Tool files': '工具文件',
+    'Totp': '两步验证', 'Unpatch smb': '撤销 SMB 补丁', 'Update': '更新',
+    'Upload': '上传', 'Url': '地址', 'Verify': '校验', 'Wake': '唤醒', 'Winpe': 'WinPE'
+};
+
+const AUDIT_RES_ZH = {
+    'active session': '活跃会话', 'assign image': '指定镜像', 'audit': '审计日志',
+    'auth info': '认证信息', 'autoinstall': '自动安装', 'autoinstall file': '自动安装文件',
+    'autoinstall template': '自动安装模板', 'backup': '备份', 'bootloader': '引导加载器',
+    'catalogue': '目录', 'client': '客户端', 'client group': '客户端分组',
+    'cluster': '集群', 'deployment profile': '部署档案', 'disk image': '磁盘镜像',
+    'download': '下载', 'driver': '驱动', 'enrolment rule': '纳管规则', 'file': '文件',
+    'group': '分组', 'housekeeping': '日常维护', 'image': '镜像', 'install': '安装',
+    'iso': 'ISO', 'iso catalog': 'ISO 目录', 'kubernetes': 'Kubernetes',
+    'login': '登录', 'log': '日志', 'me': '本人', 'node image': '节点镜像',
+    'node': '节点', 'node image': '节点镜像',
+    'oidc': 'OIDC', 'profile': '配置', 'proxy config': '代理配置',
+    'proxydhcp': 'proxyDHCP', 'replica': '副本', 'san target': 'SAN 目标',
+    'scan': '扫描', 'scheduled task': '计划任务', 'server info': '服务器信息',
+    'stat': '统计', 'sync': '同步', 'theme': '主题', 'token': '令牌', 'tool': '工具',
+    'usb': 'USB', 'user': '用户', 'webhook': 'Webhook'
+};
+
+// 长的排前面，避免 'Reset' 抢在 'Reset password' 前面命中、'image' 抢在 'disk image' 前面
+const AUDIT_SUMMARY_RE = new RegExp('^(' +
+    Object.keys(AUDIT_VERBS_ZH).sort((a, b) => b.length - a.length).join('|') +
+    ') (' +
+    Object.keys(AUDIT_RES_ZH).sort((a, b) => b.length - a.length).join('|') +
+    ')(?: (.+))?$');
+
 const BOOT_METHOD_ZH = { kernel: '内核', sanboot: 'SAN', nbd: 'NBD', nfs: 'NFS', wimboot: 'WIM', http: 'HTTP' };
 
 const SOURCE_PATTERNS = {
@@ -3288,21 +3340,13 @@ const SOURCE_PATTERNS = {
                 const zh = d[sum] || sum;
                 return zh + ' ' + ({ Body: '请求体', Multipart: '表单', Optional: '可选参数' }[kind] || kind) + '：';
             }],
-        // 审计日志的「动作」列：服务端拼的是「Created client bc:24:11:dc:91:c7」，
-        // 动词和资源名都是固定的，末尾那段是标识符（MAC、名字），原样保留
-        [/^(Created|Deleted|Updated) ((?:disk image)|(?:san target)|(?:deployment profile)|(?:enrolment rule)|(?:auto-install file)|(?:public file)|(?:install image)|(?:audit log)|client|user|image|group|token|file|tool|schedule|webhook|cluster|job|bootloader|profile|rule|target)(?:\s+(.+))?$/,
-            (m, verb, res, id) => {
-                const v = { Created: '创建了', Deleted: '删除了', Updated: '更新了' }[verb] || verb;
-                const r = { client: '客户端', user: '用户', image: '镜像', group: '分组', token: '令牌',
-                   file: '文件', tool: '工具', schedule: '计划任务', webhook: 'Webhook',
-                   cluster: '集群', job: '任务', bootloader: '引导加载器', profile: '配置',
-                   rule: '规则', target: '目标', 'disk image': '磁盘镜像', 'san target': 'SAN 目标',
-                   'deployment profile': '部署档案', 'enrolment rule': '纳管规则',
-                   'auto-install file': '自动安装文件', 'public file': '公开文件',
-                   'install image': '安装镜像', 'audit log': '审计日志' }[res] || res;
-                // 资源名以英文开头（SAN、Webhook）时补个空格，中文里挨着太挤
-                return v + (/^[A-Za-z]/.test(r) ? ' ' : '') + r + (id ? ' ' + id : '');
-            }],
+        // 审计日志的「动作」列：动词和资源名走上面两张词表，末尾的标识符原样保留
+        [AUDIT_SUMMARY_RE, (m, verb, res, id) => {
+            const v = AUDIT_VERBS_ZH[verb] || verb;
+            const r = AUDIT_RES_ZH[res] || res;
+            // 资源名以英文开头（SAN、ISO、USB）时补个空格，中文里挨着太挤
+            return v + (/^[A-Za-z]/.test(r) ? ' ' : '') + r + (id ? ' ' + id : '');
+        }],
         [/^Deleted (.+)$/, (m, name) => '已删除 ' + name],
         // 启动菜单预览的摘要行：MAC、客户端名、类型都是变量拼出来的，整串查表不可能命中。
         // 分隔符在源码里是 `&nbsp;·&nbsp;`，落到 DOM 是 U+00A0，用 \s* 兜住。
