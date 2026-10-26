@@ -618,3 +618,51 @@ housekeeping、安装记录、副本同步等），fork 的补丁在这个基线
   且**没有开着的 PR** 才删；有开着的 PR 说明还在人工处理，一律保留
 - 只碰 `sync-conflict/*`；`fork-archive/*`（退役补丁的归档）永久保留，绝不删
 - 手动看一眼：`git ls-remote --heads origin 'sync-conflict/*'`
+
+## 铁律：加行不改行（L1 冲突的根因与解法）
+
+上游一更新就撞冲突，绝大多数不是"补丁本身有问题"，而是**补丁改的那一行，上游也在改**。
+git 只能按行合并：同一行两边都动 → 必然冲突，跟 rebase 还是 merge 无关。
+
+实测案例（2026-10-26，上游 0.1.78 的 27 个提交）：
+- `internal/storage/sqlite.go` 的 `AutoMigrate(...)` 上游是**整行一个调用**，我们的
+  `download-proxy` 补丁往这一行中间插了 `&models.ProxyConfig{}`
+- 上游同一版本往同一行加了 `DeploymentProfile` / `EnrolmentRule`
+- 结果：rebase 重放到该提交必冲突（整行替换）
+- 对比：`postgres.go` 的模型列表是**一行一个**，我们插入一项、上游插在其他位置，
+  git 能自动合并，从来不冲突
+
+### 解法：fork 的东西落在自己的文件里，上游的文件只多一行调用
+
+```go
+// internal/storage/fork_migrations.go（fork 自有 L0 文件）
+func forkMigrate(db *gorm.DB) error {
+    return db.AutoMigrate(&models.ProxyConfig{})   // fork 的表都写这里
+}
+```
+
+```go
+// internal/storage/sqlite.go —— 上游那行原样不动，只在函数末尾多一次调用
+func (s *SQLiteStore) AutoMigrate() error {
+    if err := s.db.AutoMigrate(/* 上游的列表，我们不碰 */); err != nil { ... }
+    if err := s.cleanupSoftDeletedFiles(); err != nil { ... }
+    if err := cleanupSoftDeletedClients(s.db); err != nil { ... }
+
+    // [bootimus-fork L1] fork-patch: download-proxy
+    if err := forkMigrate(s.db); err != nil { return fmt.Errorf(...) }
+    return nil
+}
+```
+
+差别在于改动的**位置**：不再和上游争同一行，而是落在函数末尾这个独立 hunk 里。
+上游以后加模型、调顺序、甚至拆函数，都不会影响这个 hunk。
+
+### 自查清单（写新补丁前问自己）
+
+1. 我要改的那一行，上游最近半年改过吗？（`git log -L :func:file upstream/main` 看一眼）
+2. 能不能改成"新增文件 + 一行调用"？能就别改上游的行。
+3. 必须改上游行时，能不能放在函数**末尾**或**开头**这种独立 hunk，而不是和一串参数挤在同一行？
+4. 列表类改动（模型、路由、配置项）如果上游是一行一个，就照它的风格追加一行；如果上游是整行一个，就**别往里塞**，改用上面的钩子写法。
+
+> 结论：`git rebase` 不是罪魁祸首。把 fork 的改动从"插入上游的行"改成"追加独立的 hunk"，
+> 冲突概率接近零——2026-10-26 改造后，rebase 27 个上游提交一次通过，零冲突。
