@@ -296,6 +296,9 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
+          # 必须切回 main 再审计：上一步结束时 HEAD 停在 sync-conflict/* 上，
+          # 那个分支已经把上游 merge 并提交了，两边「相对 base 的改动」互相抵消，交集恒为空。
+          git checkout -q main
           git fetch --no-tags --quiet upstream "${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}" || true
           python3 ops/ci/patch-risk.py --upstream "upstream/${UPSTREAM_BRANCH}" > /tmp/conflict-audit.txt 2>&1 || true
           sed -n '/^A\. 确定性冲突/,/^$/p' /tmp/conflict-audit.txt
