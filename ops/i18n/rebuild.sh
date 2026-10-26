@@ -8,12 +8,13 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
-REF=${1:-cb5efed}
+REF=${1:-upstream/main}
 
 cd "$REPO"
 
 if ! git rev-parse --verify --quiet "$REF^{commit}" >/dev/null; then
     echo "找不到上游 ref: $REF" >&2
+    echo "先 git fetch upstream，或显式传一个 ref：bash ops/i18n/rebuild.sh <ref>" >&2
     exit 1
 fi
 
