@@ -42,6 +42,14 @@ const SOURCE_PATTERNS = {
             distro + ' 建议用' + (BOOT_METHOD_ZH[want] || want) + '引导，当前是 ' + (BOOT_METHOD_ZH[got] || got)],
         [/^Wake-on-LAN packet sent to (.+)$/, (m, target) => '已向 ' + target + ' 发送网络唤醒数据包'],
         [/^Failed to download (.+?): (.+)$/, (m, name, err) => '下载 ' + name + ' 失败：' + err],
+        // API 参考页的摘要后面会拼上 Body: / Multipart: / Optional:（后面再接 <code>），
+        // 整串查表永远命中不了。拆两段：摘要查表，后缀单独映射。
+        [/^(.+?)\\s+(Body|Multipart|Optional):$/,
+            (m, sum, kind) => {
+                const d = (typeof SOURCE_TEXT !== 'undefined' && SOURCE_TEXT['zh-CN']) || {};
+                const zh = d[sum] || sum;
+                return zh + ' ' + ({ Body: '请求体', Multipart: '表单', Optional: '可选参数' }[kind] || kind) + '：';
+            }],
         // 审计日志的「动作」列：服务端拼的是「Created client bc:24:11:dc:91:c7」，
         // 动词和资源名都是固定的，末尾那段是标识符（MAC、名字），原样保留
         [/^(Created|Deleted|Updated) ((?:disk image)|(?:san target)|(?:deployment profile)|(?:enrolment rule)|(?:auto-install file)|(?:public file)|(?:install image)|(?:audit log)|client|user|image|group|token|file|tool|schedule|webhook|cluster|job|bootloader|profile|rule|target)(?:\\s+(.+))?$/,
