@@ -183,11 +183,25 @@ const SOURCE_PATTERNS = {
 ### 译文与生成器放在仓库里（`ops/i18n/`）
 
 `i18n.js` 是生成物：上游 `i18n.js` + `ops/i18n/zh.json` 的映射 + `apply_engine_extras.py`
-追加的引擎能力。重新生成只需一条命令（默认以上游 `cb5efed` 为底，可传别的 ref）：
+追加的引擎能力。重新生成只需一条命令（默认以 `upstream/main` 为底，可传别的 ref）：
 
 ```bash
 bash ops/i18n/rebuild.sh            # 或 bash ops/i18n/rebuild.sh <upstream-ref>
 ```
+
+**加新词条**：只改 `ops/i18n/zh.json` 一个文件，往里面追加「英文原文 → 中文」，
+然后重跑上面的命令。以前按批次分过 `zh_part*.json`，每次汉化任务加一个，
+读的时候要先拼起来才知道有没有重复键，已经合并掉了。
+
+不知道上游这次又加了哪些没翻的文案时：
+
+```bash
+python3 ops/i18n/pending.py                    # 上游最新一个提交里的新增
+python3 ops/i18n/pending.py <base> [head]      # 指定范围
+```
+
+它扫描 `index.html` / `app.js` / `fork-ui.js` 的 diff，挑出像界面文案的字符串，
+减掉 `zh.json` 里已有的，剩下的直接打印成能贴进 `zh.json` 的条目。
 
 > 早先这两步的脚本只存在于临时目录，`/tmp` 被清空后 770 条译文就无法重建了，
 > 所以源文件与生成器一并入库。
