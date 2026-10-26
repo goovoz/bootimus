@@ -22,18 +22,10 @@ ops/ci/test-patch-risk.sh
 # fork 自有的 Go 源文件（补丁代码放自己文件里，不跟上游抢同一行）
 internal/admin/fork_handlers.go
 internal/storage/fork_migrations.go
+ops/i18n/zh.json
 ops/i18n/rebuild.sh
 ops/i18n/build_i18n_patch.py
 ops/i18n/apply_engine_extras.py
-ops/i18n/parts/zh_part1.json
-ops/i18n/parts/zh_part2.json
-ops/i18n/parts/zh_part3.json
-ops/i18n/parts/zh_part4.json
-ops/i18n/parts/zh_part5.json
-ops/i18n/parts/zh_part6.json
-ops/i18n/parts/zh_part7.json
-ops/i18n/parts/zh_part9.json
-ops/i18n/parts/zh_part10.json
 docs/RELEASING.md
 # 运维脚本（不进镜像，只在本机装）：
 ops/watchdog/README.md

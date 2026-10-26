@@ -14,7 +14,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 I18N = REPO / 'web/static/i18n.js'
-SRC = Path(__file__).resolve().parent / 'parts'
+MAP_FILE = Path(__file__).resolve().parent / 'zh.json'
 
 ANCHOR = '// [bootimus-fork L1] fork-patch: i18n-zh-full'
 START = 'const _COMMON_BUTTON_MAP = {'
@@ -25,23 +25,16 @@ def norm(s: str) -> str:
 
 
 def load_map() -> dict:
+    """读取单一映射文件（以前按批次分成 zh_part*.json，已合并）。
+    norm 与短 key 过滤保留：映射表的 key 必须是 DOM 里真实出现的文本。"""
+    if not MAP_FILE.exists():
+        sys.exit(f'缺少 {MAP_FILE}')
     merged = {}
-    for name in ('zh_part1.json', 'zh_part2.json', 'zh_part3.json', 'zh_part4.json',
-                 'zh_part5.json', 'zh_part6.json', 'zh_part7.json', 'zh_part9.json',
-                 'zh_part10.json',
-                 'zh_part11.json'):
-        p = SRC / name
-        if not p.exists():
-            sys.exit(f'缺少 {p}')
-        data = json.loads(p.read_text(encoding='utf-8'))
-        for k, v in data.items():
-            key = norm(k)
-            if len(key) < 2:
-                continue
-            if key in merged and merged[key] != v:
-                print(f'  ! key 冲突（保留先出现的）：{key}')
-                continue
-            merged[key] = v
+    for k, v in json.loads(MAP_FILE.read_text(encoding='utf-8')).items():
+        key = norm(k)
+        if len(key) < 2:
+            continue
+        merged[key] = v
     return merged
 
 

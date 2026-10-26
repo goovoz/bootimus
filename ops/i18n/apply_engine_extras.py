@@ -13,7 +13,8 @@ build_i18n_patch.py 只负责把映射表灌进去；下面四项是渲染引擎
 import sys
 from pathlib import Path
 
-I18N = Path('/root/bootimus/web/static/i18n.js')
+REPO = Path(__file__).resolve().parents[2]
+I18N = REPO / 'web/static/i18n.js'
 src = I18N.read_text(encoding='utf-8')
 
 # ---------- 1. 带变量的整句规则 ----------
@@ -174,11 +175,22 @@ NEW_LOOKUP = """        let hit = dict[base];
         if (hit === undefined || hit === null) continue;
         hit = mark + hit + arrow;"""
 
+# ---------- 5. 只翻译变过的子树（下载页每秒刷新进度，全量扫描扛不住）----------
+OLD_APPLY = 'function _applyAll() {\n    if (_applying || !document.body) return;\n    _applying = true;\n    try {\n        applyTranslations(document);\n        _translateTextNodes(document.body);\n        _translateAttrs(document);\n        _translateTitle();\n    } finally {\n        _applying = false;\n        if (_autoObserver) _autoObserver.takeRecords();\n    }\n}\n\n'
+
+NEW_APPLY = '// 每批 DOM 变动只翻译「变过的那几棵子树」。以前每次变动都从 document.body 全量\n// 走一遍 TreeWalker，而下载页每秒刷新进度 —— 等于每秒扫一遍全表。\nlet _dirtyRoots = new Set();\nconst _DIRTY_FULL_THRESHOLD = 40;\n\nfunction _markDirty(node) {\n    if (!node) return;\n    const el = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;\n    if (el && el.nodeType === Node.ELEMENT_NODE) _dirtyRoots.add(el);\n}\n\nfunction _applyAll() {\n    if (_applying || !document.body) return;\n    _dirtyRoots = new Set();\n    _applying = true;\n    try {\n        applyTranslations(document);\n        _translateTextNodes(document.body);\n        _translateAttrs(document);\n        _translateTitle();\n    } finally {\n        _applying = false;\n        if (_autoObserver) _autoObserver.takeRecords();\n    }\n}\n\nfunction _applyDirty() {\n    if (_applying || !document.body) return;\n    const roots = _dirtyRoots;\n    _dirtyRoots = new Set();\n    // 整表重绘时逐个子树反而更贵，超过阈值就退回全量\n    if (roots.size === 0 || roots.size > _DIRTY_FULL_THRESHOLD) {\n        _applyAll();\n        return;\n    }\n    _applying = true;\n    try {\n        roots.forEach(root => {\n            const scope = root.parentElement || root;\n            if (!scope || !scope.isConnected) return;\n            applyTranslations(scope);\n            _translateTextNodes(scope);\n            _translateAttrs(scope);\n        });\n        _translateTitle();\n    } finally {\n        _applying = false;\n        if (_autoObserver) _autoObserver.takeRecords();\n    }\n}\n\n'
+
+OLD_OBSERVER = '    _autoObserver = new MutationObserver(() => {\n        if (_applying || _autoTimer) return;\n        _autoTimer = setTimeout(() => {\n            _autoTimer = null;\n            _applyAll();\n        }, 30);\n    });\n'
+
+NEW_OBSERVER = '    _autoObserver = new MutationObserver((records) => {\n        for (const r of records) _markDirty(r.target);\n        if (_applying || _autoTimer) return;\n        _autoTimer = setTimeout(() => {\n            _autoTimer = null;\n            _applyDirty();\n        }, 30);\n    });\n'
+
 steps = [
     ('带变量的整句规则', OLD_PATTERNS, NEW_PATTERNS),
     ('冒号前缀 + 原生对话框', OLD_PATTERN_TRANSLATE, NEW_PATTERN_TRANSLATE),
     ('状态列前缀图标', OLD_ARROW, NEW_ARROW),
     ('查表接上前缀规则', OLD_LOOKUP, NEW_LOOKUP),
+    ('只翻译变过的子树', OLD_APPLY, NEW_APPLY),
+    ('观察器改记脏根', OLD_OBSERVER, NEW_OBSERVER),
 ]
 
 for name, old, new in steps:
