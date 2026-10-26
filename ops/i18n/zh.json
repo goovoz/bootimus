@@ -1339,5 +1339,19 @@
   "Unified Kernel Image (UKI)": "统一内核映像（UKI）",
   "Network error": "网络错误",
   "Invalid server response": "服务器响应无效",
-  "Lost connection to server": "与服务端的连接已断开"
+  "Lost connection to server": "与服务端的连接已断开",
+  "Deploy Image": "部署镜像",
+  "Default (global or group setting)": "默认（全局或分组设置）",
+  "Prefix": "前缀",
+  "Created by": "创建人",
+  "Last used": "最近使用",
+  "Expires": "过期",
+  "Revoke": "吊销",
+  "Never": "无",
+  "Advertising next-server ": "正在通告 next-server ",
+  " with bootfiles BIOS ": "，启动文件 BIOS ",
+  ", UEFI ": "、UEFI ",
+  ", ARM64 ": "、ARM64 ",
+  ". Showing the last ": "。显示最近 ",
+  " requests.": " 条请求。"
 }
