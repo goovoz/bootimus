@@ -3760,6 +3760,46 @@ function setupForms() {
 }
 
 
+let apiReferenceSpec = null;
+
+async function loadAPIReferenceSpec() {
+    if (apiReferenceSpec) return apiReferenceSpec;
+    const res = await fetch(`${API_BASE}/openapi.json`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    apiReferenceSpec = await res.json();
+    return apiReferenceSpec;
+}
+
+function apiReferenceSections(spec) {
+    const byTag = new Map();
+    for (const tag of (spec.tags || [])) byTag.set(tag.name, { category: tag.name, description: tag.description || '', endpoints: [] });
+    for (const [path, ops] of Object.entries(spec.paths || {})) {
+        for (const [method, op] of Object.entries(ops)) {
+            const tag = (op.tags && op.tags[0]) || 'Other';
+            if (!byTag.has(tag)) byTag.set(tag, { category: tag, description: '', endpoints: [] });
+            const params = op.parameters || [];
+            const required = params.filter(p => p.in === 'query' && p.required).map(p => `${p.name}={${p.name}}`);
+            const optional = params.filter(p => p.in === 'query' && !p.required);
+            const body = op.requestBody || null;
+            const contentType = body ? Object.keys(body.content || {})[0] || '' : '';
+            byTag.get(tag).endpoints.push({
+                method: method.toUpperCase(),
+                path: required.length ? `${path}?${required.join('&')}` : path,
+                desc: op.summary || '',
+                optional,
+                body: body ? body.description || '' : '',
+                multipart: contentType === 'multipart/form-data',
+                publicAccess: !!op['x-bootimus-public'],
+                readOnly: !!op['x-bootimus-readonly'],
+                order: op['x-bootimus-order'] || 0,
+            });
+        }
+    }
+    const sections = [...byTag.values()].filter(s => s.endpoints.length);
+    for (const s of sections) s.endpoints.sort((a, b) => a.order - b.order);
+    return sections;
+}
+
 let apiRefImage = '';
 let apiRefMac = '';
 let apiRefServer = '';
