@@ -60,3 +60,6 @@ signing/
 ui-tests/node_modules/
 ui-tests/test-results/
 ui-tests/playwright-report/
+
+# python 脚本跑完留下的
+__pycache__/
