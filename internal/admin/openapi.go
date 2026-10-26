@@ -254,7 +254,7 @@ var APISections = []APISection{
 		{Method: "POST", Path: "/api/users/totp/reset", Summary: "Remove two-factor authentication from a user who has lost their device.", Params: []APIParam{qID("User ID (or username=)")}},
 		{Method: "GET", Path: "/api/tokens", Summary: "List API tokens."},
 		{Method: "POST", Path: "/api/tokens", Summary: "Create a scoped API token; the secret is returned once.", Body: "{name, scope (read|admin), expires_in_days}"},
-		{Method: "DELETE", Path: "/api/tokens", Summary: "Revoke an API token.", Params: []APIParam{qID("Token ID")}},
+		{Method: "DELETE", Path: "/api/tokens", Summary: "Revoke an API token, or delete the record with purge=1 (revoked tokens only).", Params: []APIParam{qID("Token ID"), {Name: "purge", In: "query", Description: "1 deletes a revoked token instead of revoking it"}}},
 	}},
 	{Tag: "Settings", Endpoints: []APIEndpoint{
 		{Method: "GET", Path: "/api/theme", Summary: "Boot menu theme and defaults.", ReadOnly: true},

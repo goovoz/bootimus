@@ -144,6 +144,9 @@ jobs:
           # [bootimus-fork] ISO 目录版本号解析补丁：只判定与告警
           bash .github/scripts/detect-iso-catalog-resolve.sh /tmp/upstream-tree | tee /tmp/detect-isores.txt || true
 
+          # [bootimus-fork] 删除已吊销令牌补丁：只判定与告警
+          bash .github/scripts/detect-token-purge.sh /tmp/upstream-tree | tee /tmp/detect-purge.txt || true
+
 
           RESULT=$(sed -n 's/^RESULT=//p' /tmp/detect.txt | head -1)
           REASON=$(sed -n 's/^REASON=//p' /tmp/detect.txt | head -1)
@@ -161,6 +164,8 @@ jobs:
             echo "aigen_reason=$(sed -n 's/^REASON=//p' /tmp/detect-aigen.txt | head -1)"
             echo "isores_result=$(sed -n 's/^RESULT=//p' /tmp/detect-isores.txt | head -1)"
             echo "isores_reason=$(sed -n 's/^REASON=//p' /tmp/detect-isores.txt | head -1)"
+            echo "purge_result=$(sed -n 's/^RESULT=//p' /tmp/detect-purge.txt | head -1)"
+            echo "purge_reason=$(sed -n 's/^REASON=//p' /tmp/detect-purge.txt | head -1)"
             echo "branch=sync/$(date -u +%Y%m%d-%H%M)"
           } >> "$GITHUB_OUTPUT"
 
@@ -187,6 +192,12 @@ jobs:
         run: |
           echo "::warning::上游可能已自带自动安装模板生成：${{ steps.inspect.outputs.aigen_reason }}"
           echo "补丁 autoinstall-generator 未自动退役，请人工比对模板覆盖面后再移除。"
+
+      - name: 删除已吊销令牌补丁是否该让位（仅告警）
+        if: steps.inspect.outputs.purge_result == 'IMPLEMENTED' || steps.inspect.outputs.purge_result == 'SUSPECT'
+        run: |
+          echo "::warning::上游可能已自行支持删除令牌：${{ steps.inspect.outputs.purge_reason }}"
+          echo "补丁 token-purge 未自动退役（同时涉及存储层接口与 UI，自动摘除风险高），请人工确认后再移除。"
 
       - name: ISO 目录版本号解析补丁是否该让位（仅告警）
         if: steps.inspect.outputs.isores_result == 'IMPLEMENTED'

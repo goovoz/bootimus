@@ -9140,6 +9140,8 @@ async function loadAPITokens() {
     }
 }
 
+// [bootimus-fork L1] fork-patch: token-purge —— 已吊销的行多一个「删除」按钮
+// 上游在这里直接留空，吊销后既不能复查也不能清理，操作列看着像按钮没加载出来。
 function renderAPITokensTable() {
     const container = document.getElementById('api-tokens-table');
     if (!container) return;
@@ -9163,7 +9165,9 @@ function renderAPITokensTable() {
             <td>${tok.last_used_at ? new Date(tok.last_used_at).toLocaleString() : 'Never'}</td>
             <td>${tok.expires_at ? new Date(tok.expires_at).toLocaleDateString() : 'Never'}</td>
             <td>${status}</td>
-            <td>${tok.revoked ? '' : `<button class="btn btn-danger btn-sm" onclick="revokeAPIToken(${tok.id}, '${escapeHtml(tok.name).replace(/'/g, "\\'")}')">Revoke</button>`}</td>
+            <td>${tok.revoked
+                ? `<button class="btn btn-sm" onclick="purgeAPIToken(${tok.id}, '${escapeHtml(tok.name).replace(/'/g, "\\'")}')">Delete</button>`
+                : `<button class="btn btn-danger btn-sm" onclick="revokeAPIToken(${tok.id}, '${escapeHtml(tok.name).replace(/'/g, "\\'")}')">Revoke</button>`}</td>
         </tr>`;
     }).join('');
     container.innerHTML = `<div class="table-scroll"><table>
@@ -9206,6 +9210,25 @@ async function copyAPITokenSecret() {
         showAlert('Token copied', 'success');
     } catch (err) {
         showAlert('Copy failed: ' + err.message, 'error');
+    }
+}
+
+// [bootimus-fork L1] fork-patch: token-purge
+// 删掉一条已吊销的令牌记录。后端只接受 revoked=true 的，
+// 所以这里不用再挡 —— 按钮本来就只出现在已吊销的行上。
+async function purgeAPIToken(id, name) {
+    if (!confirm(`Delete the token "${name}"? The record is removed from this list; anything that used it stopped working when it was revoked.`)) return;
+    try {
+        const res = await authFetch(`${API_BASE}/tokens?id=${id}&purge=1`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) {
+            showAlert(data.error || 'Failed to delete token', 'error');
+            return;
+        }
+        showAlert('Token deleted', 'success');
+        loadAPITokens();
+    } catch (err) {
+        showAlert('Failed to delete token: ' + err.message, 'error');
     }
 }
 
