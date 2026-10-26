@@ -21,7 +21,9 @@ ops/ci/test-patch-risk.sh
 .github/workflows/patch-risk.yml
 # fork 自有的 Go 源文件（补丁代码放自己文件里，不跟上游抢同一行）
 internal/admin/fork_handlers.go
+web/static/fork-ui.js
 internal/storage/fork_migrations.go
+ui-tests/tests/fork-globals.spec.ts
 ops/i18n/zh.json
 ops/i18n/rebuild.sh
 ops/i18n/build_i18n_patch.py
