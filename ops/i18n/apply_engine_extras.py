@@ -184,6 +184,31 @@ OLD_OBSERVER = '    _autoObserver = new MutationObserver(() => {\n        if (_a
 
 NEW_OBSERVER = '    _autoObserver = new MutationObserver((records) => {\n        for (const r of records) _markDirty(r.target);\n        if (_applying || _autoTimer) return;\n        _autoTimer = setTimeout(() => {\n            _autoTimer = null;\n            _applyDirty();\n        }, 30);\n    });\n'
 
+
+# ---------- 1b. 启动菜单预览的摘要行 ----------
+# 三个字段全是变量（MAC 会变），没法进映射表，只能走 SOURCE_PATTERNS。
+MENU_PATTERNS_INNER = """
+        // 启动菜单预览的摘要行：MAC、客户端名、类型都是变量拼出来的，整串查表不可能命中。
+        // 分隔符在源码里是 `&nbsp;·&nbsp;`，落到 DOM 是 U+00A0，用 \\s* 兜住。
+        [/^MAC: (.*?)\\s*·\\s*Client: not registered \\(anonymous menu\\)\\s*·\\s*Kind: boot menu$/,
+            (m, mac) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：未注册（匿名菜单）· 类型：启动菜单'],
+        [/^MAC: (.*?)\\s*·\\s*Client: (.*?)\\s*·\\s*Kind: boot menu$/,
+            (m, mac, client) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：' +
+                client.replace('(unnamed)', '（未命名）') + ' · 类型：启动菜单'],
+        [/^MAC: (.*?)\\s*·\\s*Client: (.*?)\\s*·\\s*Kind: cluster install boot$/,
+            (m, mac, client) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：' +
+                client.replace('(unnamed)', '（未命名）') + ' · 类型：集群安装启动'],
+        [/^MAC: (.*?)\\s*·\\s*Client: (.*?)\\s*·\\s*Kind: (.*?)\\s*·\\s*Next boot: (.*)$/,
+            (m, mac, client, kind, nb) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：' +
+                client.replace('(unnamed)', '（未命名）') + ' · 类型：' +
+                (kind === 'cluster install boot' ? '集群安装启动' : '启动菜单') + ' · 下次启动：' + nb],"""
+
+NEW_PATTERNS_MENU = NEW_PATTERNS.replace(
+    "        [/^Deleted (.+)$/, (m, name) => '已删除 ' + name]",
+    "        [/^Deleted (.+)$/, (m, name) => '已删除 ' + name]," + MENU_PATTERNS_INNER,
+)
+assert NEW_PATTERNS_MENU != NEW_PATTERNS, '菜单正则没插进 SOURCE_PATTERNS'
+
 steps = [
     ('带变量的整句规则', OLD_PATTERNS, NEW_PATTERNS),
     ('冒号前缀 + 原生对话框', OLD_PATTERN_TRANSLATE, NEW_PATTERN_TRANSLATE),
@@ -191,6 +216,7 @@ steps = [
     ('查表接上前缀规则', OLD_LOOKUP, NEW_LOOKUP),
     ('只翻译变过的子树', OLD_APPLY, NEW_APPLY),
     ('观察器改记脏根', OLD_OBSERVER, NEW_OBSERVER),
+    ('启动菜单预览摘要行', NEW_PATTERNS, NEW_PATTERNS_MENU),
 ]
 
 for name, old, new in steps:
