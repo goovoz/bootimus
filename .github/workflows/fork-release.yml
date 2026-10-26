@@ -6,7 +6,8 @@ name: Release (fork)
 #     **不写任何构建记录**（版本串 / commit / 补丁清单 / 镜像 digest 都不写，
 #     digest 只出现在每次运行的 Job Summary 里）；
 #   · 同一个版本号再构建，只刷新 Release 上的资产，不往正文追加内容；
-#   · 镜像推到 ghcr.io/goovoz/bootimus，旧 digest 由 ghcr-retention.yml 定期清掉。
+#   · 镜像同时推到 ghcr.io/goovoz/bootimus 和 Docker Hub 的 deemop/bootimus，
+#     两处 digest 相同；ghcr 的旧 digest 由 ghcr-retention.yml 定期清掉。
 #
 # 版本口径（重要）：
 #   基线版本 = VERSION 文件 / tag / 手动输入，纯 x.y.z，**必须与上游保持一致**，
@@ -47,6 +48,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/goovoz/bootimus
+  DH_IMAGE: deemop/bootimus
 
 jobs:
   binaries:
@@ -179,6 +181,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 同一个镜像两处都发：ghcr 走 github.token，Hub 走仓库 secret。
+      # 任何一边认证失败都让构建红掉，不要静默只发一半。
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v4  # node24
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build and push
         id: build
         uses: docker/build-push-action@v7  # node24
@@ -194,6 +204,10 @@ jobs:
             ${{ env.IMAGE }}:sha-${{ steps.version.outputs.rev }}
             ${{ env.IMAGE }}:${{ steps.version.outputs.base }}
             ${{ env.IMAGE }}:latest
+            ${{ env.DH_IMAGE }}:${{ steps.version.outputs.tag_version }}
+            ${{ env.DH_IMAGE }}:sha-${{ steps.version.outputs.rev }}
+            ${{ env.DH_IMAGE }}:${{ steps.version.outputs.base }}
+            ${{ env.DH_IMAGE }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.version.outputs.build_version }}
@@ -217,8 +231,8 @@ jobs:
             echo "| 版本串 | \`${{ steps.version.outputs.build_version }}\` |"
             echo "| 二进制 | bootimus-linux-{amd64,arm64}、bootimus-windows-{amd64,arm64} + SHA256SUMS（挂在 Release 上） |"
             echo "| 不可变 tag | \`${IMAGE}:${{ steps.version.outputs.tag_version }}\`、\`${IMAGE}:sha-${{ steps.version.outputs.rev }}\` |"
-            echo "| 漂移 tag | \`${IMAGE}:${{ steps.version.outputs.base }}\`、\`${IMAGE}:latest\` |"
-            echo "| digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| 漂移 tag | \`${IMAGE}:…\`、\`${DH_IMAGE}:…\`（base 与 latest 两边都有） |"
+            echo "| digest | \`${{ steps.build.outputs.digest }}\`（ghcr 与 Docker Hub 同 digest） |"
             echo ""
             echo "可复现引用（推荐写进 compose）："
             echo ""
@@ -226,3 +240,11 @@ jobs:
             echo "image: ${IMAGE}@${{ steps.build.outputs.digest }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Hub 仓库页面的介绍来自 DOCKERHUB.md，跟镜像一起发，免得文档和镜像对不上。
+      - name: 同步 Docker Hub 上的介绍
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          REGISTRY_IMAGE: deemop/bootimus
+        run: python3 .github/scripts/sync-dockerhub-readme.py
