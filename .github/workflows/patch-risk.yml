@@ -1,0 +1,60 @@
+name: Patch Risk Audit (fork)
+
+# [bootimus-fork L0] 补丁冲突风险审计。
+#
+# 现有 6 个 detect-*.sh 只回答「上游是否已实现该功能（能不能退役）」，
+# 没人回答「我们的补丁是不是站在上游要改的那一行上」——那才是同步反复失败的原因。
+# 这个 workflow 把风险变成可量化的数字：两边相对 base 改的行有没有重叠。
+#
+# 每天跑一次 + push 时跑。不阻塞（审计结果不是错误，是健康度）：
+#   A 段非空 = 下次同步必冲突，提前知道，不用等 failed run
+#   B 段分数 = 我方 hunk 数 × 上游近期改动次数，分数越高越危险
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "37 20 * * *" # 每天 20:37 UTC（北京时间次日 04:37）
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: 审计补丁冲突风险
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 要拿完整历史算 diff
+
+      - name: 拉上游
+        run: |
+          git remote add upstream https://github.com/garybowers/bootimus.git
+          git fetch --no-tags --quiet upstream main
+          echo "上游 HEAD：$(git log -1 --format='%h %s' upstream/main | cut -c1-60)"
+
+      - name: 审计器自测
+        run: bash ops/ci/test-patch-risk.sh
+
+      - name: 风险评估
+        run: |
+          set -eo pipefail
+          python3 ops/ci/patch-risk.py | tee /tmp/risk.txt
+          {
+            echo "## 补丁冲突风险"
+            echo ""
+            echo '```'
+            cat /tmp/risk.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 有确定性冲突时标注
+        run: |
+          set -eo pipefail
+          if sed -n '/^A\. 确定性冲突/,/^$/p' /tmp/risk.txt | grep -qv '^A\. \|^   无$'; then
+            echo "::warning::存在确定性冲突，下次上游同步会撞；看 Job Summary 的 A 段定位到补丁"
+          else
+            echo "无确定性冲突"
+          fi
