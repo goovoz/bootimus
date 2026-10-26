@@ -1570,5 +1570,6 @@
   "Kubernetes": "Kubernetes",
   "Webhooks": "Webhook",
   "READ-ONLY OK": "只读可用",
-  "Copy curl command": "复制 curl 命令"
+  "Copy curl command": "复制 curl 命令",
+  "Login": "登录"
 }
