@@ -63,6 +63,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | `download-resume` | active | ISO 下载断点续传 + 残留清理：数据先写 `.part`（带 ETag 的 meta），再下用 `Range` 续传、`If-Range` 防串版本，完成才 rename；启动清理 7 天前的残留 | `internal/admin/handlers.go`、`internal/admin/download_resume_test.go`、`internal/server/server.go` |
 | `autoinstall-generator` | active | 自动安装文件从模板生成：4 套模板 + 变量表单 + 预览 + 格式校验，产物写入现有文件库 | `internal/autoinstall/generate.go`、`internal/autoinstall/templates/*.tmpl`、`internal/admin/handlers.go`、`internal/server/server.go`、`web/static/{index.html,app.js,i18n.js}` |
 | `iso-catalog-resolve` | active | 「获取镜像」下载前解析真实文件名：URL 失效时按目录里最新的同类文件改写，15 分钟缓存 | `internal/admin/iso_resolve.go`、`internal/admin/handlers.go`、`internal/server/server.go`、`web/static/app.js`、`distro-profiles.json` |
+| `token-purge` | active | 已吊销的 API 令牌可以删除：`DELETE /api/tokens?id=N&purge=1` 只接受 `revoked=true` 的记录，操作列在吊销后显示「删除」 | `internal/storage/{interface,tokens}.go`、`internal/admin/{tokens,openapi}.go`、`web/static/app.js`、`web/static/i18n.js` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 
@@ -75,6 +76,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | `strict_gone` | `URL must point to an .iso file` 这句拒绝消失 | 上游放宽了 URL 后缀校验 |
 | `call_gone` | `DownloadISO` 不再直接调用 `isoDownloadFilename(req.URL, req.Filename)` | 上游加了中间层 |
 | `probe_added` | 代码出现 `bytes=0-1` 或 `Header.Set("Range"` | **本能力的指纹**：只有为了猜远端文件名才会对下载地址发 Range 请求 |
+| `purge_added` | 存储层出现 `DeleteAPIToken`，或 `/api/tokens` 的 DELETE 认 `purge` | **本能力的指纹**：上游只做吊销，真删是新能力 |
 | `ui_added` | 前端出现 `name="filename"` 输入框（`filename_patterns` 不算） | 上游给了用户显式命名入口 |
 
 判定：

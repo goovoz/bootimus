@@ -24,6 +24,13 @@ func (h *Handler) APITokens(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		h.createAPIToken(w, r)
 	case http.MethodDelete:
+		// [bootimus-fork L1] fork-patch: token-purge
+		// 上游的 DELETE 只有「吊销」一种语义，吊销后记录会永久留在列表里。
+		// purge=1 走真正的删除，只允许对已吊销的令牌做（见 purgeAPIToken）。
+		if p := r.URL.Query().Get("purge"); p == "1" || p == "true" {
+			h.purgeAPIToken(w, r)
+			return
+		}
 		h.revokeAPIToken(w, r)
 	default:
 		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
@@ -126,6 +133,42 @@ func (h *Handler) revokeAPIToken(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("API token revoked: %s (by=%s)", token.Name, actor)
 	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Token revoked"})
+}
+
+// [bootimus-fork L1] fork-patch: token-purge
+// 删掉一条已吊销的令牌记录。
+// 只接受 revoked=true 的：吊销是安全动作（立刻失效），删除纯粹是清理列表，
+// 不该把还可能有人在用的令牌顺手干掉 —— 那样调用方会莫名其妙收到 401。
+func (h *Handler) purgeAPIToken(w http.ResponseWriter, r *http.Request) {
+	actor := auth.UsernameFromContext(r.Context())
+	if auth.IsTokenPrincipal(actor) {
+		h.sendJSON(w, http.StatusForbidden, Response{Success: false, Error: "API tokens cannot delete tokens; sign in as a user"})
+		return
+	}
+	id, err := strconv.ParseUint(r.URL.Query().Get("id"), 10, 64)
+	if err != nil || id == 0 {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Token id is required"})
+		return
+	}
+	token, err := h.storage.GetAPIToken(uint(id))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		h.sendJSON(w, http.StatusNotFound, Response{Success: false, Error: "Token not found"})
+		return
+	}
+	if err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	if !token.Revoked {
+		h.sendJSON(w, http.StatusConflict, Response{Success: false, Error: "Revoke the token before deleting it"})
+		return
+	}
+	if err := h.storage.DeleteAPIToken(token.ID); err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: err.Error()})
+		return
+	}
+	log.Printf("API token deleted: %s (by=%s)", token.Name, actor)
+	h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "Token deleted"})
 }
 
 func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
