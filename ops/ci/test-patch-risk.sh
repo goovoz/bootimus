@@ -103,6 +103,44 @@ else
 fi
 
 echo
+echo "=== 场景 5：审计必须在 fork 侧跑（冲突分支上算出来恒为空）==="
+# 这条锁的是 sync-upstream.yml 里的一个坑：冲突分支已经把上游 merge 并提交了，
+# 此时 base 变成上游顶端，两边改动互相抵消，A 段恒空。所以审计前必须切回 main。
+d5="$WORK/head-matters"; make_base "$d5"
+( cd "$d5"
+  git checkout -q -b fork
+  sed -i 's/\tprintln("hi")/\tprintln("hi from fork")/' app.go
+  printf 'README.md\n' > .github/fork-paths.txt
+  printf '{"patches":[{"id":"head-matters"}]}\n' > .github/fork-patches.json
+  git add -A && git commit -q -m "feat: fork 改 hello
+
+Fork-Patch: head-matters"
+  git checkout -q main
+  git checkout -q -b upstream
+  sed -i 's/\tprintln("hi")/\tprintln("hi from upstream")/' app.go
+  git commit -qam "upstream 改同一行"
+  # 模拟 workflow 的冲突路径：merge 出冲突、把冲突标记一起提交
+  git checkout -q fork
+  git checkout -q -B sync-conflict/test
+  git merge upstream --no-edit >/dev/null 2>&1 || true
+  git add -A && git commit -qm "wip: 冲突" >/dev/null 2>&1 || true
+)
+on_branch=$( cd "$d5" && git checkout -q sync-conflict/test && python3 "$AUDIT" --upstream upstream 2>&1 | sed -n '/^A\. 确定性冲突/,/^$/p' )
+on_fork=$( cd "$d5" && git checkout -q fork && python3 "$AUDIT" --upstream upstream 2>&1 | sed -n '/^A\. 确定性冲突/,/^$/p' )
+echo "$on_branch" | sed 's/^/    冲突分支上：/'
+echo "$on_fork" | sed 's/^/    fork 分支上：/'
+if echo "$on_branch" | grep -q '无'; then
+    ok "冲突分支上确实算不出冲突（这就是必须切回 main 的原因）"
+else
+    bad "冲突分支上竟然算出了冲突，场景构造有问题"
+fi
+if echo "$on_fork" | grep -q 'app.go'; then
+    ok "切到 fork 侧能正确列出冲突文件"
+else
+    bad "fork 侧没列出冲突文件"
+fi
+
+echo
 echo "=== 场景 4：--strict 在有冲突时退出码非 0 ==="
 d4="$WORK/strict"; cp -r "$WORK/same-line" "$d4"
 cd "$d4"
