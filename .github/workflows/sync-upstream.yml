@@ -289,6 +289,17 @@ jobs:
             echo "conflict_branch=${BR}"
           } >> "$GITHUB_OUTPUT"
 
+      # [bootimus-fork L0] 冲突时把审计结论落成文件，给下面 PR 正文用。
+      # 价值：PR 里直接看到「哪个补丁、哪个文件、几行」，不用人去翻上千行日志。
+      - name: 冲突风险审计（冲突时）
+        if: steps.keep.outputs.conflict == 'true'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          git fetch --no-tags --quiet upstream "${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}" || true
+          python3 ops/ci/patch-risk.py --upstream "upstream/${UPSTREAM_BRANCH}" > /tmp/conflict-audit.txt 2>&1 || true
+          sed -n '/^A\. 确定性冲突/,/^$/p' /tmp/conflict-audit.txt
+
       - name: 编译与测试
         if: steps.gate.outputs.changed == 'true' && steps.keep.outputs.conflict != 'true'
         run: |
@@ -331,6 +342,9 @@ jobs:
             BR="${{ steps.keep.outputs.conflict_branch }}"
             TITLE="[需人工] 上游 ${{ steps.gate.outputs.sha }} 与 fork 补丁冲突"
             BODY="自动 rebase 失败，冲突标记已原样提交到本分支。解决冲突后合并即可，注意保留 \`Fork-Patch\` trailer 与 \`[bootimus-fork L1]\` 锚点。"
+            if [ -s /tmp/conflict-audit.txt ]; then
+              BODY="$(printf '%s\n\n### 冲突风险审计\n\n\x60\x60\x60\n%s\n\x60\x60\x60' "$BODY" "$(cat /tmp/conflict-audit.txt)")"
+            fi
           else
             BR="${{ steps.inspect.outputs.branch }}"
             git checkout -B "$BR"
