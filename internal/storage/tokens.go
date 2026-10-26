@@ -43,6 +43,20 @@ func revokeAPIToken(db *gorm.DB, id uint) error {
 	return nil
 }
 
+// [bootimus-fork L1] fork-patch: token-purge
+// 上游只有 revokeAPIToken（把 revoked 置 true），没有真删。
+// 这里做硬删除，调用方负责先确认令牌已吊销。
+func deleteAPIToken(db *gorm.DB, id uint) error {
+	res := db.Delete(&models.APIToken{}, id)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func touchAPIToken(db *gorm.DB, id uint, at time.Time) error {
 	return db.Model(&models.APIToken{}).Where("id = ?", id).Update("last_used_at", at).Error
 }
@@ -55,7 +69,10 @@ func (s *SQLiteStore) GetAPITokenByHash(hash string) (*models.APIToken, error) {
 	return getAPITokenByHash(s.db, hash)
 }
 func (s *SQLiteStore) GetAPIToken(id uint) (*models.APIToken, error) { return getAPIToken(s.db, id) }
-func (s *SQLiteStore) RevokeAPIToken(id uint) error                  { return revokeAPIToken(s.db, id) }
+
+// [bootimus-fork L1] fork-patch: token-purge
+func (s *SQLiteStore) DeleteAPIToken(id uint) error { return deleteAPIToken(s.db, id) }
+func (s *SQLiteStore) RevokeAPIToken(id uint) error { return revokeAPIToken(s.db, id) }
 func (s *SQLiteStore) TouchAPIToken(id uint, at time.Time) error {
 	return touchAPIToken(s.db, id, at)
 }
@@ -68,7 +85,10 @@ func (s *PostgresStore) GetAPITokenByHash(hash string) (*models.APIToken, error)
 	return getAPITokenByHash(s.db, hash)
 }
 func (s *PostgresStore) GetAPIToken(id uint) (*models.APIToken, error) { return getAPIToken(s.db, id) }
-func (s *PostgresStore) RevokeAPIToken(id uint) error                  { return revokeAPIToken(s.db, id) }
+
+// [bootimus-fork L1] fork-patch: token-purge
+func (s *PostgresStore) DeleteAPIToken(id uint) error { return deleteAPIToken(s.db, id) }
+func (s *PostgresStore) RevokeAPIToken(id uint) error { return revokeAPIToken(s.db, id) }
 func (s *PostgresStore) TouchAPIToken(id uint, at time.Time) error {
 	return touchAPIToken(s.db, id, at)
 }
