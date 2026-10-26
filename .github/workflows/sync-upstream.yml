@@ -68,6 +68,23 @@ jobs:
             git log --oneline --max-count=30 "HEAD..${UP}"
           fi
 
+      # [bootimus-fork L0] 动手前先算清楚这次会撞在哪：把两边相对 base 改的行求交集。
+      # 只做提示、不拦流程 —— 真撞了下面的 rebase 会照常把现场推成 sync-conflict 分支。
+      - name: 补丁冲突风险预检
+        if: steps.gate.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          git fetch --no-tags --quiet upstream "${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
+          python3 ops/ci/patch-risk.py --upstream "upstream/${UPSTREAM_BRANCH}" | tee /tmp/risk.txt || true
+          {
+            echo "## 补丁冲突风险预检"
+            echo ""
+            echo '```'
+            cat /tmp/risk.txt 2>/dev/null || echo "（审计脚本没有输出）"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Go
         if: steps.gate.outputs.changed == 'true'
         uses: actions/setup-go@v7  # node24
