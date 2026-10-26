@@ -120,7 +120,8 @@ def patch_files():
         files = set()
         for c in shas:
             files.update(f for f in git('show', '--name-only', '--format=', c).split() if f)
-        out[pid] = {f for f in files if f not in l0}
+        alive = set(git('ls-tree', '-r', '--name-only', 'HEAD').split())
+        out[pid] = {f for f in files if f not in l0 and f in alive}
     return out
 
 
