@@ -19,6 +19,14 @@ TOKEN = os.environ.get('DOCKERHUB_TOKEN', '').strip()
 REPO = os.environ.get('REGISTRY_IMAGE', 'bootimus').strip()
 DOC = Path(os.environ.get('HUB_FILE', 'DOCKERHUB.md'))
 
+# REGISTRY_IMAGE 可能写成 "bootimus" 也可能写成 "deemop/bootimus"。
+# Hub 的 API 是 /repositories/<namespace>/<repo>/，所以带斜杠时要把 namespace 拆出来，
+# 否则会拼成 deemop/deemop/bootimus 然后 404（踩过一次）。
+if '/' in REPO:
+    ns, _, name = REPO.partition('/')
+    USER = USER or ns
+    REPO = name
+
 # Hub 页面上那一行短描述，超出会被截断
 SHORT = 'Bootimus 的 PXE/HTTP 启动服务器镜像：中文界面 + 下载代理 + 断点续传'
 
