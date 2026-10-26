@@ -1571,5 +1571,10 @@
   "Webhooks": "Webhook",
   "READ-ONLY OK": "只读可用",
   "Copy curl command": "复制 curl 命令",
-  "Login": "登录"
+  "Login": "登录",
+  "Token deleted": "令牌已删除",
+  "Failed to delete token": "删除令牌失败",
+  "Failed to delete token:": "删除令牌失败：",
+  "Revoke the token before deleting it": "请先吊销该令牌再删除",
+  "Revoked": "已吊销"
 }
