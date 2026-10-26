@@ -3031,7 +3031,21 @@ const SOURCE_TEXT = {
         "Unified Kernel Image (UKI)": "统一内核映像（UKI）",
         "Network error": "网络错误",
         "Invalid server response": "服务器响应无效",
-        "Lost connection to server": "与服务端的连接已断开"
+        "Lost connection to server": "与服务端的连接已断开",
+        "Deploy Image": "部署镜像",
+        "Default (global or group setting)": "默认（全局或分组设置）",
+        "Prefix": "前缀",
+        "Created by": "创建人",
+        "Last used": "最近使用",
+        "Expires": "过期",
+        "Revoke": "吊销",
+        "Never": "无",
+        "Advertising next-server": "正在通告 next-server ",
+        "with bootfiles BIOS": "，启动文件 BIOS ",
+        ", UEFI": "、UEFI ",
+        ", ARM64": "、ARM64 ",
+        ". Showing the last": "。显示最近 ",
+        "requests.": " 条请求。"
     }
 };
 
@@ -3049,7 +3063,21 @@ const SOURCE_PATTERNS = {
             distro + ' 建议用' + (BOOT_METHOD_ZH[want] || want) + '引导，当前是 ' + (BOOT_METHOD_ZH[got] || got)],
         [/^Wake-on-LAN packet sent to (.+)$/, (m, target) => '已向 ' + target + ' 发送网络唤醒数据包'],
         [/^Failed to download (.+?): (.+)$/, (m, name, err) => '下载 ' + name + ' 失败：' + err],
-        [/^Deleted (.+)$/, (m, name) => '已删除 ' + name]
+        [/^Deleted (.+)$/, (m, name) => '已删除 ' + name],
+        // 启动菜单预览的摘要行：MAC、客户端名、类型都是变量拼出来的，整串查表不可能命中。
+        // 分隔符在源码里是 `&nbsp;·&nbsp;`，落到 DOM 是 U+00A0，用 \s* 兜住。
+        [/^MAC: (.*?)\s*·\s*Client: not registered \(anonymous menu\)\s*·\s*Kind: boot menu$/,
+            (m, mac) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：未注册（匿名菜单）· 类型：启动菜单'],
+        [/^MAC: (.*?)\s*·\s*Client: (.*?)\s*·\s*Kind: boot menu$/,
+            (m, mac, client) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：' +
+                client.replace('(unnamed)', '（未命名）') + ' · 类型：启动菜单'],
+        [/^MAC: (.*?)\s*·\s*Client: (.*?)\s*·\s*Kind: cluster install boot$/,
+            (m, mac, client) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：' +
+                client.replace('(unnamed)', '（未命名）') + ' · 类型：集群安装启动'],
+        [/^MAC: (.*?)\s*·\s*Client: (.*?)\s*·\s*Kind: (.*?)\s*·\s*Next boot: (.*)$/,
+            (m, mac, client, kind, nb) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：' +
+                client.replace('(unnamed)', '（未命名）') + ' · 类型：' +
+                (kind === 'cluster install boot' ? '集群安装启动' : '启动菜单') + ' · 下次启动：' + nb],
     ]
 };
 
