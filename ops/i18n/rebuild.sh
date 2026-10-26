@@ -3,7 +3,7 @@
 #
 #   bash ops/i18n/rebuild.sh [上游 ref]
 #
-# 步骤：取上游 i18n.js → 灌入 parts/*.json 的映射 → 追加引擎能力 → 语法检查
+# 步骤：取上游 i18n.js → 灌入 zh.json 的映射 → 追加引擎能力 → 语法检查
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
