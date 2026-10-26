@@ -1353,5 +1353,9 @@
   ", UEFI ": "、UEFI ",
   ", ARM64 ": "、ARM64 ",
   ". Showing the last ": "。显示最近 ",
-  " requests.": " 条请求。"
+  " requests.": " 条请求。",
+  "Booted": "已引导",
+  "Installing": "安装中",
+  "Installed": "已安装",
+  "Failed": "失败"
 }

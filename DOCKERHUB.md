@@ -59,8 +59,8 @@ docker logs bootimus | grep Password    # 初始管理密码
 | tag | 说明 |
 |---|---|
 | `0.1.78-g<sha>` | 不可变，对应一次构建 |
-| `sha-<sha>` | 不可变 |
-| `0.1.78`、`latest` | 跟着最新构建走 |
+| `0.1.78` | 该版本最新的一次构建 |
+| `latest` | 最新的构建 |
 
 `linux/amd64` + `linux/arm64`。基线版本跟上游对齐，`+g<sha>` / `-g<sha>` 是本仓库的构建修订。
 
