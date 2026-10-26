@@ -70,6 +70,19 @@ def parse_diff_base_ranges(diff_text):
     return {f: v for f, v in result.items() if v}
 
 
+def count_changed_lines(diff_text):
+    """每个文件 fork 侧改了多少行（增+删）：hunk 数目不变但内容变短时这个数会动。"""
+    per = {}
+    cur = None
+    for line in diff_text.splitlines():
+        if line.startswith('+++ b/'):
+            cur = line[6:]
+            per.setdefault(cur, 0)
+        elif cur and (line.startswith('+') or line.startswith('-')) and not line.startswith(('+++', '---')):
+            per[cur] += 1
+    return per
+
+
 def overlaps(a, b):
     """两个 base 侧区间是否相交（含插入点贴边的情况）。"""
     for s1, e1, ins1 in a:
@@ -173,13 +186,14 @@ def main():
     recent = git('log', '--format=%H', '-n', str(UPSTREAM_HOT_WINDOW), args.upstream, check=False).split()
     hot_base = recent[-1] if recent else base
     touch = upstream_touch_counts(cand, hot_base, args.upstream)
+    changed = count_changed_lines(git('diff', '-U0', '--no-color', '%s..HEAD' % base))
 
     hot = []
     for f in cand:
         hunks = len(fork_ranges[f])
         t = touch.get(f, 0)
         if hunks and t:
-            hot.append({'file': f, 'hunks': hunks, 'upstream_touches': t,
+            hot.append({'file': f, 'hunks': hunks, 'lines': changed.get(f, 0), 'upstream_touches': t,
                         'score': hunks * t, 'patches': sorted(file_to_patches.get(f, []))})
     hot.sort(key=lambda x: -x['score'])
 
@@ -218,10 +232,10 @@ def main():
     if not hot:
         print('   无')
     else:
-        print('   %-44s %5s %6s %6s  %s' % ('文件', 'hunk', '上游改', '分数', '相关补丁'))
+        print('   %-40s %5s %7s %6s %6s  %s' % ('文件', 'hunk', '改动行', '上游改', '分数', '相关补丁'))
         for h in hot[:12]:
-            print('   %-44s %5d %6d %6d  %s'
-                  % (h['file'], h['hunks'], h['upstream_touches'], h['score'], ','.join(h['patches'])))
+            print('   %-40s %5d %7d %6d %6d  %s'
+                  % (h['file'], h['hunks'], h['lines'], h['upstream_touches'], h['score'], ','.join(h['patches'])))
     print()
 
     print('C. 按补丁汇总')
