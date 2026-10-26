@@ -42,6 +42,21 @@ const SOURCE_PATTERNS = {
             distro + ' 建议用' + (BOOT_METHOD_ZH[want] || want) + '引导，当前是 ' + (BOOT_METHOD_ZH[got] || got)],
         [/^Wake-on-LAN packet sent to (.+)$/, (m, target) => '已向 ' + target + ' 发送网络唤醒数据包'],
         [/^Failed to download (.+?): (.+)$/, (m, name, err) => '下载 ' + name + ' 失败：' + err],
+        // 审计日志的「动作」列：服务端拼的是「Created client bc:24:11:dc:91:c7」，
+        // 动词和资源名都是固定的，末尾那段是标识符（MAC、名字），原样保留
+        [/^(Created|Deleted|Updated) ((?:disk image)|(?:san target)|(?:deployment profile)|(?:enrolment rule)|(?:auto-install file)|(?:public file)|(?:install image)|(?:audit log)|client|user|image|group|token|file|tool|schedule|webhook|cluster|job|bootloader|profile|rule|target)(?:\\s+(.+))?$/,
+            (m, verb, res, id) => {
+                const v = { Created: '创建了', Deleted: '删除了', Updated: '更新了' }[verb] || verb;
+                const r = { client: '客户端', user: '用户', image: '镜像', group: '分组', token: '令牌',
+                   file: '文件', tool: '工具', schedule: '计划任务', webhook: 'Webhook',
+                   cluster: '集群', job: '任务', bootloader: '引导加载器', profile: '配置',
+                   rule: '规则', target: '目标', 'disk image': '磁盘镜像', 'san target': 'SAN 目标',
+                   'deployment profile': '部署档案', 'enrolment rule': '纳管规则',
+                   'auto-install file': '自动安装文件', 'public file': '公开文件',
+                   'install image': '安装镜像', 'audit log': '审计日志' }[res] || res;
+                // 资源名以英文开头（SAN、Webhook）时补个空格，中文里挨着太挤
+                return v + (/^[A-Za-z]/.test(r) ? ' ' : '') + r + (id ? ' ' + id : '');
+            }],
         [/^Deleted (.+)$/, (m, name) => '已删除 ' + name]
     ]
 };"""
@@ -115,7 +130,9 @@ const NATIVE_TEXT_PATTERNS = {
         [/^Delete client (.+?)\\?$/, (m, mac) => '确定删除客户端 ' + mac + '？'],
         [/^Delete (\\d+) clients?\\?$/, (m, n) => '确定删除 ' + n + ' 个客户端？'],
         [/^Delete this schedule\\?$/, () => '确定删除这个计划？'],
-        [/^Delete (.+?)\\/(.+?)\\?$/, (m, distro, file) => '确定删除 ' + distro + '/' + file + '？']
+        [/^Delete (.+?)\\/(.+?)\\?$/, (m, distro, file) => '确定删除 ' + distro + '/' + file + '？'],
+        [/^Revoke the token "(.+?)"\\? Anything using it will stop working immediately\\.$/,
+            (m, name) => '吊销令牌「' + name + '」？正在使用它的地方会立即失效。'],
     ]
 };
 
@@ -201,7 +218,16 @@ MENU_PATTERNS_INNER = """
         [/^MAC: (.*?)\\s*·\\s*Client: (.*?)\\s*·\\s*Kind: (.*?)\\s*·\\s*Next boot: (.*)$/,
             (m, mac, client, kind, nb) => 'MAC：' + mac.replace('unknown', '未知') + ' · 客户端：' +
                 client.replace('(unnamed)', '（未命名）') + ' · 类型：' +
-                (kind === 'cluster install boot' ? '集群安装启动' : '启动菜单') + ' · 下次启动：' + nb],"""
+                (kind === 'cluster install boot' ? '集群安装启动' : '启动菜单') + ' · 下次启动：' + nb],
+        // 磁盘镜像页顶部的红字：problems 是服务端返回的数组，join(' ') 之后拼进同一个文本节点，
+        // 条数随环境变（没启 NFS / 没装 Clonezilla / 两个都没有），所以按组合各写一条。
+        [/^the NFS server is disabled; start Bootimus with --nfs-enabled\\s*the Clonezilla tool is not downloaded and enabled\\s*Enable the Clonezilla tool under$/,
+            'NFS 服务已停用，请用 --nfs-enabled 启动 Bootimus；Clonezilla 工具未下载并启用。在'],
+        [/^the NFS server is disabled; start Bootimus with --nfs-enabled\\s*Enable the Clonezilla tool under$/,
+            'NFS 服务已停用，请用 --nfs-enabled 启动 Bootimus。在'],
+        [/^the Clonezilla tool is not downloaded and enabled\\s*Enable the Clonezilla tool under$/,
+            'Clonezilla 工具未下载并启用。在'],
+"""
 
 NEW_PATTERNS_MENU = NEW_PATTERNS.replace(
     "        [/^Deleted (.+)$/, (m, name) => '已删除 ' + name]",

@@ -15,7 +15,7 @@ name: Release (fork)
 #   构建修订 = 本次构建所在 commit 的短 SHA（7 位）。
 #   二进制版本字符串 = <基线>+g<修订>   例如 0.1.77+gd5b132e（semver build metadata，比较时被忽略）
 #   镜像 tag         = <基线>-g<修订>   例如 0.1.77-gd5b132e（docker tag 不允许 +）
-#                      + sha-<修订>     + <基线>（该基线上最新构建，会漂移） + latest（会漂移）
+#                      再给一个 <基线>（该基线最新构建，会漂移）和一个 latest（同样漂移）
 #
 # 为什么不直接把 VERSION 升成 0.1.78：
 #   升上去之后本地版本会一直高于上游，跟随流水线会判定「本地上游已同步」，
@@ -198,14 +198,12 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ steps.version.outputs.build_version }}
-          # 前两个 tag 不可变（每次构建唯一），后两个会漂移，按需取用
+          # 第一个 tag 不可变（每次构建唯一），后两个会漂移
           tags: |
             ${{ env.IMAGE }}:${{ steps.version.outputs.tag_version }}
-            ${{ env.IMAGE }}:sha-${{ steps.version.outputs.rev }}
             ${{ env.IMAGE }}:${{ steps.version.outputs.base }}
             ${{ env.IMAGE }}:latest
             ${{ env.DH_IMAGE }}:${{ steps.version.outputs.tag_version }}
-            ${{ env.DH_IMAGE }}:sha-${{ steps.version.outputs.rev }}
             ${{ env.DH_IMAGE }}:${{ steps.version.outputs.base }}
             ${{ env.DH_IMAGE }}:latest
           labels: |
