@@ -20,6 +20,7 @@ ops/ci/patch-risk.py
 ops/ci/test-patch-risk.sh
 .github/workflows/patch-risk.yml
 # fork 自有的 Go 源文件（补丁代码放自己文件里，不跟上游抢同一行）
+internal/admin/fork_handlers.go
 internal/storage/fork_migrations.go
 ops/i18n/rebuild.sh
 ops/i18n/build_i18n_patch.py
