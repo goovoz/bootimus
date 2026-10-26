@@ -46,6 +46,8 @@ type Storage interface {
 	GetAPITokenByHash(hash string) (*models.APIToken, error)
 	GetAPIToken(id uint) (*models.APIToken, error)
 	RevokeAPIToken(id uint) error
+	// [bootimus-fork L1] fork-patch: token-purge
+	DeleteAPIToken(id uint) error
 	TouchAPIToken(id uint, at time.Time) error
 	CreateUser(user *models.User) error
 	UpdateUser(username string, user *models.User) error

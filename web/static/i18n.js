@@ -3263,7 +3263,12 @@ const SOURCE_TEXT = {
         "Webhooks": "Webhook",
         "READ-ONLY OK": "只读可用",
         "Copy curl command": "复制 curl 命令",
-        "Login": "登录"
+        "Login": "登录",
+        "Token deleted": "令牌已删除",
+        "Failed to delete token": "删除令牌失败",
+        "Failed to delete token:": "删除令牌失败：",
+        "Revoke the token before deleting it": "请先吊销该令牌再删除",
+        "Revoked": "已吊销"
     }
 };
 
@@ -3459,6 +3464,8 @@ const NATIVE_TEXT_PATTERNS = {
         [/^Delete (.+?)\/(.+?)\?$/, (m, distro, file) => '确定删除 ' + distro + '/' + file + '？'],
         [/^Revoke the token "(.+?)"\? Anything using it will stop working immediately\.$/,
             (m, name) => '吊销令牌「' + name + '」？正在使用它的地方会立即失效。'],
+        [/^Delete the token "(.+?)"\? The record is removed from this list; anything that used it stopped working when it was revoked\.$/,
+            (m, name) => '确定删除令牌「' + name + '」？该记录会从列表里移除；它吊销之后本来就已经失效了。'],
     ]
 };
 
