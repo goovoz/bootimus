@@ -182,7 +182,7 @@ const SOURCE_PATTERNS = {
 
 ### 译文与生成器放在仓库里（`ops/i18n/`）
 
-`i18n.js` 是生成物：上游 `i18n.js` + `ops/i18n/parts/*.json` 的映射 + `apply_engine_extras.py`
+`i18n.js` 是生成物：上游 `i18n.js` + `ops/i18n/zh.json` 的映射 + `apply_engine_extras.py`
 追加的引擎能力。重新生成只需一条命令（默认以上游 `cb5efed` 为底，可传别的 ref）：
 
 ```bash
