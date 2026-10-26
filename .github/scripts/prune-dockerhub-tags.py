@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """清理 Docker Hub 上多余的 tag，策略与 ghcr-retention 对齐：每个版本号只留最新一次构建。
 
-bootimus 每次发布在 Hub 上产生 4 个 tag：
+bootimus 每次发布在 Hub 上产生 3 个 tag：
   <base>-g<sha>   不可变，一次构建一个
-  sha-<sha>       不可变，同上
   <base>          漂移，同一基线指向最新那次
   latest          漂移
 
 所以「每个版本号只留最新一次构建」在 tag 维度上就是：每个 base 只保留 last_updated
-最新的那个 <base>-g<sha>，以及与它同 digest 的 sha-<sha>；纯版本号和 latest 全留。
+最新的那个 <base>-g<sha>；纯版本号和 latest 全留。
 
 环境变量：
   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN  必需（token 是 Hub 的 access token）
@@ -38,7 +37,6 @@ if '/' in REPO:
     REPO = name
 
 REV_TAG = re.compile(r'^(\d+\.\d+\.\d+)-g([0-9a-f]{7,})$')
-SHA_TAG = re.compile(r'^sha-([0-9a-f]{7,})$')
 VER_TAG = re.compile(r'^\d+\.\d+\.\d+$')
 
 
@@ -107,11 +105,6 @@ def plan(tags):
     keep |= {t['name'] for t in tags if VER_TAG.match(t['name'])}
     keep |= {t['name'] for t in newest.values()}
 
-    # 同 digest 的 sha-xxxx 跟着留（同一次构建的两种叫法）
-    kept_digests = {t.get('digest') for t in tags if t['name'] in keep and t.get('digest')}
-    for t in tags:
-        if SHA_TAG.match(t['name']) and t.get('digest') in kept_digests:
-            keep.add(t['name'])
 
     drop = [t for t in tags if t['name'] not in keep]
     note = '每个版本号只留最新一次构建' + ('（%d 个版本）' % len(newest) if newest else '')
