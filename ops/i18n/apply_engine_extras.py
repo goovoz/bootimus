@@ -184,6 +184,8 @@ const NATIVE_TEXT_PATTERNS = {
         [/^Delete (.+?)\\/(.+?)\\?$/, (m, distro, file) => '确定删除 ' + distro + '/' + file + '？'],
         [/^Revoke the token "(.+?)"\\? Anything using it will stop working immediately\\.$/,
             (m, name) => '吊销令牌「' + name + '」？正在使用它的地方会立即失效。'],
+        [/^Delete the token "(.+?)"\\? The record is removed from this list; anything that used it stopped working when it was revoked\\.$/,
+            (m, name) => '确定删除令牌「' + name + '」？该记录会从列表里移除；它吊销之后本来就已经失效了。'],
     ]
 };
 
