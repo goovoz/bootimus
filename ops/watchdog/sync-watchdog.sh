@@ -184,14 +184,17 @@ case "$CONCL" in
 esac
 
 # ---------------------------------------------------------------- 3. 落后多少
-# 注意语义：compare/{base}...{head} 里
-#   ahead_by  = head 独有（上游领先我们的）= 我们要追的
-#   behind_by = base 独有（我们领先上游的）= 我们的补丁数
-# 实测 main...garybowers:main 在「落后 0 / 领先 76」时返回 ahead_by=0 behind_by=76，
-# 取错一个就是「落后 76」，会平白报警。
+# 用「上游最新 SHA 作 base、我们 main 作 head」来比：
+#   behind_by = base(上游) 独有 = 我们落后的提交数  ← 要的就是这个
+#   ahead_by  = head(我们) 独有 = 我们的补丁数
+# 别用 compare/main...garybowers:main 这种跨 fork 的 owner:branch 写法 —— 实测会
+# 返回 404（fork 网络重建后解析不到），而用上游 SHA 是稳的。
 BEHIND=""
-CMP=$(api "$API/repos/$REPO/compare/main...$UPSTREAM:main" 2>/dev/null)
-echo "$CMP" | jq -e '.ahead_by' >/dev/null 2>&1 && BEHIND=$(echo "$CMP" | jq -r '.ahead_by')
+UPSHA=$(api "$API/repos/$UPSTREAM/commits/main" 2>/dev/null | jq -r '.sha // empty' 2>/dev/null)
+if [ -n "$UPSHA" ]; then
+    CMP=$(api "$API/repos/$REPO/compare/$UPSHA...main" 2>/dev/null)
+    echo "$CMP" | jq -e '.behind_by' >/dev/null 2>&1 && BEHIND=$(echo "$CMP" | jq -r '.behind_by')
+fi
 
 # ---------------------------------------------------------------- 4. 失败归因
 KIND=""; STEP=""; DETAIL=""; TRAILER_BAD=""
