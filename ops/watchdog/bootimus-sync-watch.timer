@@ -1,0 +1,13 @@
+[Unit]
+Description=每 30 分钟检查一次上游同步是否正常
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+AccuracySec=1min
+RandomizedDelaySec=90
+Persistent=true
+Unit=bootimus-sync-watch.service
+
+[Install]
+WantedBy=timers.target

@@ -1,6 +1,7 @@
 # Binaries
 bootimus
 bootimus-*
+!/ops/watchdog/bootimus-*
 !bootloaders/default/bootimus-arm64.efi
 *.exe
 *.dll
