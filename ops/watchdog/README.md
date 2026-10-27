@@ -259,3 +259,68 @@ untagged。换句话说：
 - `bootimus-watchdog.service` / `.timer` 两个文件名仍然命中该规则，是用 `git add -f` 强制纳入的；
   以后**新增**同类文件要记得 `git add -f`，否则 `git add` 会静默跳过
 
+
+
+---
+
+## 上游同步 watchdog（sync-watchdog）
+
+监控 `.github/workflows/sync-upstream.yml` 的健康度。**为什么需要它**：同步失败时信号只在
+GitHub 页面上，没人看就没人知道 —— 2026-10-27 就吃过一次，8 个提交漏了 `Fork-Patch` trailer，
+同步在校验阶段停手，一直卡在「落后上游 18 个提交」直到人工发现。
+
+### 它做什么
+
+每 30 分钟跑一次，按顺序：
+
+1. 拉最近 10 次 sync-upstream 运行，判定 `OK` / `RUNNING` / `STALE` / `FAILED`
+2. FAILED 时**按失败步骤归因**：`TRAILER`（缺标记）/ `CONFLICT`（重放冲突）/
+   `DETECT_UNKNOWN` / `PERMISSION`（SYNC_TOKEN）/ `TEST_FAIL` / `TRANSIENT`
+3. **只有 TRANSIENT 会自动重新 dispatch**（当日上限 `MAX_RETRY_PER_DAY`，默认 2 次）
+4. 归因结果写进 `/var/lib/bootimus-sync-watch/state.json`（AI 巡检直接读这个文件）
+5. 同一故障只通知一次（按 `健康/类型/run_id` 去重）
+
+### 为什么自愈这么保守
+
+改提交历史、解冲突、动探测器都要判断，脚本硬干容易把小故障放成大故障。所以脚本负责
+「发现 + 归因 + 通知 + 重试瞬时失败」，判断类的事交给 AI 或人。
+
+### 可选：LLM 归因
+
+配了 `AI_BASE_URL` 才会调用，不配就只走规则归因。LLM 只产出文案，**不参与任何动作决策**。
+
+- 模型：`cn:deepseek-v4.1-flash`（`context_length=1000000`、`max_output_tokens=128000`）
+- 思考强度：`reasoning_effort=low|high|max`，默认拉满 `max`。实测同一份日志同一提示词：
+  `low` 思考 278 / `high` 324 / `max` 612 tokens，成本只差 0.02 credit
+- 注意：`thinking.budget_tokens` 这类字段会被网关静默丢弃，别试
+- 喂的是**完整日志**而不是片段 —— 给 3 行片段时模型只能复述片段里那条，
+  给 468 行全文时它自己找到了具体提交号并数出「8 个违规提交」
+
+### 安装
+
+```bash
+sudo bash ops/watchdog/install-sync-watchdog.sh            # 安装并启用
+sudo bash ops/watchdog/install-sync-watchdog.sh --dry-run  # 只看计划
+sudo bash ops/watchdog/install-sync-watchdog.sh --uninstall
+```
+
+PAT 来源：`$GH_TOKEN` > `/root/gh_pat.txt` > 已有配置。AI 参数从 `/root/ai_gateway.env` 读。
+装完配置落在 `/etc/default/bootimus-sync-watch`（权限 600，含密钥）。
+
+### 手工排查
+
+```bash
+# 看最近一次判定
+cat /var/lib/bootimus-sync-watch/state.json | jq
+
+# 立刻跑一次（CHECK_ONLY 不产生动作）
+CHECK_ONLY=1 sudo -E /usr/local/sbin/bootimus-sync-watch
+
+# 拿历史某次失败演练归因（不会真的重试）
+sudo -E RUN_ID_OVERRIDE=40418007912 CHECK_ONLY=1 /usr/local/sbin/bootimus-sync-watch
+
+# 看定时器
+systemctl list-timers bootimus-sync-watch.timer --no-pager
+```
+
+退出码：`0` 正常/进行中；`1` 需要 AI 或人工；`2` 已自动重试；`3` 脚本自身出错。

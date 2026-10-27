@@ -1,0 +1,13 @@
+[Unit]
+Description=bootimus 上游同步健康检查（同步失败时归因、瞬时故障自动重试）
+Documentation=https://github.com/goovoz/bootimus/blob/main/docs/FORK-PATCHES.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/bootimus-sync-watch
+ExecStart=/usr/local/sbin/bootimus-sync-watch
+# 退出码 1 表示「需要 AI/人工」，属于正常结果，不当失败处理
+SuccessExitStatus=0 1 2
+TimeoutStartSec=180
