@@ -19,6 +19,20 @@ permissions:
   contents: read
 
 jobs:
+
+  汉化审计:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 扫 web/static 里还没进翻译表的英文（表头、HTML 字面量）。
+      # 有缺失直接红：之前靠「用户截图才发现」攒出了 34 个表头没翻。
+      # 被行内 <code> 切碎的残句不算缺失（那类靠碎片词条解决）。
+      - name: 汉化审计（静态）
+        run: python3 ops/i18n/audit.py
+
   test:
     name: Vet, test & build
     runs-on: ubuntu-latest
