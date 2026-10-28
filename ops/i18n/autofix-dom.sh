@@ -120,7 +120,16 @@ SYS='你在审查一个 PXE 网络启动管理台界面上残留的英文。逐�
 
 术语统一：image→镜像，client→客户端，boot→启动，bootloader→引导加载器，group→分组，token→令牌，audit→审计，disk image→磁盘镜像。
 
-严格输出 JSON 数组，每项 {"text":"原文","action":"translate"|"skip","zh":"译文（skip 时为空字符串）"}，不要解释、不要代码块。'
+第三种判定 variable：句子里的数字、MAC、文件名、主机名等是**运行时才填进去的**，
+不能当固定文案翻（写进词表也永远匹配不到）。例如：
+- Showing 4 of 4              → variable
+- 3 removed                    → variable
+- Enabled (0 share(s) active, port 445) → variable
+- Ignored: vendor class "HUAWEI:android:NCO" ... → variable
+但下面这种数字是**固定默认值**，照常 translate：
+- (Maximum entries, default 100).  → translate
+
+严格输出 JSON 数组，每项 {"text":"原文","action":"translate"|"skip"|"variable","zh":"译文（非 translate 时为空字符串）"}，不要解释、不要代码块。'
 
 > /dev/null 2>&1
 echo '[]' > /tmp/dom-translated.json
@@ -166,7 +175,13 @@ if os.path.exists(p):
         except Exception: pass
 open('/tmp/dom-translated.json', 'w', encoding='utf-8').write(json.dumps(merged, ensure_ascii=False))
 tr = [x for x in merged if x.get('action') == 'translate' and x.get('zh')]
-print('  AI 判断：共 %d 条，该翻 %d 条，跳过 %d 条' % (len(merged), len(tr), len(merged) - len(tr)))
+var = [x for x in merged if x.get('action') == 'variable']
+skip = len(merged) - len(tr) - len(var)
+print('  AI 判断：共 %d 条 → 该翻 %d / 变量句 %d / 跳过 %d' % (len(merged), len(tr), len(var), skip))
+if var:
+    print('  变量句（需要人工写正则，不会自动写词条）：')
+    for x in var[:20]:
+        print('    ! %s' % (x.get('text') or '')[:100])
 PY
 
 # ---------- 4. 写入（只新增）----------
