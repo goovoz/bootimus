@@ -108,6 +108,23 @@ const SOURCE_PATTERNS = {
             // 资源名以英文开头（SAN、ISO、USB）时补个空格，中文里挨着太挤
             return v + (/^[A-Za-z]/.test(r) ? ' ' : '') + r + (id ? ' ' + id : '');
         }],
+        // 「Showing 4 of 4」这类计数是前端模板拼的（app.js `${a} of ${b}`），
+        // 「0 removed」「2 updates available」同理，都在 housekeeping 报告里。
+        [/^Showing (\d+) of (\d+)$/,
+            (m, a, b) => `显示第 ${a} 条，共 ${b} 条`],
+        [/^(\d+) removed$/,
+            (m, n) => `移除 ${n} 条`],
+        [/^(\d+) update(s?) available$/,
+            (m, n) => `有 ${n} 项可更新`],
+        // 服务端拼的：SMB 状态行（handlers.go:2906）
+        [/^Enabled \((\d+) share\(s\) active, port (\d+)\)$/,
+            (m, n, p) => `已启用（${n} 个共享，端口 ${p}）`],
+        // 服务端拼的：PXE 决策说明（proxydhcp.go:241）
+        [/^Ignored: vendor class "(.+?)" is not PXE[Cc]lient or HTTP[Cc]lient, so this is not a network boot request$/,
+            (m, cls) => `已忽略：厂商类「${cls}」不是 PXE 客户端或 HTTP 客户端，因此不算网络启动请求`],
+        // 服务端拼的：镜像/工具更新检查（handlers.go:3913）
+        [/^(\d+) image and (\d+) tool updates available$/,
+            (m, i, t) => `有 ${i} 个镜像、${t} 个工具可更新`],
         [/^Deleted (.+)$/, (m, name) => '已删除 ' + name]
     ]
 };"""
@@ -186,6 +203,7 @@ const NATIVE_TEXT_PATTERNS = {
             (m, name) => '吊销令牌「' + name + '」？正在使用它的地方会立即失效。'],
         [/^Delete the token "(.+?)"\\? The record is removed from this list; anything that used it stopped working when it was revoked\\.$/,
             (m, name) => '确定删除令牌「' + name + '」？该记录会从列表里移除；它吊销之后本来就已经失效了。'],
+
     ]
 };
 
