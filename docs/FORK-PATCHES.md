@@ -717,3 +717,50 @@ func (s *SQLiteStore) AutoMigrate() error {
 审计器自带测试（`ops/ci/test-patch-risk.sh`）：用临时仓库造「改同一行」「改不同函数」
 「只加新文件」三种场景，断言判定正确。改审计逻辑时必须先让它绿——一个永远输出
 「无冲突」的审计器比没有审计器更糟。
+
+
+## 汉化自动修复（ops/i18n/autofix.sh）
+
+补翻译这件事之前一直是「用户截图 → 人工补词条」，漏得毫无规律。现在拆成两层：
+
+| 层 | 做什么 | 什么时候跑 |
+|---|---|---|
+| `audit.py` | 静态扫描 `web/static`，比对翻译表，输出 missing / fragmented / stale | CI（push 即跑，有缺失就红） |
+| `autofix.sh` | 读审计结果 → LLM 翻译 → 只新增不覆盖 → 复查 → 提交推送 → 触发构建 | 每天 05:00（`bootimus-i18n-autofix.timer`） |
+
+### 为什么只自动处理静态缺失
+
+审计的两类缺失性质不同：
+
+- **静态缺失**（`index.html` / `app.js` 里的字面量）→ 可以整句翻译，自动写入
+- **动态缺失**（服务端返回的句子、模板拼的 `Showing N of M`）→ 静态审计根本扫不到；
+  就算用 DOM 扫描抓到了，也多半是带变量的句子，整句翻译没用，要写正则规则。
+  这类交给人判断，不进自动流程。
+
+### 安全约束（脚本里都实现了）
+
+- **只新增，不覆盖**已有词条 —— LLM 不能改坏人工校对过的译文
+- 每轮最多 `MAX_BATCH`（默认 40）条，避免一次灌进几百条没人看得过来
+- 推送前必须过三关：审计归零 + `i18n.js` 可复现（`rebuild` 幂等）+ `go build`
+- 任何一步失败都不推送，改动留在工作区等人工看
+- 提交带 `Fork-Patch: i18n-zh-full`
+
+### 手工用法
+
+```bash
+bash ops/i18n/audit.py              # 只看缺什么
+bash ops/i18n/audit.py --json       # 机器可读
+bash ops/i18n/autofix.sh --dry-run  # 只翻译不写入
+bash ops/i18n/autofix.sh --no-push  # 写入但不提交
+bash ops/i18n/autofix.sh            # 完整流程
+```
+
+日志：`/var/log/bootimus-i18n-autofix.log`。
+
+### 与同步 watchdog 的关系
+
+`.101` 上还有一个 `bootimus-sync-watch.timer`（每 30 分钟）：盯 `sync-upstream` 是否失败，
+失败时按失败步骤归因、瞬时故障自动重试、状态落盘到 `state.json`。两者分工：
+
+- sync-watchdog 管「同步本身是否正常」
+- i18n-autofix 管「同步进来的新界面有没有翻」
