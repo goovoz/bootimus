@@ -185,7 +185,8 @@ func commonVars() []Var {
 			Help:     "Tick the per-client box to keep the {{HOSTNAME}} token and let bootimus fill in each client's name.",
 			Required: true, PerClient: true, Placeholder: "{{HOSTNAME}}",
 		},
-		text("username", "User name", "admin", "", true),
+		// 默认值不能用 admin：Ubuntu 的 subiquity 把它当系统保留名，装到 identity 阶段直接"Username is reserved by the system" 中断。
+		text("username", "User name", "ubuntu", "admin/root 等是系统保留名，Ubuntu 会拒绝；装 Debian/RHEL 时也建议用普通名字。", true),
 		passwordVar("password", "Password", true),
 		text("timezone", "Time zone", "Asia/Shanghai", "", true),
 		text("locale", "Locale", "en_US.UTF-8", "Preseed and kickstart use the glibc form (en_US.UTF-8); Ubuntu accepts the same value.", true),
@@ -250,6 +251,19 @@ var templates = []Template{
 			selectVarHelp("mirror", "Repository mirror", "official", "Subiquity pulls packages from the archive while installing. Official follows the geoip default, usually archive.ubuntu.com — slow from mainland China.", mirrorOptions("ubuntu")...),
 			selectVar("storage_layout", "Storage layout", "direct",
 				opt("direct", "Direct (single partition)"), opt("lvm", "LVM"), opt("zfs", "ZFS")),
+			// [bootimus-fork L1] fork-patch: autoinstall-generator
+			// 安装类型映射到 subiquity 的 source.id；第三方驱动是 drivers.install。
+			// 20.04 的 subiquity 不认 drivers 段会直接报错，所以默认关闭。
+			selectVarHelp("install_variant", "Install type", "server",
+				"Full installs the standard package set; minimal skips the extras (source.id ubuntu-server-minimal).",
+				opt("server", "Full install"), opt("server-minimal", "Minimal install")),
+			selectVarHelp("third_party_drivers", "Third-party drivers", "false",
+				"Installs HWE / vendor drivers (drivers.install). Ubuntu 20.04's subiquity does not understand this section — leave it off there.",
+				opt("false", "Do not install"), opt("true", "Install (HWE)")),
+			// 与 preseed / kickstart 同名同义
+			selectVar("root_login", "Allow root login", "false",
+				opt("false", "Disabled"), opt("true", "Enabled")),
+			passwordVar("root_password", "Root password (optional)", false),
 		),
 	},
 	{
