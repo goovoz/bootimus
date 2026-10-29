@@ -1682,5 +1682,7 @@
   "Third-party drivers": "第三方驱动",
   "Installs HWE / vendor drivers (drivers.install). Ubuntu 20.04's subiquity does not understand this section — leave it off there.": "安装 HWE / 厂商驱动（drivers.install）。Ubuntu 20.04 的 subiquity 不认识这一段，请保持关闭。",
   "Do not install": "不安装",
-  "Install (HWE)": "安装（HWE）"
+  "Install (HWE)": "安装（HWE）",
+  "Installer default": "安装器默认",
+  "Leave on default unless you need the minimal source. Minimal installs are only offered by 22.04 and newer ISOs.": "保持默认即可，除非你需要最小安装源。只有 22.04 及更新的 ISO 才提供最小安装。"
 }
