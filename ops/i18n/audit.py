@@ -39,7 +39,7 @@ ALLOW = set(_RULES['allow'])
 NOISE = re.compile(_RULES['noise'])
 
 HAS_LATIN = re.compile(r'[A-Za-z]')
-HAS_CJK = re.compile(r'[\u4e00-\u9fa5]')
+HAS_CJK = re.compile(_RULES['cjk'])
 
 FRAGMENTED = re.compile(r'\s[,.;:]\s|,\s*\.\s*$|:\s*,\s')
 
