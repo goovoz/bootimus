@@ -345,30 +345,8 @@ jobs:
           echo "main 已更新到 $(git rev-parse --short HEAD)"
 
 
-      # 同步只更新代码，制品不会自己重建。上游发版晚于我们上次构建时，
-      # main 的 VERSION 已经是新的、镜像还停在旧版本（0.1.79 那次就是这样）。
-      # 这里在推送成功后直接触发发布，条件与「推送 main」保持一致。
-      - name: 同步后触发构建
-        if: steps.push.outcome == 'success'
-        env:
-          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SYNC_TOKEN:-}" ]; then
-            echo "::warning::没有 SYNC_TOKEN，跳过自动构建；请手动触发 Release (fork)"
-            exit 0
-          fi
-          code=$(curl -sS -o /tmp/dispatch.json -w '%{http_code}' -X POST \
-            -H "Authorization: Bearer ${SYNC_TOKEN}" \
-            -H 'Accept: application/vnd.github+json' \
-            -d '{"ref":"main"}' \
-            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/fork-release.yml/dispatches")
-          if [ "$code" = "204" ]; then
-            echo "已触发 Release (fork)（HTTP 204）"
-          else
-            echo "::warning::触发构建失败 HTTP $code"
-            cat /tmp/dispatch.json || true
-          fi
+      # 推送 main 后由 fork-release.yml 自己的 push 触发构建（它监听了 branches: main）。
+      # 这里不再手动 dispatch —— 两处都发会构建两遍，而且手动那条绕过了 paths-ignore。
 
       - name: 开 PR（pr 模式或冲突）
         if: steps.gate.outputs.changed == 'true' && (github.event.inputs.mode == 'pr' || steps.keep.outputs.conflict == 'true')

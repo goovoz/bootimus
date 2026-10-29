@@ -169,16 +169,9 @@ MSG
     log "  已提交 $sha"
 
     if git push -q origin HEAD:main; then
-        log "  已推送 $sha"
-        local token code
-        token="${GH_TOKEN:-$(cat /root/gh_pat.txt 2>/dev/null || true)}"
-        if [ -n "$token" ]; then
-            code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
-                -H "Authorization: Bearer $token" -H 'Accept: application/vnd.github+json' \
-                -d '{"ref":"main"}' \
-                "https://api.github.com/repos/goovoz/bootimus/actions/workflows/fork-release.yml/dispatches")
-            log "  触发构建 HTTP $code"
-        fi
+        # push 到 main 会自动触发构建（fork-release 监听了 branches: main），
+        # 这里不再手动 dispatch —— 两处都发会构建两遍。
+        log "  已推送 $sha（构建由 push 自动触发）"
     else
         log "ERROR: 推送失败（改动已在本地 $sha）"
         return 1
