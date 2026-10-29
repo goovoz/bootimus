@@ -359,6 +359,16 @@ func RenderTemplate(id string, values map[string]string) (string, error) {
 			continue
 		}
 		// 转义与校验必须在这里做：模板执行之后就无法区分「值」和「语法」了。
+		// 兼容上一版前端：那时下拉值是 server / server-minimal，不是合法 id。
+		// 浏览器缓存没刷新的页面还会发这个，映射过去别让人卡在报错上。
+		if v.Name == "install_variant" {
+			switch val {
+			case "server":
+				val = "ubuntu-server"
+			case "server-minimal":
+				val = "ubuntu-server-minimal"
+			}
+		}
 		clean, err := sanitizeValue(tpl.Format, v, val)
 		if err != nil {
 			return "", err
