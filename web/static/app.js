@@ -3952,10 +3952,21 @@ async function loadTheme() {
             document.getElementById('theme-title').value = data.data.title || '';
             document.getElementById('theme-timeout').value = data.data.menu_timeout != null ? data.data.menu_timeout : 30;
             document.getElementById('theme-default-item').value = data.data.default_menu_item || '';
+            document.getElementById('theme-boot-password').value = '';
+            document.getElementById('theme-remove-boot-password').checked = false;
+            document.getElementById('theme-boot-password-status').textContent = data.data.boot_password_required ? 'Password set.' : 'No password set.';
         }
     } catch (err) {
         console.error('Failed to load theme:', err);
     }
+}
+
+function validateBootPassword(password) {
+    if (/[+; ]/.test(password)) {
+        showAlert('Boot passwords must not contain +, ; or spaces (iPXE v2.0.0 compatibility)', 'error');
+        return false;
+    }
+    return true;
 }
 
 async function saveTheme(e) {
@@ -3965,6 +3976,12 @@ async function saveTheme(e) {
         menu_timeout: parseInt(document.getElementById('theme-timeout').value) || 0,
         default_menu_item: document.getElementById('theme-default-item').value,
     };
+    const bootPassword = document.getElementById('theme-boot-password').value;
+    if (document.getElementById('theme-remove-boot-password').checked) theme.boot_password = '';
+    else if (bootPassword) {
+        if (!validateBootPassword(bootPassword)) return;
+        theme.boot_password = bootPassword;
+    }
     try {
         const res = await authFetch(`${API_BASE}/theme`, {
             method: 'PUT',
@@ -3974,6 +3991,7 @@ async function saveTheme(e) {
         const data = await res.json();
         if (data.success) {
             showAlert('Theme saved successfully', 'success');
+            await loadTheme();
         } else {
             showAlert(data.error || 'Failed to save theme', 'error');
         }
@@ -6442,6 +6460,9 @@ async function showImagePropertiesModal(filename, opts) {
     document.getElementById('image-props-redetect-btn').style.display = img.extracted ? '' : 'none';
     document.getElementById('image-props-enabled').checked = img.enabled;
     document.getElementById('image-props-public').checked = img.public;
+    document.getElementById('image-props-boot-password').value = '';
+    document.getElementById('image-props-remove-boot-password').checked = false;
+    document.getElementById('image-props-boot-password-status').textContent = img.boot_password_required ? 'Password set.' : 'No password set.';
     renderImageIntegrity(img);
 
     await populateBootFileOverrides(img);
@@ -6923,6 +6944,13 @@ async function saveImageProperties(opts) {
         public: isPublic,
         auto_install_file: autoInstallFile,
     };
+
+    const bootPassword = document.getElementById('image-props-boot-password').value;
+    if (document.getElementById('image-props-remove-boot-password').checked) updates.boot_password = '';
+    else if (bootPassword) {
+        if (!validateBootPassword(bootPassword)) return false;
+        updates.boot_password = bootPassword;
+    }
 
     const bootFilesRow = document.getElementById('image-props-bootfiles-row');
     if (bootFilesRow && bootFilesRow.style.display !== 'none') {
@@ -7727,7 +7755,7 @@ async function bulkWakeClientGroup() {
     try {
         const res = await authFetch(`${API_BASE}/client-groups/wake?id=${id}`, { method: 'POST' });
         const data = await res.json();
-        showAlert(data.message || (data.success ? 'Wake sent' : 'Wake failed'), data.success ? 'success' : 'error');
+        showAlert(data.message || data.error || (data.success ? 'Wake started' : 'Wake failed'), data.success ? 'success' : 'error');
     } catch (err) { showAlert('Failed to send bulk wake', 'error'); }
 }
 

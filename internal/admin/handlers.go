@@ -62,6 +62,7 @@ type Handler struct {
 	profileManager     *profiles.Manager
 	proxyDHCPEnabled   bool
 	AdminTLSStatus     func() string
+	BootAuthReady      func() bool
 	httpPort           int
 	serverAddr         string
 	smbPort            int
@@ -1021,6 +1022,17 @@ func (h *Handler) UpdateImage(w http.ResponseWriter, r *http.Request) {
 	}
 	if order, ok := updates["order"].(float64); ok {
 		image.Order = int(order)
+	}
+	if value, exists := updates["boot_password"]; exists {
+		password, ok := value.(string)
+		if !ok {
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "boot_password must be a string"})
+			return
+		}
+		if err := h.updateBootPassword(r, &password, &image.BootPasswordHash, &image.BootPasswordRequired, &image.BootPasswordRevision); err != nil {
+			h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
+			return
+		}
 	}
 	if bootMethod, ok := updates["boot_method"].(string); ok {
 		image.BootMethod = bootMethod
@@ -5841,31 +5853,21 @@ func (h *Handler) WakeClientGroup(w http.ResponseWriter, r *http.Request) {
 		broadcastAddr = group.WOLBroadcastAddr
 	}
 	stagger := time.Duration(group.StaggerDelayMillis) * time.Millisecond
-	sent := 0
-	for _, c := range members {
-		if !c.Enabled {
-			continue
-		}
-		sent++
+	macs := collectEnabledMACs(members)
+	if len(macs) == 0 {
+		h.sendJSON(w, http.StatusOK, Response{Success: true, Message: "No enabled members to wake"})
+		return
 	}
-	go func(macs []string, bcast string, gap time.Duration) {
-		for i, mac := range macs {
-			if i > 0 && gap > 0 {
-				time.Sleep(gap)
-			}
-			if err := wol.SendMagicPacket(mac, bcast); err != nil {
-				log.Printf("ClientGroup wake: failed for %s: %v", mac, err)
-			} else {
-				log.Printf("ClientGroup wake: sent to %s (broadcast: %s)", mac, bcast)
-			}
-		}
-	}(collectEnabledMACs(members), broadcastAddr, stagger)
+	if err := startGroupWake(macs, broadcastAddr, stagger, wol.SendMagicPacket); err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: fmt.Sprintf("Failed to start group wake: %v", err)})
+		return
+	}
 
-	log.Printf("Admin: Wake-on-LAN bulk sent to group %s (%d enabled members, stagger %s)",
-		group.Name, sent, stagger)
+	log.Printf("Admin: Wake-on-LAN started for group %s (%d enabled members, stagger %s)",
+		group.Name, len(macs), stagger)
 	h.sendJSON(w, http.StatusOK, Response{
 		Success: true,
-		Message: fmt.Sprintf("Wake-on-LAN sent to %d member(s) of %s", sent, group.Name),
+		Message: fmt.Sprintf("Wake-on-LAN started for %d member(s) of %s", len(macs), group.Name),
 	})
 }
 
@@ -5950,9 +5952,23 @@ func (h *Handler) UpdateMenuTheme(w http.ResponseWriter, r *http.Request) {
 		h.sendJSON(w, http.StatusMethodNotAllowed, Response{Success: false, Error: "Method not allowed"})
 		return
 	}
-	var theme models.MenuTheme
-	if err := json.NewDecoder(r.Body).Decode(&theme); err != nil {
+	var updates struct {
+		models.MenuTheme
+		BootPassword *string `json:"boot_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
 		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: "Invalid request body"})
+		return
+	}
+	previous, err := h.storage.GetMenuTheme()
+	if err != nil {
+		h.sendJSON(w, http.StatusInternalServerError, Response{Success: false, Error: "Failed to load menu protection"})
+		return
+	}
+	theme := updates.MenuTheme
+	theme.BootPasswordHash, theme.BootPasswordRequired, theme.BootPasswordRevision = previous.BootPasswordHash, previous.BootPasswordRequired, previous.BootPasswordRevision
+	if err := h.updateBootPassword(r, updates.BootPassword, &theme.BootPasswordHash, &theme.BootPasswordRequired, &theme.BootPasswordRevision); err != nil {
+		h.sendJSON(w, http.StatusBadRequest, Response{Success: false, Error: err.Error()})
 		return
 	}
 	if err := h.storage.UpdateMenuTheme(&theme); err != nil {
