@@ -13,9 +13,9 @@ autoinstall:
         uri: {{.mirror_base}}
 {{end}}{{if eq .third_party_drivers "true"}}  drivers:
     install: true
-{{end}}  source:
+{{end}}{{if .install_variant}}  source:
     id: {{.install_variant}}
-  identity:
+{{end}}  identity:
     hostname: "{{.hostname}}"
     username: "{{.username}}"
     password: "{{.hashed_password}}"
