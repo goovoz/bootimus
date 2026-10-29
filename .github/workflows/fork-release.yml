@@ -23,13 +23,20 @@ name: Release (fork)
 #   所以基线跟着上游走，构建之间靠 +g<sha> / -g<sha> 区分。
 #
 # 触发：
-#   · 推送 v* 标签（推荐，watcher 或手动）
+#   · push 到 main（自动同步、AI 补汉化提交后都走这条 —— 单一触发源，脚本不用再自己 dispatch）
+#   · 推送 v* 标签（手动打版本号）
 #   · workflow_dispatch（可手填版本号做冷启动）
 
 on:
   push:
+    branches: [main]
     tags:
       - "v*"
+    # 纯文档/巡检脚本改了不用重建镜像。ops/i18n 不能排除 —— 它会改 i18n.js。
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "ops/watchdog/**"
   workflow_dispatch:
     inputs:
       version:
