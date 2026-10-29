@@ -13,8 +13,7 @@ autoinstall:
         uri: {{.mirror_base}}
 {{end}}{{if eq .third_party_drivers "true"}}  drivers:
     install: true
-{{end}}  # 安装类型：完整 / 最小，对应 subiquity 的 source.id
-  source:
+{{end}}  source:
     id: {{.install_variant}}
   identity:
     hostname: "{{.hostname}}"
@@ -32,10 +31,8 @@ autoinstall:
 {{range .package_list}}    - {{.}}
 {{end}}{{end}}  late-commands:
     - curtin in-target -- systemctl enable ssh
-{{if eq .root_login "true"}}    # 放开 root 登录（Ubuntu 默认 PermitRootLogin prohibit-password）
-    - curtin in-target -- sh -c 'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config'
-{{end}}{{if .root_hash}}    # root 口令用 crypt(3) 哈希写入，不落明文
-    - curtin in-target -- sh -c 'echo "root:{{.root_hash}}" | chpasswd -e'
+{{if eq .root_login "true"}}    - curtin in-target -- sh -c 'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config'
+{{end}}{{if .root_hash}}    - curtin in-target -- sh -c 'echo "root:{{.root_hash}}" | chpasswd -e'
 {{end}}{{if .ssh_key_list}}    - curtin in-target -- mkdir -p /root/.ssh
     - curtin in-target -- rm -f /root/.ssh/authorized_keys
 {{range .ssh_key_list}}    - curtin in-target -- sh -c 'echo "{{.}}" >> /root/.ssh/authorized_keys'
