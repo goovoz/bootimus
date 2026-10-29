@@ -29,6 +29,7 @@ ZH = ROOT / 'ops/i18n/zh.json'
 APP_JS = ROOT / 'web/static/app.js'
 INDEX = ROOT / 'web/static/index.html'
 FORK_UI = ROOT / 'web/static/fork-ui.js'
+GEN_GO = ROOT / 'internal/autoinstall/generate.go'
 
 # 不该翻的：技术标识、发行版名、语言名、协议名、品牌名
 ALLOW = {
@@ -40,7 +41,10 @@ ALLOW = {
     'Redfish', 'Intel AMT', 'Memdisk', 'Licence',
     'PXE/HTTP Boot Server', 'PXE/HTTP Boot Server Management Interface',
     'UEFI x86', 'UEFI ARM64',
-    # 发行版名（镜像列表里出现，保持原文更容易认）
+    # 文件系统 / 分区技术名：界面上保持原文更准确
+    'LVM', 'ZFS', 'Btrfs', 'ext4', 'XFS',
+    # 发行版名（模板下拉里出现）
+    'AlmaLinux', 'Rocky Linux', 'CentOS', 'Fedora', 'Debian', 'Ubuntu', 'openSUSE',
     'Agama (openSUSE Leap 16 / Tumbleweed)',
     # 这句在 DOM 里被 <code> 切成两段（"Optional." + "is replaced with ..."），
     # 两个碎片都已经配了词条；整串永远匹配不到，别当缺失报。
@@ -112,6 +116,35 @@ def collect_options(path):
     return out
 
 
+def collect_go_labels(path):
+    """Go 里模板字段的 Label / Help / 选项文案。
+
+    这是之前的盲区：autoinstall 模板的表单是按 generate.go 里的 Var 定义动态渲染的，
+    文案全在 Go 源码里，扫 web/static 根本看不到。加字段不补词条就会漏成一片英文。
+    只认这几个构造函数的第 2 个参数（Label 位），外加 opt() 的 label，误报可控。
+    """
+    if not path.exists():
+        return {}
+    src = path.read_text(encoding='utf-8')
+    out = {}
+    pats = [
+        # text("name", "Label", ...) / numberVar / passwordVar / selectVar / selectVarHelp
+        r'(?:text|numberVar|passwordVar|selectVar|selectVarHelp)\(\s*"[^"]*"\s*,\s*"((?:[^"\\]|\\.)*)"',
+        # opt("value", "Label")
+        r'opt\(\s*"[^"]*"\s*,\s*"((?:[^"\\]|\\.)*)"',
+        # 裸结构体 {Name: "x", Label: "..."}
+        r'Label:\s*"((?:[^"\\]|\\.)*)"',
+        # Help: "..."
+        r'Help:\s*"((?:[^"\\]|\\.)*)"',
+    ]
+    for p in pats:
+        for m in re.finditer(p, src):
+            t = m.group(1).replace('\\"', '"').strip()
+            if t:
+                out.setdefault(t, path.name)
+    return out
+
+
 def is_candidate(text):
     if not HAS_LATIN.search(text):
         return False
@@ -143,6 +176,9 @@ def main():
             found.setdefault(t, src)
         for t, src in collect_options(path).items():
             found.setdefault(t, src)
+    # 模板字段文案（generate.go 里的 Var 定义）
+    for t, src in collect_go_labels(GEN_GO).items():
+        found.setdefault(t, src)
 
     missing, fragmented = [], []
     for t in found:
