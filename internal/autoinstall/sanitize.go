@@ -106,11 +106,40 @@ func checkCharacters(v Var, val string) error {
 }
 
 // sanitizeValue validates one form value and escapes it for the target format.
+
+// [bootimus-fork L1] fork-patch: autoinstall-generator
+//
+// Ubuntu 的 subiquity 会拒绝一批系统用户名，报 "Username is reserved by the system"，
+// 而且是装到 identity 阶段才报 —— 前面分区、解包全白做，只能重来。其中 admin 最坑：
+// 它曾经是 Ubuntu 的默认管理账号名，看起来完全合法，实际被保留。
+// 这里在生成答案文件时就拦掉，报错直接说清楚换哪个。
+var reservedUbuntuUsers = map[string]bool{
+	"root": true, "daemon": true, "bin": true, "sys": true, "sync": true,
+	"games": true, "man": true, "lp": true, "mail": true, "news": true,
+	"uucp": true, "proxy": true, "www-data": true, "backup": true, "list": true,
+	"irc": true, "gnats": true, "nobody": true, "admin": true,
+}
+
+// checkReservedUser 只对 autoinstall 生效：preseed 和 kickstart 没有这个限制，
+// 同一个名字在 Debian / RHEL 上是能用的，不能一刀切。
+func checkReservedUser(format string, v Var, val string) error {
+	if format != "autoinstall" || v.Name != "username" {
+		return nil
+	}
+	if reservedUbuntuUsers[strings.ToLower(val)] {
+		return fmt.Errorf("%q 是 Ubuntu 的系统保留用户名，安装到 identity 阶段会被拒绝（Username is reserved by the system），请换一个，例如 ubuntu、sysadmin", val)
+	}
+	return nil
+}
+
 func sanitizeValue(format string, v Var, val string) (string, error) {
 	if val == "" {
 		return "", nil
 	}
 	if err := checkCharacters(v, val); err != nil {
+		return "", err
+	}
+	if err := checkReservedUser(format, v, val); err != nil {
 		return "", err
 	}
 
