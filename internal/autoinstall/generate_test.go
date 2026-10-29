@@ -72,8 +72,8 @@ func TestDefaultFilenamesMatchFormat(t *testing.T) {
 
 func TestEveryTemplateRenders(t *testing.T) {
 	markers := map[string][]string{
-		"debian-preseed":       {"d-i passwd/username string admin", "d-i netcfg/get_hostname string bootimus-node"},
-		"rhel-kickstart":       {"user --name=admin", "%packages", "autopart --type=lvm"},
+		"debian-preseed":       {"d-i passwd/username string ubuntu", "d-i netcfg/get_hostname string bootimus-node"},
+		"rhel-kickstart":       {"user --name=ubuntu", "%packages", "autopart --type=lvm"},
 		"ubuntu-autoinstall":   {"autoinstall:", `hostname: "bootimus-node"`, "layout:"},
 		"windows-autounattend": {"<ComputerName>*</ComputerName>", "<AcceptEula>true</AcceptEula>", "<LocalAccount"},
 	}
