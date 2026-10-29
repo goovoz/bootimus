@@ -1609,7 +1609,12 @@ func (s *Server) setupAdminInterface(mux *http.ServeMux) {
 		return handler
 	}
 
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	// [bootimus-fork L1] fork-patch: static-no-cache
+	// embed.FS 没有 modtime，服务端也没发任何缓存头，浏览器只能按启发式规则自己
+	// 决定缓存多久 —— 升级后经常继续用旧的 app.js / i18n.js，表现为登录按钮点了
+	// 没反应、autoinstall 表单还是旧字段。no-cache 让每次使用前都回源验证；
+	// 内网多下载 1MB 左右，代价可以忽略。
+	mux.Handle("/", noCacheStatic(http.FS(staticFS)))
 
 	mux.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
@@ -2987,4 +2992,16 @@ func (s *Server) remoteImages(images []models.Image) (string, map[uint]bool) {
 		}
 	}
 	return base, remote
+}
+
+// noCacheStatic 给管理台的静态资源加上 no-cache。
+// 不设 ETag 是刻意的：embed.FS 拿不到 modtime，用版本号做 ETag 又会让
+// 「同一版本重建」的场景继续用旧文件。全量回源在这里是最省心的正确做法。
+func noCacheStatic(fsys http.FileSystem) http.Handler {
+	files := http.FileServer(fsys)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		files.ServeHTTP(w, r)
+	})
 }
