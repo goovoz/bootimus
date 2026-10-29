@@ -254,9 +254,13 @@ var templates = []Template{
 			// [bootimus-fork L1] fork-patch: autoinstall-generator
 			// 安装类型映射到 subiquity 的 source.id；第三方驱动是 drivers.install。
 			// 20.04 的 subiquity 不认 drivers 段会直接报错，所以默认关闭。
-			selectVarHelp("install_variant", "Install type", "server",
-				"Full installs the standard package set; minimal skips the extras (source.id ubuntu-server-minimal).",
-				opt("server", "Full install"), opt("server-minimal", "Minimal install")),
+			// 留空 = 不写 source 段，用安装器自己的默认。20.04 的 ISO 不一定有 minimal 源，
+			// 写死反而会让 subiquity 在 Source/load_autoinstall_data 阶段直接崩。
+			selectVarHelp("install_variant", "Install type", "",
+				"Leave on default unless you need the minimal source. Minimal installs are only offered by 22.04 and newer ISOs.",
+				opt("", "Installer default"),
+				opt("ubuntu-server", "Full install"),
+				opt("ubuntu-server-minimal", "Minimal install")),
 			selectVarHelp("third_party_drivers", "Third-party drivers", "false",
 				"Installs HWE / vendor drivers (drivers.install). Ubuntu 20.04's subiquity does not understand this section — leave it off there.",
 				opt("false", "Do not install"), opt("true", "Install (HWE)")),
