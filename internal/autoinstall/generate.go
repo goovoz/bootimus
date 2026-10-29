@@ -456,6 +456,19 @@ func RenderTemplate(id string, values map[string]string) (string, error) {
 	// 字符串塞进单条命令里。
 	data["ssh_key_list"] = splitSSHKeys(asString(data["ssh_key"]))
 
+	// 开了 root 登录，却既没给密码也没给公钥 —— 这条配置装完是登不上的。
+	// Ubuntu 装完 root 账号是锁定的（shadow 里是 !），只把 PermitRootLogin 改成 yes
+	// 并不能解除锁定；用户往往要到登录失败时才发现，很难自己定位到这一层。
+	// 只拦「两种都没有」的情况：配了 SSH 公钥的，root 走 key 登录是合法的。
+	if asString(data["root_login"]) == "true" && asString(data["root_hash"]) == "" {
+		keys, _ := data["ssh_key_list"].([]string)
+		if len(keys) == 0 {
+			return "", fmt.Errorf("「%s」已启用，但既没有 Root password 也没有 SSH 公钥："+
+				"Ubuntu 安装后 root 账号处于锁定状态，仅放开 PermitRootLogin 并不能登录。"+
+				"请填写 root 密码，或提供 SSH 公钥后由 root 用密钥登录", "Allow root login")
+		}
+	}
+
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("render %q: %w", id, err)
