@@ -16,7 +16,29 @@ const _rules = JSON.parse(require('fs').readFileSync(require('path').join(__dirn
 const ALLOW = new Set(_rules.allow);
 const NOISE = new RegExp(_rules.noise);
 const HAS_LATIN = /[A-Za-z]/;
-const HAS_CJK = /[\u4e00-\u9fa5]/;
+const HAS_CJK = new RegExp(_rules.cjk);
+
+// 与 i18n 引擎同款：剥掉开头 1-2 个非字母字符 + 空格。
+//
+// 「⬇ Download」「⚠ Kernel boot needs extraction」这类，真正要翻的是后半截。
+// 不剥就会把「⬇ Download → ⬇ 下载」当新词条写进表 —— 与已有的 Download 重复，
+// 而且图标一换（⬇ → ⤓）就失效。剥掉后词条只存纯文本，图标怎么换都能复用。
+//
+// 括号开头的动不到：「(Maximum entries, default 100).」里 ( 后紧跟字母、没有空格，
+// 不满足「符号 + 空格」的形状，整串保留。
+function stripLeadingSymbol(t) {
+  const m = t.match(/^([^\p{L}\p{N}\u4e00-\u9fa5]{1,2}\s+)(.+)$/u);
+  return m ? m[2].trim() : t;
+}
+
+// 翻译表里已经有的不必再送 LLM。读一份纯文本集合。
+let ZH = new Set();
+try {
+  ZH = new Set(Object.keys(JSON.parse(
+    require('fs').readFileSync(process.env.ZH_PATH || 'ops/i18n/zh.json', 'utf8'))));
+} catch (e) {
+  console.error('读不到 zh.json，退化为只按形状过滤');
+}
 
 function isCandidate(t) {
   if (!t || t.length > 200) return false;
@@ -67,8 +89,12 @@ function isCandidate(t) {
         return out;
       });
       scanned += items.length;
-      for (const s of items) {
+      for (const raw of items) {
+        // 先剥图标/箭头前缀，再判断要不要翻
+        const s = stripLeadingSymbol(raw);
         if (!isCandidate(s)) continue;
+        // 原串或剥后串只要有一个已在词表，就认为已覆盖
+        if (ZH.has(s) || ZH.has(raw)) continue;
         if (!seen.has(s)) seen.set(s, t);
       }
     } catch (e) {
