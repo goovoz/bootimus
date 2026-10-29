@@ -11,15 +11,10 @@ const { chromium } = require(process.env.PW_MODULE || 'playwright');
 const BASE = process.env.BASE || 'http://127.0.0.1:18081';
 const PW = process.env.ADMIN_PW;
 
-// 不该翻 / 不是 UI 文案的：与 audit.py 的规则保持一致
-const ALLOW = new Set([
-  'IP', 'URI', 'SAN', 'CPU', 'MAC', 'UUID', 'DHCP', 'PXE', 'NFS', 'SMB', 'TFTP',
-  'HTTP', 'HTTPS', 'API', 'URL', 'JSON', 'HTML', 'CSS', 'ID', 'OK', 'ISO',
-  'UEFI', 'BIOS', 'ARM64', 'x86_64', 'Kubernetes', 'Webhook', 'netboot',
-  'Bootimus', 'bootimus', 'Docker Hub', 'GitHub', 'Website', 'Report Issues',
-  'Redfish', 'Intel AMT', 'Memdisk', 'Licence',
-]);
-const NOISE = /^(\$\{|&[a-zA-Z]+;|https?:\/\/|\/|=|--|#|[A-Z_]{4,}$|\s*$|\s*[.,;:]\s|\d+%\s*-\s*|v\.\.\.$|🚀|[A-Za-z0-9.-]+\.(com|org|io|net)(\/|$))/;
+// 过滤规则与 audit.py 共用 audit-rules.json —— 两边各写一份时已经跑偏过一次。
+const _rules = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'audit-rules.json'), 'utf8'));
+const ALLOW = new Set(_rules.allow);
+const NOISE = new RegExp(_rules.noise);
 const HAS_LATIN = /[A-Za-z]/;
 const HAS_CJK = /[\u4e00-\u9fa5]/;
 
