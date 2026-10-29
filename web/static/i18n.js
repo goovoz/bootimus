@@ -3366,7 +3366,15 @@ const SOURCE_TEXT = {
         "(completed (default) or failed),": "（completed（默认）或 failed），",
         "(true to also remove the ISO from disk).": "（为 true 时还会从磁盘中删除 ISO）。",
         "Version dev": "版本 dev",
-        "WinPE / Rescue Media": "WinPE / 救援介质"
+        "WinPE / Rescue Media": "WinPE / 救援介质",
+        "Install type": "安装类型",
+        "Full installs the standard package set; minimal skips the extras (source.id ubuntu-server-minimal).": "完整安装会装标准软件包集；最小安装跳过额外部分（source.id 为 ubuntu-server-minimal）。",
+        "Full install": "完整安装",
+        "Minimal install": "最小安装",
+        "Third-party drivers": "第三方驱动",
+        "Installs HWE / vendor drivers (drivers.install). Ubuntu 20.04's subiquity does not understand this section — leave it off there.": "安装 HWE / 厂商驱动（drivers.install）。Ubuntu 20.04 的 subiquity 不认识这一段，请保持关闭。",
+        "Do not install": "不安装",
+        "Install (HWE)": "安装（HWE）"
     }
 };
 
@@ -3642,7 +3650,7 @@ function _translateTextNodes(root) {
         // 状态列是「⚠ Kernel boot needs extraction」「✓ Ready」这种：图标和文字在同一个
         // 文本节点里，先剥掉前缀图标再查表，命中后把图标补回去
         let mark = '';
-        const mm = base.match(/^([\u26a0\u2713\u2714\u2717\u2718\u26d4\u2139\u25cf\u2022\u25b2\u25bc\u2192\u2190!]+\uFE0F?\s+)(.+)$/);
+        const mm = base.match(/^([^\p{L}\p{N}一-龥]{1,2}\s+)(.+)$/u);
         if (mm) {
             const rest = mm[2].trim();
             if (dict[rest] !== undefined || _patternTranslate(rest) !== null || _prefixTranslate(rest) !== null) {

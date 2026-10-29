@@ -241,7 +241,7 @@ NEW_ARROW = """        let base = _normSpace(raw);
         // 状态列是「⚠ Kernel boot needs extraction」「✓ Ready」这种：图标和文字在同一个
         // 文本节点里，先剥掉前缀图标再查表，命中后把图标补回去
         let mark = '';
-        const mm = base.match(/^([\\u26a0\\u2713\\u2714\\u2717\\u2718\\u26d4\\u2139\\u25cf\\u2022\\u25b2\\u25bc\\u2192\\u2190!]+\\uFE0F?\\s+)(.+)$/);
+        const mm = base.match(/^([^\p{L}\p{N}\u4e00-\u9fa5]{1,2}\s+)(.+)$/u);
         if (mm) {
             const rest = mm[2].trim();
             if (dict[rest] !== undefined || _patternTranslate(rest) !== null || _prefixTranslate(rest) !== null) {
