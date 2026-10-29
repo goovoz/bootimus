@@ -31,38 +31,16 @@ INDEX = ROOT / 'web/static/index.html'
 FORK_UI = ROOT / 'web/static/fork-ui.js'
 GEN_GO = ROOT / 'internal/autoinstall/generate.go'
 
-# 不该翻的：技术标识、发行版名、语言名、协议名、品牌名
-ALLOW = {
-    'IP', 'URI', 'SAN', 'CPU', 'MAC', 'UUID', 'DHCP', 'PXE', 'NFS', 'SMB', 'TFTP',
-    'HTTP', 'HTTPS', 'API', 'URL', 'JSON', 'HTML', 'CSS', 'ID', 'OK', 'ISO',
-    'UEFI', 'BIOS', 'ARM64', 'x86_64', 'Kubernetes', 'Webhook', 'netboot',
-    # 品牌 / 产品名 / 外链：界面上保持原样更清楚
-    'Bootimus', 'bootimus', 'Docker Hub', 'GitHub', 'Website', 'Report Issues',
-    'Redfish', 'Intel AMT', 'Memdisk', 'Licence',
-    'PXE/HTTP Boot Server', 'PXE/HTTP Boot Server Management Interface',
-    'UEFI x86', 'UEFI ARM64',
-    # 文件系统 / 分区技术名：界面上保持原文更准确
-    'LVM', 'ZFS', 'Btrfs', 'ext4', 'XFS',
-    # 发行版名（模板下拉里出现）
-    'AlmaLinux', 'Rocky Linux', 'CentOS', 'Fedora', 'Debian', 'Ubuntu', 'openSUSE',
-    'Agama (openSUSE Leap 16 / Tumbleweed)',
-    # 这句在 DOM 里被 <code> 切成两段（"Optional." + "is replaced with ..."），
-    # 两个碎片都已经配了词条；整串永远匹配不到，别当缺失报。
-    "Optional. is replaced with the client's MAC without colons. Leave blank to use iPXE's default.",
-}
-# 看起来就不是 UI 文案的（模板变量、实体、残缺句、URL、进度占位、版本占位）
-NOISE = re.compile(
-    r'^(\$\{|&[a-zA-Z]+;|https?://|/|=|--|#|[A-Z_]{4,}$|\s*$'   # 模板变量/实体/URL/变量名
-    r'|\s*[.,;:]\s'                                             # 以标点开头 = 被标签切碎的残句
-    r'|\d+%\s*-\s*'                                             # 进度占位 0% - 0 B/s
-    r'|v\.\.\.$'                                                # 版本占位
-    r'|🚀'                                                       # 品牌标题
-    r'|[A-Za-z0-9.-]+\.(com|org|io|net)(/|$))'                   # 裸域名
-)
+# 过滤规则放 audit-rules.json，与 audit-dom.js 共用一份。
+# 以前两边各写一份，加白名单时只改了一边 —— LVM/ZFS/AlmaLinux 这些在静态侧排除了，
+# DOM 侧还当成缺失往 LLM 送。
+_RULES = json.loads((Path(__file__).resolve().parent / 'audit-rules.json').read_text(encoding='utf-8'))
+ALLOW = set(_RULES['allow'])
+NOISE = re.compile(_RULES['noise'])
+
 HAS_LATIN = re.compile(r'[A-Za-z]')
 HAS_CJK = re.compile(r'[\u4e00-\u9fa5]')
-# 中间被 <code>/<a> 之类的行内标签挖空后剩下的残句，例如
-# "iPXE SAN URI: , or ." —— 这类不能当整句翻，要按片段处理，单列出来
+
 FRAGMENTED = re.compile(r'\s[,.;:]\s|,\s*\.\s*$|:\s*,\s')
 
 
