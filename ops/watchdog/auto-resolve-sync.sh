@@ -35,7 +35,39 @@ die() { log "ERROR: $*"; exit 1; }
 
 cd "$WORKDIR" || die "进不去 $WORKDIR"
 
-[ -n "$AI_BASE_URL" ] || die "没配 AI_BASE_URL，无法自动解冲突"
+# ---------------------------------------------------------------- 推送
+# key 来自 /etc/default/bootimus-sync-watch（600 权限，不进仓库）。
+# 成功和失败都发 —— 用户明确要求知道 AI 到底做了什么。
+notify() {
+    local title="$1" body="$2"
+    if [ -n "${SC_SENDKEY:-}" ]; then
+        if curl -sS --max-time 20 -X POST "https://sctapi.ftqq.com/${SC_SENDKEY}.send" \
+                --data-urlencode "title=$title" --data-urlencode "desp=$body" >/dev/null 2>&1; then
+            log "  已推送：$title"
+            return 0
+        fi
+        log "  推送失败：$title"
+        return 1
+    fi
+    log "  （未配 SC_SENDKEY，跳过推送）$title"
+    return 0
+}
+
+# 失败时统一收口：写日志 + 推送 + 退出
+fail_notify() {
+    local reason="$1" rc="${2:-1}"
+    log "失败：$reason"
+    notify "❌ bootimus AI 解冲突失败" "**原因**：${reason}
+
+**落后上游**：$(git rev-list --count HEAD.."upstream/${UPSTREAM_BRANCH}" 2>/dev/null || echo 未知) 个提交
+**现场**：\`/var/log/bootimus-sync-watch.log\`
+**处理手册**：\`docs/FORK-SYNC-CONFLICTS.md\`
+
+需要人工介入。"
+    exit "$rc"
+}
+
+[ -n "$AI_BASE_URL" ] || fail_notify "没配 AI_BASE_URL"
 command -v jq >/dev/null || die "缺 jq"
 GO=$(command -v go || echo /usr/local/go/bin/go)
 GOFMT=$("$GO" env GOROOT)/bin/gofmt
@@ -119,7 +151,7 @@ PY
 # ---------------------------------------------------------------- 主流程
 BRANCH=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/heads/sync-conflict/*' | head -1)
 [ -n "$BRANCH" ] || BRANCH=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/remotes/origin/sync-conflict/*' | head -1 | sed 's#^origin/##')
-[ -n "$BRANCH" ] || die "找不到 sync-conflict 分支，没有可自动处理的现场"
+[ -n "$BRANCH" ] || fail_notify "找不到 sync-conflict 分支"
 
 log "处理分支: $BRANCH"
 
@@ -165,9 +197,8 @@ PY
                 BLK=$(jq -r ".[$k].text" /tmp/ar-blocks.json)
                 ANS=$(ask_ai "$f" "$BLK")
                 if [ -z "$ANS" ] || [ "$ANS" = "UNRESOLVABLE" ]; then
-                    log "  ✗ AI 无法合并 $f 第 $((k+1)) 块（$ANS）"
                     git rebase --abort
-                    exit 3
+                    fail_notify "AI 判定无法自动合并：$f 第 $((k+1)) 块" 3
                 fi
                 # 写回：用 python 做归一化替换
                 printf '%s' "$ANS" > /tmp/ar-answer.txt
@@ -223,16 +254,14 @@ if [ -s /tmp/ar-fmt.log ]; then
 fi
 
 if ! CGO_ENABLED=0 "$GO" build ./... >/tmp/ar-build.log 2>&1; then
-    log "  ✗ 编译失败"
-    tail -15 /tmp/ar-build.log | while read -r l; do log "    $l"; done
-    exit 2
+    _err=$(tail -5 /tmp/ar-build.log | tr "\n" " " | head -c 300)
+    fail_notify "编译失败：${_err}" 2
 fi
 log "  ✓ 编译通过"
 
 if ! "$GO" test ./internal/admin/ ./internal/autoinstall/ >/tmp/ar-test.log 2>&1; then
-    log "  ✗ 测试失败"
-    tail -15 /tmp/ar-test.log | while read -r l; do log "    $l"; done
-    exit 2
+    _err=$(tail -5 /tmp/ar-test.log | tr "\n" " " | head -c 300)
+    fail_notify "测试失败：${_err}" 2
 fi
 log "  ✓ 测试通过"
 
@@ -256,9 +285,18 @@ fi
 # ---------------------------------------------------------------- 推送
 log "推送到 main"
 if git push --force-with-lease=main:"$(git rev-parse origin/main)" origin "$WORK:main" >/tmp/ar-push.log 2>&1; then
-    log "  ✓ 已推送 $(git rev-parse --short HEAD)"
+    _sha=$(git rev-parse --short HEAD)
+    log "  ✓ 已推送 $_sha"
     git checkout -q main && git reset -q --hard "$WORK"
-    log "完成：落后 $(git rev-list --count HEAD.."upstream/$UPSTREAM_BRANCH") 个提交"
+    _behind=$(git rev-list --count HEAD.."upstream/$UPSTREAM_BRANCH")
+    log "完成：落后 $_behind 个提交"
+    notify "✅ bootimus 同步已由 AI 自动修复" "**提交**：${_sha}
+**落后上游**：${_behind} 个提交（已归零）
+**处理分支**：${BRANCH}
+**验证**：gofmt / go build / go test 全通过
+**日志**：\`/var/log/bootimus-sync-watch.log\`
+
+构建已由 push 自动触发。"
 else
     log "  ✗ 推送失败"
     tail -5 /tmp/ar-push.log | while read -r l; do log "    $l"; done
