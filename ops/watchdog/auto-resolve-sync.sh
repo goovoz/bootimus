@@ -15,7 +15,7 @@
 # 通不过就整体回滚，仓库不会留下半成品。
 set -uo pipefail
 
-REPO=${REPO:-/root/work/bootimus}
+WORKDIR=${WORKDIR:-/root/work/bootimus}
 UPSTREAM_BRANCH=${UPSTREAM_BRANCH:-main}
 LOG=${LOG:-/var/log/bootimus-sync-watch.log}
 STATE_DIR=${STATE_DIR:-/var/lib/bootimus-sync-watch}
@@ -33,12 +33,12 @@ DRY_RUN=${DRY_RUN:-0}
 log() { printf '%s  [auto-resolve] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"; }
 die() { log "ERROR: $*"; exit 1; }
 
-cd "$REPO" || die "进不去 $REPO"
+cd "$WORKDIR" || die "进不去 $WORKDIR"
 
 [ -n "$AI_BASE_URL" ] || die "没配 AI_BASE_URL，无法自动解冲突"
 command -v jq >/dev/null || die "缺 jq"
 GO=$(command -v go || echo /usr/local/go/bin/go)
-GOFMT=$(dirname "$GO")/gofmt
+GOFMT=$("$GO" env GOROOT)/bin/gofmt
 
 # ---------------------------------------------------------------- AI 调用
 SYS='你在做 git rebase 冲突的合并决策。仓库是 bootimus 的 fork。
