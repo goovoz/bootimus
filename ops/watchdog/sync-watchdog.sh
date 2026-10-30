@@ -138,8 +138,56 @@ notify() {
             log "推送失败：$title"
         fi
     else
-        log "（未配 SC_SENDKEY，只写日志）$title"
+        # 没配 Server 酱 key 时走 issue —— 否则告警只进日志，等于没告警。
+        log "（未配 SC_SENDKEY，改走 GitHub Issue）$title"
+        issue_notify "$title" "$body"
     fi
+}
+
+# 开或更新一条 sync-failure issue。已有未关闭的就追加评论，不重复开单。
+issue_notify() {
+    local title="$1" body="$2"
+    [ -n "${GH_TOKEN:-}" ] || { log "无 GH_TOKEN，跳过 issue 告警"; return 1; }
+
+    local num
+    num=$(api "$API/repos/$REPO/issues?labels=sync-failure&state=open&per_page=1" 2>/dev/null \
+        | jq -r '.[0].number // empty' 2>/dev/null || true)
+
+    if [ -n "$num" ]; then
+        if api -X POST "$API/repos/$REPO/issues/$num/comments" \
+                -H 'Content-Type: application/json' \
+                -d "$(jq -n --arg b "$body" '{body:$b}')" >/dev/null; then
+            log "  已追加到 issue #$num"
+        else
+            log "  追加 issue 评论失败"
+        fi
+    else
+        num=$(api -X POST "$API/repos/$REPO/issues" \
+                -H 'Content-Type: application/json' \
+                -d "$(jq -n --arg t "【自动告警】$title" --arg b "$body" \
+                    '{title:$t, body:$b, labels:["sync-failure"]}')" 2>/dev/null \
+            | jq -r '.number // empty' 2>/dev/null || true)
+        if [ -n "$num" ]; then
+            log "  已开 issue #$num"
+        else
+            log "  开 issue 失败（检查 GH_TOKEN 有没有 issues:write 权限）"
+        fi
+    fi
+}
+
+# 同步恢复正常时关掉遗留的告警单，别让它们堆着。
+issue_close_if_any() {
+    [ -n "${GH_TOKEN:-}" ] || return 0
+    local nums
+    nums=$(api "$API/repos/$REPO/issues?labels=sync-failure&state=open&per_page=10" 2>/dev/null \
+        | jq -r '.[].number' 2>/dev/null || true)
+    [ -n "$nums" ] || return 0
+    for n in $nums; do
+        if api -X PATCH "$API/repos/$REPO/issues/$n" \
+                -H 'Content-Type: application/json' -d '{"state":"closed"}' >/dev/null; then
+            log "  已关闭 issue #$n（同步已恢复）"
+        fi
+    done
 }
 
 # ---------------------------------------------------------------- 1. 拉运行记录
@@ -332,6 +380,9 @@ $(printf '%s' "$TRAILER_BAD" | tr ';' '\n')
     notify "bootimus 同步${HEALTH}" "$BODY"
     jq --arg fp "$FP" '.last_notified=$fp' "$STATE" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
 fi
+
+# 恢复了就把告警单关掉，别留一堆僵尸 issue
+[ "$HEALTH" = "OK" ] && issue_close_if_any
 
 case "$HEALTH" in OK|RUNNING) exit 0 ;; esac
 [ "$ACTION" = "redispatched" ] && exit 2
