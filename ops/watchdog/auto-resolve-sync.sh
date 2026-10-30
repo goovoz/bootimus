@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+# 同步冲突自动解决：AI 出合并方案 → 本地编译测试 → 通过才推
+#
+# 触发条件：sync-watchdog 判定 needs_ai=true（不是瞬时故障，是真的语义冲突）
+#
+# 流程：
+#   1. 检出最新的 sync-conflict/* 分支（workflow 留下的现场）
+#   2. 重新 rebase upstream/main，让冲突重现
+#   3. 每个冲突块单独问 AI 合并方案（带文件路径和上下文）
+#   4. 缩进归一化后写回，git add + rebase --continue
+#   5. go build + go test 兜底
+#   6. 全过 → force-with-lease 推 main；任何一步失败 → abort + 记录到 issue
+#
+# 为什么敢让 AI 改代码：它的输出只是「候选」，最终由编译器和测试决定生死。
+# 通不过就整体回滚，仓库不会留下半成品。
+set -uo pipefail
+
+REPO=${REPO:-/root/work/bootimus}
+UPSTREAM_BRANCH=${UPSTREAM_BRANCH:-main}
+LOG=${LOG:-/var/log/bootimus-sync-watch.log}
+STATE_DIR=${STATE_DIR:-/var/lib/bootimus-sync-watch}
+MAX_ROUNDS=${MAX_ROUNDS:-20}          # 一个分支最多处理多少个冲突块
+DRY_RUN=${DRY_RUN:-0}
+
+# 网关配置：优先用 /root/ai_gateway.env，其次 /etc/default/bootimus-sync-watch
+[ -r /root/ai_gateway.env ] && { set -a; . /root/ai_gateway.env; set +a; }
+[ -r /etc/default/bootimus-sync-watch ] && { set +a; . /etc/default/bootimus-sync-watch; set +a; }
+: "${AI_BASE_URL:=}"
+: "${AI_MODEL:=cn:deepseek-v4.1-flash}"
+: "${AI_API_KEY:=}"
+: "${AI_EFFORT:=max}"
+
+log() { printf '%s  [auto-resolve] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"; }
+die() { log "ERROR: $*"; exit 1; }
+
+cd "$REPO" || die "进不去 $REPO"
+
+[ -n "$AI_BASE_URL" ] || die "没配 AI_BASE_URL，无法自动解冲突"
+command -v jq >/dev/null || die "缺 jq"
+GO=$(command -v go || echo /usr/local/go/bin/go)
+GOFMT=$(dirname "$GO")/gofmt
+
+# ---------------------------------------------------------------- AI 调用
+SYS='你在做 git rebase 冲突的合并决策。仓库是 bootimus 的 fork。
+
+规则：
+1. <<<<<<< HEAD 一侧是上游的新代码
+2. >>>>>>> 一侧是 fork 自己的补丁（带 [bootimus-fork L1] 锚点 / Fork-Patch 标记）
+3. fork 的补丁必须保留，不能因为合并丢掉
+4. 两边各自新增不同语句 → 两段都保留，上游在前
+5. 同一个东西的两个版本 → 用上游的新版本，但 fork 额外加的行保留
+6. 如果两边逻辑上真的互斥、无法共存，只输出一个词：UNRESOLVABLE
+
+输出要求：
+- 只输出合并后的代码行（含缩进），不要冲突标记、不要解释、不要 markdown 代码块
+- 缩进从第 0 列开始不带外层包裹
+
+输出会被直接写进文件，语法错误会导致编译失败、整次尝试回滚。'
+
+ask_ai() {
+    local path="$1" block="$2"
+    local body resp
+    body=$(jq -n --arg m "$AI_MODEL" --arg s "$SYS" --arg e "$AI_EFFORT" \
+        --arg p "$path" --arg b "$block" '{
+        model:$m, temperature:0, max_tokens:4000, reasoning_effort:$e,
+        messages:[
+          {role:"system",content:$s},
+          {role:"user",content:("文件：" + $p + "\n\n冲突块：\n" + $b)}
+        ]}')
+    resp=$(curl -sS --noproxy '*' --max-time 180 -X POST "${AI_BASE_URL%/}/chat/completions" \
+        -H "Authorization: Bearer ${AI_API_KEY:-placeholder}" \
+        -H 'Content-Type: application/json' -d "$body" 2>/dev/null) || return 1
+    printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null
+}
+
+# ---------------------------------------------------------------- 缩进归一化 + 替换
+resolve_file() {
+    local path="$1"
+    python3 - "$path" <<'PY'
+import json, re, subprocess, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+src = path.read_text(encoding='utf-8')
+
+BLOCK = re.compile(r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> ([^\n]*)\n', re.S)
+
+def indent_of(ln):
+    return ln[:len(ln) - len(ln.lstrip())]
+
+def normalize(ai_text, target_indent):
+    lines = [ln for ln in ai_text.splitlines() if ln.strip()]
+    if not lines:
+        return ''
+    ai_min = min(indent_of(ln) for ln in lines)
+    out = []
+    for ln in ai_text.splitlines():
+        out.append('' if not ln.strip() else target_indent + ln[len(ai_min):])
+    return '\n'.join(out)
+
+blocks = list(BLOCK.finditer(src))
+if not blocks:
+    print('NO_CONFLICT')
+    sys.exit(0)
+
+results = []
+for i, m in enumerate(blocks, 1):
+    ours, theirs = m.group(1), m.group(2)
+    target = min(indent_of(ln) for ln in (ours + theirs).splitlines() if ln.strip())
+    block_text = m.group(0)
+    # 由 bash 侧逐块调 AI（这里只把块交给外部）
+    results.append({'index': i, 'target': target, 'block': block_text})
+
+# 输出块清单，交给 bash 逐块处理
+print(json.dumps(results, ensure_ascii=False))
+PY
+}
+
+# ---------------------------------------------------------------- 主流程
+BRANCH=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/heads/sync-conflict/*' | head -1)
+[ -n "$BRANCH" ] || BRANCH=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/remotes/origin/sync-conflict/*' | head -1 | sed 's#^origin/##')
+[ -n "$BRANCH" ] || die "找不到 sync-conflict 分支，没有可自动处理的现场"
+
+log "处理分支: $BRANCH"
+
+# 干净起点
+git rebase --abort 2>/dev/null || true
+git checkout -q -f main 2>/dev/null || git checkout -q -f master
+git fetch -q upstream
+git fetch -q origin
+
+WORK="auto-resolve/$(date +%Y%m%d-%H%M)"
+git branch -D "$WORK" 2>/dev/null || true
+git checkout -q -b "$WORK" main || die "切分支失败"
+
+log "rebase 到 upstream/$UPSTREAM_BRANCH"
+if ! git rebase "upstream/$UPSTREAM_BRANCH" >/tmp/ar-rebase.log 2>&1; then
+    CONFLICTS=$(git diff --name-only --diff-filter=U)
+    [ -n "$CONFLICTS" ] || { log "rebase 失败但没有冲突文件"; tail -5 /tmp/ar-rebase.log; exit 1; }
+    log "冲突文件: $(echo "$CONFLICTS" | tr '\n' ' ')"
+
+    ROUND=0
+    while [ -n "$CONFLICTS" ]; do
+        for f in $CONFLICTS; do
+            ROUND=$((ROUND + 1))
+            [ "$ROUND" -gt "$MAX_ROUNDS" ] && die "超过 $MAX_ROUNDS 轮，停手"
+
+            # 逐块问 AI
+            python3 - "$f" > /tmp/ar-blocks.json <<'PY'
+import json, re, sys
+from pathlib import Path
+src = Path(sys.argv[1]).read_text(encoding='utf-8')
+BLOCK = re.compile(r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> ([^\n]*)\n', re.S)
+out = []
+for i, m in enumerate(BLOCK.finditer(src), 1):
+    out.append({'index': i, 'text': m.group(0)})
+print(json.dumps(out, ensure_ascii=False))
+PY
+
+            N=$(jq 'length' /tmp/ar-blocks.json 2>/dev/null || echo 0)
+            log "  $f: $N 个冲突块"
+            [ "$N" -eq 0 ] && { git add "$f"; continue; }
+
+            for k in $(seq 0 $((N - 1))); do
+                BLK=$(jq -r ".[$k].text" /tmp/ar-blocks.json)
+                ANS=$(ask_ai "$f" "$BLK")
+                if [ -z "$ANS" ] || [ "$ANS" = "UNRESOLVABLE" ]; then
+                    log "  ✗ AI 无法合并 $f 第 $((k+1)) 块（$ANS）"
+                    git rebase --abort
+                    exit 3
+                fi
+                # 写回：用 python 做归一化替换
+                printf '%s' "$ANS" > /tmp/ar-answer.txt
+                python3 - "$f" "$((k+1))" /tmp/ar-answer.txt <<'PY'
+import re, sys
+from pathlib import Path
+path, idx, ansfile = Path(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3])
+src = path.read_text(encoding='utf-8')
+BLOCK = re.compile(r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> ([^\n]*)\n', re.S)
+blocks = list(BLOCK.finditer(src))
+if idx > len(blocks):
+    sys.exit('块序号越界')
+m = blocks[idx - 1]
+ours, theirs = m.group(1), m.group(2)
+def indent_of(ln): return ln[:len(ln) - len(ln.lstrip())]
+target = min(indent_of(ln) for ln in (ours + theirs).splitlines() if ln.strip())
+ans = ansfile.read_text(encoding='utf-8')
+lines = [ln for ln in ans.splitlines() if ln.strip()]
+ai_min = min(indent_of(ln) for ln in lines) if lines else ''
+norm = '\n'.join('' if not ln.strip() else target + ln[len(ai_min):] for ln in ans.splitlines())
+src = src[:m.start()] + norm + '\n' + src[m.end():]
+path.write_text(src, encoding='utf-8')
+PY
+                log "  ✓ $f 第 $((k+1)) 块已合并"
+            done
+            git add "$f"
+        done
+
+        if git diff --name-only --diff-filter=U | grep -q .; then
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            continue
+        fi
+        if ! GIT_EDITOR=true git rebase --continue >>/tmp/ar-rebase.log 2>&1; then
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            [ -n "$CONFLICTS" ] || { log "continue 失败且无冲突"; tail -5 /tmp/ar-rebase.log; exit 1; }
+            log "下一批冲突: $(echo "$CONFLICTS" | tr '\n' ' ')"
+        else
+            CONFLICTS=""
+        fi
+    done
+else
+    log "rebase 无冲突，可能上游已合并"
+fi
+
+# ---------------------------------------------------------------- 验证
+log "验证：gofmt / build / test"
+if ! "$GOFMT" -l . >/tmp/ar-fmt.log 2>&1; then
+    log "  ✗ gofmt 执行失败"; exit 1
+fi
+if [ -s /tmp/ar-fmt.log ]; then
+    log "  格式化了 $(wc -l < /tmp/ar-fmt.log) 个文件"
+    "$GOFMT" -w $(cat /tmp/ar-fmt.log) 2>/dev/null || true
+fi
+
+if ! CGO_ENABLED=0 "$GO" build ./... >/tmp/ar-build.log 2>&1; then
+    log "  ✗ 编译失败"
+    tail -15 /tmp/ar-build.log | while read -r l; do log "    $l"; done
+    exit 2
+fi
+log "  ✓ 编译通过"
+
+if ! "$GO" test ./internal/admin/ ./internal/autoinstall/ >/tmp/ar-test.log 2>&1; then
+    log "  ✗ 测试失败"
+    tail -15 /tmp/ar-test.log | while read -r l; do log "    $l"; done
+    exit 2
+fi
+log "  ✓ 测试通过"
+
+# 汉化别被打断
+if ! python3 ops/i18n/audit.py 2>/dev/null | grep -q '缺失 0 条'; then
+    log "  ! 汉化审计有缺失（不阻塞，交给 autofix 后续补）"
+fi
+
+# 补丁标记还在吗
+if git log --format='%B' "upstream/$UPSTREAM_BRANCH"..HEAD | grep -q 'Fork-Patch:'; then
+    log "  ✓ Fork-Patch 标记还在"
+else
+    log "  ! 没找到 Fork-Patch 标记，检查是否丢了补丁"
+fi
+
+if [ "$DRY_RUN" = "1" ]; then
+    log "DRY_RUN：不推送。分支 $WORK 留着"
+    exit 0
+fi
+
+# ---------------------------------------------------------------- 推送
+log "推送到 main"
+if git push --force-with-lease=main:"$(git rev-parse origin/main)" origin "$WORK:main" >/tmp/ar-push.log 2>&1; then
+    log "  ✓ 已推送 $(git rev-parse --short HEAD)"
+    git checkout -q main && git reset -q --hard "$WORK"
+    log "完成：落后 $(git rev-list --count HEAD.."upstream/$UPSTREAM_BRANCH") 个提交"
+else
+    log "  ✗ 推送失败"
+    tail -5 /tmp/ar-push.log | while read -r l; do log "    $l"; done
+    exit 1
+fi

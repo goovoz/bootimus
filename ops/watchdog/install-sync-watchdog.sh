@@ -62,6 +62,9 @@ if [ "$DRY" = "1" ]; then
 fi
 
 install -m 0755 "$HERE/sync-watchdog.sh" "$BIN"
+
+
+install -m 0755 "$HERE/auto-resolve-sync.sh" "$(dirname "$BIN")/bootimus-auto-resolve"
 install -m 0644 "$HERE/bootimus-sync-watch.service" "$UNIT_DIR/"
 install -m 0644 "$HERE/bootimus-sync-watch.timer"   "$UNIT_DIR/"
 mkdir -p "$STATE_DIR"

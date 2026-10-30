@@ -350,6 +350,33 @@ jq -n \
     last_notified:($prev|try .last_notified catch null)}' \
   --argjson prev "$PREV" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
 
+# ---------------------------------------------------------------- 6b. 需要 AI 时先让它自己试
+# 判定 NEEDS_AI 说明不是瞬时故障（重试没用），是真正的语义冲突。
+# 交给 auto-resolve-sync：AI 出合并方案 → 本地编译测试 → 通过才推。
+# 它失败就退回原来的「转人工」路径，不会让事情更糟。
+if [ "$NEEDS_AI" = "true" ] && [ -x /usr/local/sbin/bootimus-auto-resolve ]; then
+    _today=$(date '+%Y-%m-%d')
+    _tries=$(printf '%s' "$PREV" | jq -r --arg d "$_today" 'if .auto_resolve_date == $d then (.auto_resolve_count // 0) else 0 end' 2>/dev/null || echo 0)
+    if [ "${_tries:-0}" -lt "${AUTO_RESOLVE_PER_DAY:-2}" ]; then
+        log "需要 AI：交给 auto-resolve 尝试（今日第 $((_tries + 1)) 次）"
+        if /usr/local/sbin/bootimus-auto-resolve >> "$LOG" 2>&1; then
+            log "  auto-resolve 成功，重新检查"
+            ACTION="auto_resolved"
+            NEEDS_AI=false
+            exec "$0"   # 重新跑一遍，让状态变绿
+        else
+            log "  auto-resolve 失败（rc=$?），转人工"
+            ACTION="needs_human"
+        fi
+        jq --arg d "$_today" --argjson n "$((_tries + 1))" \
+            '.auto_resolve_date=$d | .auto_resolve_count=$n' "$STATE" > "$STATE.tmp" 2>/dev/null \
+            && mv "$STATE.tmp" "$STATE" || true
+    else
+        log "需要 AI：今日已试 ${_tries} 次，不再重试，等人工"
+        ACTION="needs_human"
+    fi
+fi
+
 log "健康=$HEALTH 类型=${KIND:-无} 落后=${BEHIND:-?} 动作=$ACTION 需AI=$NEEDS_AI"
 
 # ---------------------------------------------------------------- 7. 通知（同一故障只发一次）
