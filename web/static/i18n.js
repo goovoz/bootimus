@@ -3513,7 +3513,11 @@ const SOURCE_TEXT = {
         "Node image deleted": "节点镜像已删除",
         "Boot assets downloaded": "启动资产已下载",
         "Role must be controlplane or worker": "角色必须为 controlplane 或 worker",
-        "Failed to generate node token": "无法生成节点令牌"
+        "Failed to generate node token": "无法生成节点令牌",
+        "Boot menu password": "启动菜单密码",
+        "Image password": "镜像密码",
+        "Remove the boot menu password": "移除启动菜单密码",
+        "Remove the image password": "移除镜像密码"
     }
 };
 
