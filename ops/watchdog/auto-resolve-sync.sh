@@ -67,6 +67,69 @@ fail_notify() {
     exit "$rc"
 }
 
+# ---------------------------------------------------------------- TRAILER 修复
+# 找出 upstream..HEAD 里缺 Fork-Patch 标记的提交并补上。
+# 返回 0=没有缺的，1=补了（需要重新验证），2=补失败
+fix_missing_trailers() {
+    local bad=()
+    local sha body
+    for sha in $(git rev-list "upstream/$UPSTREAM_BRANCH"..HEAD); do
+        body=$(git log -1 --format='%B' "$sha")
+        printf '%s' "$body" | grep -qE '^Fork-(Patch|Meta):' || bad+=("$sha")
+    done
+
+    if [ ${#bad[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    log "发现 ${#bad[@]} 个提交缺 Fork-Patch 标记："
+    for sha in "${bad[@]}"; do
+        log "  $(git log -1 --format='%h %s' "$sha")"
+    done
+
+    # 工作区必须干净，filter-branch 不认脏工作区
+    if [ -n "$(git status --porcelain)" ]; then
+        log "  ✗ 工作区不干净，不敢改写历史"
+        return 2
+    fi
+
+    local backup
+    backup=$(git rev-parse HEAD)
+    log "  改写前的 HEAD: $backup（失败可 git reset --hard $backup 回滚）"
+
+    # 用 msg-filter 补标记。只动没标记的，已有的原样保留。
+    if ! FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter '
+        body=$(cat)
+        if printf "%s" "$body" | grep -qE "^Fork-(Patch|Meta):"; then
+            printf "%s\n" "$body"
+        else
+            title=$(printf "%s" "$body" | head -1)
+            # 取 type(scope) 当 slug，取不到就用 sha
+            slug=$(printf "%s" "$title" | sed -n "s/^\([a-z][a-z]*\)(\([a-z0-9_-]*\)):.*/\1-\2/p")
+            [ -z "$slug" ] && slug="auto-$(printf "%s" "$GIT_COMMIT" | cut -c1-8)"
+            printf "%s\n\nFork-Patch: %s\n" "$body" "$slug"
+        fi
+    ' "upstream/$UPSTREAM_BRANCH"..HEAD >/tmp/ar-trailer.log 2>&1; then
+        log "  ✗ filter-branch 失败"
+        tail -5 /tmp/ar-trailer.log | while read -r l; do log "    $l"; done
+        return 2
+    fi
+
+    # 复查
+    local still=0
+    for sha in $(git rev-list "upstream/$UPSTREAM_BRANCH"..HEAD); do
+        body=$(git log -1 --format='%B' "$sha")
+        printf '%s' "$body" | grep -qE '^Fork-(Patch|Meta):' || still=$((still + 1))
+    done
+    if [ "$still" -ne 0 ]; then
+        log "  ✗ 补完还有 $still 个缺"
+        return 2
+    fi
+
+    log "  ✓ 全部补齐（$(git log -1 --format='%h' "$(git rev-list "upstream/$UPSTREAM_BRANCH"..HEAD | tail -1)")...$(git rev-parse --short HEAD)）"
+    return 1
+}
+
 [ -n "$AI_BASE_URL" ] || fail_notify "没配 AI_BASE_URL"
 command -v jq >/dev/null || die "缺 jq"
 GO=$(command -v go || echo /usr/local/go/bin/go)
@@ -154,6 +217,14 @@ BRANCH=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/
 [ -n "$BRANCH" ] || fail_notify "找不到 sync-conflict 分支"
 
 log "处理分支: $BRANCH"
+
+# 先看有没有缺标记的提交 —— 纪律检查会卡在这里，比冲突更早。
+fix_missing_trailers
+case $? in
+    0) log "标记齐全" ;;
+    1) log "已补标记，重新走一遍" ;;
+    2) fail_notify "补 Fork-Patch 标记失败，需要人工" 4 ;;
+esac
 
 # 干净起点
 git rebase --abort 2>/dev/null || true
