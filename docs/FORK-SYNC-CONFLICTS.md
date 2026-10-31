@@ -89,3 +89,39 @@ git rev-list --count HEAD..upstream/main   # 应为 0
 
 `SC_SENDKEY` 在 `/etc/default/bootimus-sync-watch` 里，目前是注释状态（模板占位符），
 所以实际走的是 Issue 通道。
+## 失败类型不止「冲突」
+
+`sync-upstream` 会在几步里失败，auto-resolve 只处理第一种：
+
+| 类型 | 表现 | 谁处理 |
+|---|---|---|
+| `CONFLICT` | `CONFLICT (content): Merge conflict in ...` | auto-resolve 逐块问 AI 合并 |
+| `TRAILER` | `提交 xxx 既不是上游提交，也没有 Fork-Patch / Fork-Meta 标记` | auto-resolve 补标记（见下） |
+| 其它 | 编译失败、网络、token 过期 | 转人工 |
+
+## TRAILER：提交缺 `Fork-Patch` 标记
+
+纪律检查在 rebase **之前**跑，缺标记就直接 `exit 1` —— 这时候 rebase 根本没开始，
+日志里只会看到「rebase 失败但没有冲突文件」，很容易误判成冲突。
+
+auto-resolve 现在的做法：扫 `upstream..HEAD`，把缺标记的补上。
+
+- `fix(menu): 中文描述` → `Fork-Patch: fix-menu`（取 type(scope)）
+- 纯中文标题 → `Fork-Patch: auto-<sha8>`（唯一但不可读，仅兜底）
+- 已经有标记的不动
+
+**它不判断「这个补丁是不是该退役」** —— 那是 `sync-upstream` 自己
+「判定补丁是否仍必要」那一步的活。标记补上之后，上游已实现的会自动退役。
+
+补完会复查一遍，还有缺的就 `fail_notify` 转人工，不会硬推。
+
+### 什么时候该手工删掉这个提交
+
+如果 rebase 后它只剩注释或空改动（说明上游已经实现了同样的东西），直接删掉更干净：
+
+```bash
+git rebase --onto <sha>^ <sha> HEAD    # 删掉这个提交，重放后面的
+```
+
+2026-10-30 的 `08821c3`（菜单空指针修复）就是这样处理的 —— 上游 `3073dec`
+用 `findGroup` 实现了同样的事，还带了测试。
