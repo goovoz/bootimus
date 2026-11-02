@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
-# 汉化自动修复（DOM 版）：起实例 → 扫真实 DOM → AI 判断该不该翻 → 翻译 → 写入 → 复查 → 提交
+# 汉化缺失审计（DOM 版）：起实例 → 扫真实 DOM → 交给 DSH 判断该不该翻
 #
 # 与 autofix.sh 的分工：
 #   autofix.sh     只看源码字面量，轻、快、进 CI
 #   autofix-dom.sh 看真实渲染结果，能抓到服务端返回的句子和运行时拼出来的文本
 #                  （API 参考页的参数说明就是这么露出来的），重，每天跑一次
 #
-# 为什么必须让 AI 判断：DOM 里 200 多条「英文」绝大多数不该翻 —— 发行版名、内核参数、
-# 文件大小、启动器文件名、语言选项。靠正则过滤会一直误伤，实测 LLM 分类准确率 15/16。
+# 为什么这一步必须有人判断：DOM 里 200 多条「英文」绝大多数不该翻 —— 发行版名、
+# 内核参数、文件大小、启动器文件名、语言选项。靠正则过滤会一直误伤。
+# 原来靠 AI 网关逐条分类（实测准确率 15/16），现在把这个判断交给 DSH：
+# 它能同时看到 DOM 文本、所在页面、调用点，比只给一串字符串判得准，
+# 判完还能自己写词表、跑复查、提交。
+#
+# 本脚本只负责「起实例 + 扫 DOM + 去重 + 入队」，写完证据就退出，
+# 不写 zh.json、不提交、不推送。
 #
 # 用法：
-#   bash ops/i18n/autofix-dom.sh --dry-run    # 扫描 + 判断，不写不推
-#   bash ops/i18n/autofix-dom.sh --no-push    # 写本地不推
-#   bash ops/i18n/autofix-dom.sh              # 完整流程
+#   bash ops/i18n/autofix-dom.sh --dry-run    # 只扫描，不入队
+#   bash ops/i18n/autofix-dom.sh              # 扫描 + 入队
 set -uo pipefail
 
 REPO=${REPO:-/root/work/bootimus}
 PORT=${PORT:-18081}
 HTTP_PORT=${HTTP_PORT:-18080}
 TFTP_PORT=${TFTP_PORT:-1069}
-BATCH=${BATCH:-40}
 DRY_RUN=0
-NO_PUSH=0
 for a in "$@"; do
     case "$a" in
         --dry-run) DRY_RUN=1 ;;
-        --no-push) NO_PUSH=1 ;;
+        --no-push) : ;;   # 兼容旧参数：现在不写仓库，参数无意义
         *) echo "未知参数: $a"; exit 2 ;;
     esac
 done
@@ -34,7 +37,7 @@ cd "$REPO" || { echo "进不去 $REPO" >&2; exit 1; }
 . "$(dirname "$0")/_common.sh"
 
 export TZ=${TZ:-Asia/Shanghai}
-load_ai_env || exit 0
+command -v jq >/dev/null || { log "ERROR: 缺 jq"; exit 1; }
 
 # ---------- 1. 起临时实例 ----------
 log "=== 起临时实例 ==="
@@ -94,90 +97,32 @@ pids=$(ps -eo pid=,comm= | awk '$2 ~ /^bm-/ {print $1}'); [ -n "$pids" ] && echo
 
 if [ "$NEW" -eq 0 ]; then log "没有新增，退出"; exit 0; fi
 
-# ---------- 3. AI 判断 + 翻译（分批）----------
-BATCHES=$(( (NEW + BATCH - 1) / BATCH ))
-log "=== AI 判断（分 $BATCHES 批，每批 $BATCH 条）==="
-SYS='你在审查一个 PXE 网络启动管理台界面上残留的英文。逐条判断要不要翻成中文。
-
-该翻（translate）：给人看的说明、提示、参数解释、按钮、表头、状态。
-不该翻（skip）：
-- 发行版/系统名：AlmaLinux、Debian、Arch Linux、openSUSE、WinPE
-- 发行版标识或匹配模式：alma, almalinux / debian, truenas / redhat
-- 内核命令行参数：initrd=initrd ... / root=live / modules=loop,squashfs
-- 文件名：ipxe.efi、undionly.kpxe、manifest.json、bootimus.efi
-- 文件大小/数字+单位：1 MB、387.85 KB、223 B、8s
-- 版本号：v0.1.79、dev、vdev
-- 语言选项（带国旗）：🇬🇧 English (UK)
-- 系统信息：ubuntu 24.04、x86_64
-- 技术标识：PXE、iPXE、UEFI、SMB、NFS、GET、PUT、HTTP、API
-- 中英混排且中文部分已足够：BMC：/ iPXE SAN URI：
-
-术语统一：image→镜像，client→客户端，boot→启动，bootloader→引导加载器，group→分组，token→令牌，audit→审计，disk image→磁盘镜像。
-
-第三种判定 variable：句子里的数字、MAC、文件名、主机名等是**运行时才填进去的**，
-不能当固定文案翻（写进词表也永远匹配不到）。例如：
-- Showing 4 of 4              → variable
-- 3 removed                    → variable
-- Enabled (0 share(s) active, port 445) → variable
-- Ignored: vendor class "HUAWEI:android:NCO" ... → variable
-但下面这种数字是**固定默认值**，照常 translate：
-- (Maximum entries, default 100).  → translate
-
-严格输出 JSON 数组，每项 {"text":"原文","action":"translate"|"skip"|"variable","zh":"译文（非 translate 时为空字符串）"}，不要解释、不要代码块。'
-
-rm -f /tmp/dom-batch-*.json
-for b in $(seq 0 $((BATCHES - 1))); do
-    CHUNK=$(jq -c ".[$((b*BATCH)):$(( (b+1)*BATCH ))]" /tmp/dom-new.json)
-    RAW=$(llm_call "$SYS" "$CHUNK" 8000)
-    if [ -z "$RAW" ]; then
-        log "  第 $((b+1)) 批无输出，跳过"
-        continue
-    fi
-    json_extract "$RAW" > "/tmp/dom-batch-$b.json"
-    echo "  第 $((b+1)) 批解析完成" >> "$LOG"
-done
-
-# 合并各批 + 统计
-python3 - <<'PY'
-import glob, json
-merged = []
-for f in sorted(glob.glob('/tmp/dom-batch-*.json')):
-    try:
-        arr = json.load(open(f, encoding='utf-8'))
-        merged.extend([x for x in arr if isinstance(x, dict)])
-    except Exception:
-        pass
-open('/tmp/dom-translated.json', 'w', encoding='utf-8').write(json.dumps(merged, ensure_ascii=False))
-
-tr = [x for x in merged if x.get('action') == 'translate' and x.get('zh')]
-var = [x for x in merged if x.get('action') == 'variable']
-skip = len(merged) - len(tr) - len(var)
-print('  AI 判断：共 %d 条 → 该翻 %d / 变量句 %d / 跳过 %d' % (len(merged), len(tr), len(var), skip))
-if var:
-    print('  变量句（需要人工写正则，不会自动写词条）：')
-    for x in var[:20]:
-        print('    ! %s' % (x.get('text') or '')[:100])
-
-# 只留 translate 的，转成 {原文: 译文}
-pairs = {(x.get('text') or '').strip(): (x.get('zh') or '').strip()
-         for x in tr if (x.get('text') or '').strip()}
-json.dump(pairs, open('/tmp/dom-translations.json', 'w', encoding='utf-8'), ensure_ascii=False)
-PY
-
-# ---------- 4. 写入（只新增）----------
-apply_translations /tmp/dom-translations.json "$DRY_RUN"
-case $? in
-    0) ;;
-    2) log "无可新增，退出"; exit 0 ;;
-    *) log "ERROR: 写入失败，不推送"; exit 1 ;;
-esac
-[ "$DRY_RUN" -eq 1 ] && { log "dry-run 结束"; exit 0; }
-
-# ---------- 5. 复查 + 提交 ----------
-verify_all || exit 1
-if [ "$NO_PUSH" -eq 1 ]; then
-    commit_and_build "i18n: 按 DOM 扫描结果自动补一批（AI 判断 + 翻译）" --no-push || exit 1
-else
-    commit_and_build "i18n: 按 DOM 扫描结果自动补一批（AI 判断 + 翻译）" || exit 1
+# ---------- 3. 交给 DSH ----------
+if [ "$DRY_RUN" -eq 1 ]; then
+    log "dry-run：只扫描，不入队（清单在 /tmp/dom-new.json）"
+    exit 0
 fi
-log "=== 完成 ==="
+
+EVID="${DSH_HANDOFF_HOME:-/var/lib/bootimus-dsh}/evidence"
+mkdir -p "$EVID" 2>/dev/null || true
+DOM_EVID="$EVID/dom-new-latest.json"
+cp -f /tmp/dom-new.json "$DOM_EVID" 2>/dev/null || DOM_EVID=""
+[ -n "$DOM_EVID" ] && log "  清单已存：$DOM_EVID"
+
+FP="i18n-gap/dom/$(md5sum /tmp/dom-new.json | cut -c1-12)"
+TASK=$(jq -n --arg repo "$REPO" --argjson n "$NEW" --arg evid "$DOM_EVID" \
+       --slurpfile items /tmp/dom-new.json '
+  {kind:"i18n-gap", priority:4,
+   source:{script:"ops/i18n/autofix-dom.sh", scope:"dom"},
+   signal:{missing:$n, scope:"rendered-dom"},
+   repo:{workdir:$repo, branch:"main"},
+   evidence:{dom_list_file:$evid, dom_list:($items[0] | .[0:300])},
+   playbook:"ops/dsh/HANDOFF-PROTOCOL.md#i18n-gap"}') \
+  || { log "ERROR: 构造任务失败"; exit 1; }
+
+log "=== 交给 DSH ==="
+if ! dsh_enqueue i18n-gap "$FP" "$TASK"; then
+    log "ERROR: 入队失败，本次清单没有交代出去"
+    exit 1
+fi
+log "=== 完成（判断 + 翻译由 DSH 接手）==="

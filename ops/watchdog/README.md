@@ -111,24 +111,37 @@ GitHub 页面上，没人看就没人知道 —— 2026-10-27 就吃过一次，
 2. FAILED 时**按失败步骤归因**：`TRAILER`（缺标记）/ `CONFLICT`（重放冲突）/
    `DETECT_UNKNOWN` / `PERMISSION`（SYNC_TOKEN）/ `TEST_FAIL` / `TRANSIENT`
 3. **只有 TRANSIENT 会自动重新 dispatch**（当日上限 `MAX_RETRY_PER_DAY`，默认 2 次）
-4. 归因结果写进 `/var/lib/bootimus-sync-watch/state.json`（AI 巡检直接读这个文件）
+4. 归因结果写进 `/var/lib/bootimus-sync-watch/state.json`
 5. 同一故障只通知一次（按 `健康/类型/run_id` 去重）
+6. 判不出来的（`needs_ai: true`）**入队交给本机的 DSH**，由它真去改仓库（见下节）
 
 ### 为什么自愈这么保守
 
 改提交历史、解冲突、动探测器都要判断，脚本硬干容易把小故障放成大故障。所以脚本负责
-「发现 + 归因 + 通知 + 重试瞬时失败」，判断类的事交给 AI 或人。
+「发现 + 归因 + 通知 + 重试瞬时失败」，判断类的事交给 DSH 或人。
 
-### 可选：LLM 归因
+### 交班：为什么是 DSH 而不是 AI 网关（2026-11 改）
 
-配了 `AI_BASE_URL` 才会调用，不配就只走规则归因。LLM 只产出文案，**不参与任何动作决策**。
+早先失败归因是调本地 AI 网关（`http://172.20.0.9:7863/v1`）问一句「这日志为什么失败」，
+拿回 `CAUSE / FIX / HUMAN` 三行写进通知。那套东西的价值只到「多一段人话」，因为：
 
-- 模型：`cn:deepseek-v4.1-flash`（`context_length=1000000`、`max_output_tokens=128000`）
-- 思考强度：`reasoning_effort=low|high|max`，默认拉满 `max`。实测同一份日志同一提示词：
-  `low` 思考 278 / `high` 324 / `max` 612 tokens，成本只差 0.02 credit
-- 注意：`thinking.budget_tokens` 这类字段会被网关静默丢弃，别试
-- 喂的是**完整日志**而不是片段 —— 给 3 行片段时模型只能复述片段里那条，
-  给 468 行全文时它自己找到了具体提交号并数出「8 个违规提交」
+- 一次性问答，模型**看不到仓库**，也跑不了任何命令，改不动任何文件；
+- 归因结果没人用 —— 写进通知里，人不看就等于没做；
+- 冲突解决更进一步：`auto-resolve-sync.sh` 当时逐冲突块问网关，一次一块地「猜」，
+  猜错就整体回滚，而且它把「怎么改」和「改完能不能过」绑死在同一条流程里。
+
+现在改成**交接队列**：定时任务只负责把证据打齐（完整 CI 日志、失败步骤、落后多少、
+冲突现场），入队到 `/var/lib/bootimus-dsh`；本机跑着的 DSH 领走任务，在
+`/root/work/bootimus` 上自己 rebase、自己改文件、跑 `go build` / `go test`、
+自己 `--force-with-lease` 推送，最后把结论写回任务。
+
+协议、生命周期、安全边界都在 **[`ops/dsh/`](../dsh/README.md)**。要点：
+
+- 脚本**不再调用任何模型**，也不需要 `/root/ai_gateway.env`；
+- 幂等：同一个 `run_id` 只入队一次，30 分钟一轮不会堆任务；
+- 租约：DSH 半路挂掉后 90 分钟租约过期，任务可被重新领取；
+- 保守性没变：能自动做的仍然只有「重试瞬时失败」，语义判断一律经 DSH 的手、并且
+  要过编译和测试才允许推送。
 
 ### 安装
 
@@ -138,8 +151,9 @@ sudo bash ops/watchdog/install-sync-watchdog.sh --dry-run  # 只看计划
 sudo bash ops/watchdog/install-sync-watchdog.sh --uninstall
 ```
 
-PAT 来源：`$GH_TOKEN` > `/root/gh_pat.txt` > 已有配置。AI 参数从 `/root/ai_gateway.env` 读。
-装完配置落在 `/etc/default/bootimus-sync-watch`（权限 600，含密钥）。
+PAT 来源：`$GH_TOKEN` > `/root/gh_pat.txt` > 已有配置。装完配置落在
+`/etc/default/bootimus-sync-watch`（权限 600，含密钥）。安装脚本会顺带把队列客户端
+装成 `/usr/local/sbin/bootimus-dsh-handoff`，并把老的 `AI_*` 网关参数注释掉。
 
 ### 手工排查
 
@@ -147,14 +161,18 @@ PAT 来源：`$GH_TOKEN` > `/root/gh_pat.txt` > 已有配置。AI 参数从 `/ro
 # 看最近一次判定
 cat /var/lib/bootimus-sync-watch/state.json | jq
 
-# 立刻跑一次（CHECK_ONLY 不产生动作）
+# 立刻跑一次（CHECK_ONLY 不产生动作，也不入队）
 CHECK_ONLY=1 sudo -E /usr/local/sbin/bootimus-sync-watch
 
 # 拿历史某次失败演练归因（不会真的重试）
 sudo -E RUN_ID_OVERRIDE=40418007912 CHECK_ONLY=1 /usr/local/sbin/bootimus-sync-watch
 
+# 看队列里有什么
+sudo bash ops/dsh/dsh-handoff.sh list
+sudo bash ops/dsh/dsh-handoff.sh status
+
 # 看定时器
 systemctl list-timers bootimus-sync-watch.timer --no-pager
 ```
 
-退出码：`0` 正常/进行中；`1` 需要 AI 或人工；`2` 已自动重试；`3` 脚本自身出错。
+退出码：`0` 正常/进行中；`1` 需要 DSH 或人工；`2` 已自动重试；`3` 脚本自身出错。
