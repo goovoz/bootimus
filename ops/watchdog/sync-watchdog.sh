@@ -8,20 +8,24 @@
 # 逻辑：
 #   1. 拉最近几次 sync-upstream 运行，判定 OK / RUNNING / STALE / FAILED
 #   2. FAILED 时按失败步骤归因（trailer / 冲突 / 探测器 / 权限 / 测试 / 瞬时）
-#   3. 只有「瞬时」类会自动重新 dispatch，其余只收集证据等 AI/人
-#   4. 状态写进 $STATE_DIR/state.json —— AI 巡检直接读这个文件
+#   3. 只有「瞬时」类会自动重新 dispatch，其余把证据打包交给 DSH
+#   4. 状态写进 $STATE_DIR/state.json，交接任务进 $DSH_HANDOFF_HOME
 #
 # 为什么自愈这么保守：改提交历史、解冲突、动探测器都要判断，脚本硬干容易把
 # 小故障放成大故障。脚本负责「发现 + 归因 + 通知 + 重试瞬时失败」，
-# 判断类的事留给 AI/人。
+# 判断和动手交给 DSH（见 ops/dsh/）：DSH 在本机跑着，能读整个仓库、能 ssh 到
+# 这台机器上跑构建、能提交推送，比一次性的网关问答强得多。
+#
+# 这个脚本**不调用任何模型**。原来的 llm_advise 走 AI 网关只产出三段文案，没人看
+# 就等于没做；现在改成入队，由 DSH 真正去处理（读日志、改仓库、验证、推送）。
 #
 # 安全阀：
-#   CHECK_ONLY=1           只看不动作（演练用）
+#   CHECK_ONLY=1           只看不动作（演练用，也不入队）
 #   MAX_RETRY_PER_DAY=2    最多自动重试几次
 #   STALE_HOURS=36         多久没成功算「停滞」
 #   SC_SENDKEY=...         Server酱 SendKey，设了才推送
 #
-# 退出码：0 正常/进行中；1 需要 AI 或人工；2 已自动重试；3 自身出错
+# 退出码：0 正常/进行中；1 需要 DSH 或人工；2 已自动重试；3 自身出错
 set -uo pipefail
 
 REPO=${REPO:-goovoz/bootimus}
@@ -52,7 +56,7 @@ if [ -r /etc/default/bootimus-sync-watch ]; then
         [ -n "$cur" ] && continue
         case "$k" in
             GH_TOKEN|SC_SENDKEY|REPO|UPSTREAM|STALE_HOURS|MAX_RETRY_PER_DAY|STATE_DIR|LOG|\
-            AI_BASE_URL|AI_MODEL|AI_API_KEY|AI_EFFORT|AI_TIMEOUT|AI_MAX_TOKENS|AI_MAX_LOG_BYTES)
+            DSH_HANDOFF|DSH_HANDOFF_HOME)
                 printf -v "$k" '%s' "$v" 2>/dev/null || eval "$k=\$v" ;;
         esac
     done < /etc/default/bootimus-sync-watch
@@ -69,63 +73,61 @@ command -v curl >/dev/null || die "缺少 curl"
 
 api() { curl -sS --max-time 25 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$@"; }
 
-# ---- 可选：用 LLM 做失败归因（OpenAI 兼容网关，不配就走纯规则）----
-# 安全边界：LLM 只产出「文案」，不参与任何动作决策。脚本该重跑还是重跑、
-# 该交给 AI 还是交，全由上面的规则决定 —— 不把 LLM 输出接给 eval，也不据此改仓库。
+# ---------------------------------------------------------------- DSH 交接
+# 判断不归脚本管，但证据要替 DSH 打齐：它得知道「现在有事、事是什么、现场在哪」。
+# 所以这里只做三件事 —— 把 CI 全量日志落成证据文件、enqueue 一个任务、记住任务号。
+# 同指纹（同一次 run）不重复入队，30 分钟一轮不会堆出几十份同样的任务。
 #
-# 参数怎么定的（踩过弯，记下来省得下次再试）：
-#   * 模型 cn:deepseek-v4.1-flash：网关 /v1/models 声明 context_length=1000000、
-#     max_output_tokens=128000、only_reasoning=true、reasoning_default_effort=high。
-#   * 思考强度用 reasoning_effort，取值 low/high/max（CN 面三档；国际面只有 high，
-#     往国际面发 low/max 会被上游判 400）。thinking.budget_tokens 这类字段会被网关
-#     静默丢弃，别浪费时间试。实测同一份日志同一提示词：low 思考 278 / high 324 /
-#     max 612 tokens，max 的成本只贵 0.02 credit，所以默认拉满。
-#   * 上下文 1M 是模型固有属性，不用传参 —— 它的用途是把【完整日志】喂进去而不是截几十行。
-#     截片段会漏掉真正的证据：给 3 行片段时模型只能复述我给它的那条，
-#     给 468 行全文时它自己找到了具体提交号、还数出了 8 个违规提交。
-#   * 提示词强制分步推理（列假设 → 找证据 → 排除 → 收敛），比单纯调档位更能提质量。
-AI_BASE_URL=${AI_BASE_URL:-}
-AI_MODEL=${AI_MODEL:-cn:deepseek-v4.1-flash}
-AI_API_KEY=${AI_API_KEY:-}
-AI_EFFORT=${AI_EFFORT:-max}
-AI_TIMEOUT=${AI_TIMEOUT:-180}
-AI_MAX_TOKENS=${AI_MAX_TOKENS:-16000}
-AI_MAX_LOG_BYTES=${AI_MAX_LOG_BYTES:-400000}   # 约 100k tokens，1M 窗口留足余量
+# 为什么把整份日志落盘而不是截断：早先给模型喂 3 行片段时它只能复述片段，
+# 给 468 行全文时它自己找到了具体提交号、数出 8 个违规提交。DSH 同理，而且
+# 它还能沿着任务里的仓库路径自己 ssh 过去翻更多东西。
+DSH_HANDOFF=${DSH_HANDOFF:-/root/work/bootimus/ops/dsh/dsh-handoff.sh}
+DSH_HANDOFF_HOME=${DSH_HANDOFF_HOME:-/var/lib/bootimus-dsh}
+HANDOFF_TASK=""
 
-LLM_USAGE=""
-llm_advise() {
-    local diary="$1"
-    [ -n "$AI_BASE_URL" ] || return 0
-    [ -n "$diary" ] || return 0
-    # 日志过大时保留头尾（关键信息通常在前面的 setup 和最后的报错里）
-    if [ "$(printf '%s' "$diary" | wc -c)" -gt "$AI_MAX_LOG_BYTES" ]; then
-        diary=$(printf '%s\n' "$diary" | { head -n 4000; echo "……（中间省略）……"; tail -n 4000; })
+# handoff_enqueue <kind> <fingerprint> <full_log>
+# 成功时把任务 id 写进 HANDOFF_TASK；失败只记日志，不打断原有通知链路。
+handoff_enqueue() {
+    local kind="$1" fp="$2" full_log="$3"
+    [ -r "$DSH_HANDOFF" ] || { log "没有 $DSH_HANDOFF，跳过交班（照旧通知人工）"; return 0; }
+
+    local evid="$DSH_HANDOFF_HOME/evidence"
+    mkdir -p "$evid" 2>/dev/null || true
+    local logfile=""
+    if [ -n "$full_log" ]; then
+        logfile="$evid/ci-$RUN_ID.log"
+        printf '%s\n' "$full_log" > "$logfile" 2>/dev/null || logfile=""
     fi
-    local sys payload resp content
-    sys='你在诊断一个 CI 失败。严格按下面步骤推理，不要跳过：
-1. 先列出所有可能导致失败的原因，至少 8 个，包括看起来不太可能的；
-2. 对每一个原因，回到日志里找支持它的证据、以及反对它的证据，引用日志原文；
-3. 明确排除证据不成立的，说明为什么排除；
-4. 只保留证据最强的一条作为根因；
-5. 最后才给结论。
-输出固定三行，每行不超过 120 字：
-CAUSE: <根因，必须引用日志里的原文片段作为依据>
-FIX: <一句话可执行的修复动作，带上具体文件/命令/提交号>
-HUMAN: <yes 或 no，是否需要人工确认>'
-    payload=$(jq -n --arg m "$AI_MODEL" --arg s "$sys" --arg d "$diary" \
-        --arg e "$AI_EFFORT" --argjson mt "$AI_MAX_TOKENS" '{
-        model: $m, temperature: 0, max_tokens: $mt, reasoning_effort: $e,
-        messages: [
-          {role: "system", content: $s},
-          {role: "user", content: ("以下是任务的完整日志：\n" + $d)}
-        ]}') || return 0
-    resp=$(curl -sS --max-time "$AI_TIMEOUT" -X POST "${AI_BASE_URL%/}/chat/completions" \
-        -H "Authorization: Bearer $AI_API_KEY" -H 'Content-Type: application/json' \
-        -d "$payload" 2>/dev/null) || return 0
-    content=$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
-    LLM_USAGE=$(printf '%s' "$resp" | jq -c '.usage // {}' 2>/dev/null)
-    [ -n "$LLM_USAGE" ] && log "LLM 用量：$(printf '%s' "$LLM_USAGE" | jq -r '"输入=\(.prompt_tokens) 思考=\(.completion_thinking_tokens // 0) 输出=\(.completion_tokens) credit=\(.credit // 0)"' 2>/dev/null)"
-    printf '%s' "$content"
+
+    local payload
+    payload=$(jq -n \
+        --arg kind "$kind" --arg fp "$fp" \
+        --arg health "$HEALTH" --arg failkind "$KIND" --arg step "$STEP" \
+        --arg detail "$DETAIL" --arg behind "$BEHIND" --arg run_id "$RUN_ID" \
+        --arg run_url "$RUN_URL" --arg sha "$HEAD_SHA" --arg last_ok "$LAST_OK_AT" \
+        --arg offenders "$TRAILER_BAD" --arg logfile "$logfile" \
+        --arg state "$STATE" --arg log "$LOG" \
+        '{kind:$kind, fingerprint:$fp, priority:1,
+          signal:{health:$health, failure_kind:$failkind, step:$step, detail:$detail,
+                  behind_upstream:($behind|tonumber? // null),
+                  trailer_offenders:$offenders,
+                  last_success_at:$last_ok},
+          run:{id:$run_id, sha:$sha, url:$run_url},
+          repo:{workdir:"/root/work/bootimus", repo:"goovoz/bootimus",
+                upstream:"garybowers/bootimus", branch:"main"},
+          evidence:{ci_log:$logfile, state_json:$state, watchdog_log:$log},
+          playbook:"ops/dsh/HANDOFF-PROTOCOL.md#sync-failure"}') \
+        || { log "构造交班任务失败"; return 0; }
+
+    local out
+    out=$(printf '%s' "$payload" | DSH_HANDOFF_HOME="$DSH_HANDOFF_HOME" bash "$DSH_HANDOFF" enqueue) \
+        || { log "入队失败：$out"; return 0; }
+
+    case "$out" in
+        SKIP\ *) HANDOFF_TASK=${out#SKIP }; log "交班任务已存在：$HANDOFF_TASK" ;;
+        "")      log "入队无输出" ;;
+        *)       HANDOFF_TASK=$out;         log "已交给 DSH：$HANDOFF_TASK" ;;
+    esac
 }
 
 notify() {
@@ -253,12 +255,12 @@ if [ "$HEALTH" = "FAILED" ]; then
 
     LOG_TAIL=""; ERR_SNIPPET=""; FULL_LOG=""
     if [ -n "$JOB_ID" ]; then
-        # 顺手去掉时间戳前缀和 ANSI 转义，喂给 LLM 的是干净文本
+        # 顺手去掉时间戳前缀和 ANSI 转义，证据文件给 DSH 看时是干净文本
         FULL_LOG=$(api -L "$API/repos/$REPO/actions/jobs/$JOB_ID/logs" 2>/dev/null \
                    | sed 's/^[0-9T:.Z-]* //' | sed 's/\x1b\[[0-9;]*m//g')
         LOG_TAIL=$(printf '%s\n' "$FULL_LOG" | tail -60)
         # 归因要的是「失败那一段」，不是日志末尾 —— 末尾往往是 cleanup 这类成功步骤。
-        # 早先直接 tail -40 喂给 LLM，它看到全是正常输出，只能编。
+        # 早先直接 tail -40，看到的全是正常输出，只能瞎猜。
         eline=$(printf '%s\n' "$FULL_LOG" | grep -n '::error::' | head -1 | cut -d: -f1)
         if [ -n "${eline:-}" ]; then
             ERR_SNIPPET=$(printf '%s\n' "$FULL_LOG" | sed -n "$(( eline > 25 ? eline - 25 : 1 )),$(( eline + 5 ))p")
@@ -284,16 +286,7 @@ if [ "$HEALTH" = "FAILED" ]; then
     [ -n "$ERRLINE" ] && DETAIL="$DETAIL ｜ $ERRLINE"
 fi
 
-# 可选：让 LLM 补一句归因（只用于展示，不参与动作决策）
-AI_ADVICE=""
-if [ "$HEALTH" = "FAILED" ] && [ -n "$AI_BASE_URL" ]; then
-    AI_ADVICE=$(llm_advise "$FULL_LOG")
-    if [ -n "$AI_ADVICE" ]; then
-        log "LLM 归因：$(printf '%s' "$AI_ADVICE" | tr '\n' ' ')"
-    else
-        log "LLM 归因：无输出（网关不可达或模型名不对，不影响规则归因）"
-    fi
-fi
+# 归因到这里就结束了 —— 不再问模型。真正需要看懂日志的是 DSH，见 6b 的交班。
 
 # ---------------------------------------------------------------- 5. 保守自愈
 ACTION=none; RETRY_COUNT=0; TODAY=$(date +%F)
@@ -338,46 +331,47 @@ jq -n \
   --arg sha "$HEAD_SHA" --arg url "$RUN_URL" --arg last_ok "$LAST_OK_AT" \
   --arg behind "$BEHIND" --arg action "$ACTION" \
   --argjson retry "$RETRY_COUNT" --arg retry_date "$TODAY" \
-  --argjson needs_ai "$NEEDS_AI" --arg offenders "$TRAILER_BAD" --arg advice "$AI_ADVICE" \
-  --arg usage "${LLM_USAGE:-{\}}" --arg model "$AI_MODEL" \
+  --argjson needs_ai "$NEEDS_AI" --arg offenders "$TRAILER_BAD" \
   '{checked_at:$checked_at, health:$health,
     run:{id:$run_id, conclusion:$concl, created_at:$created, sha:$sha, url:$url},
     last_success_at:$last_ok, behind_upstream:($behind|tonumber? // null),
-    failure:{kind:$kind, step:$step, detail:$detail, trailer_offenders:$offenders,
-             llm_advice:$advice, llm_model:$model, llm_usage:($usage|fromjson?)},
+    failure:{kind:$kind, step:$step, detail:$detail, trailer_offenders:$offenders},
     action:{taken:$action, retry_count:$retry, retry_date:$retry_date},
     needs_ai:$needs_ai,
+    dsh_task:null,
     last_notified:($prev|try .last_notified catch null)}' \
   --argjson prev "$PREV" > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
 
-# ---------------------------------------------------------------- 6b. 需要 AI 时先让它自己试
-# 判定 NEEDS_AI 说明不是瞬时故障（重试没用），是真正的语义冲突。
-# 交给 auto-resolve-sync：AI 出合并方案 → 本地编译测试 → 通过才推。
-# 它失败就退回原来的「转人工」路径，不会让事情更糟。
-if [ "$NEEDS_AI" = "true" ] && [ -x /usr/local/sbin/bootimus-auto-resolve ]; then
-    _today=$(date '+%Y-%m-%d')
-    _tries=$(printf '%s' "$PREV" | jq -r --arg d "$_today" 'if .auto_resolve_date == $d then (.auto_resolve_count // 0) else 0 end' 2>/dev/null || echo 0)
-    if [ "${_tries:-0}" -lt "${AUTO_RESOLVE_PER_DAY:-2}" ]; then
-        log "需要 AI：交给 auto-resolve 尝试（今日第 $((_tries + 1)) 次）"
-        if /usr/local/sbin/bootimus-auto-resolve >> "$LOG" 2>&1; then
-            log "  auto-resolve 成功，重新检查"
-            ACTION="auto_resolved"
-            NEEDS_AI=false
-            exec "$0"   # 重新跑一遍，让状态变绿
-        else
-            log "  auto-resolve 失败（rc=$?），转人工"
-            ACTION="needs_human"
-        fi
-        jq --arg d "$_today" --argjson n "$((_tries + 1))" \
-            '.auto_resolve_date=$d | .auto_resolve_count=$n' "$STATE" > "$STATE.tmp" 2>/dev/null \
-            && mv "$STATE.tmp" "$STATE" || true
+# ---------------------------------------------------------------- 6b. 需要判断时交给 DSH
+# 判定 NEEDS_AI 说明不是瞬时故障（重试没用），是得有人看懂日志、动仓库的事。
+# 以前这里 exec /usr/local/sbin/bootimus-auto-resolve，由它逐冲突块问 AI 网关；
+# 那个方案是一次一问答、看不到仓库上下文，改错一点就只能整体回滚。
+# 现在只入队：DSH 领走后在 /root/work/bootimus 上自己 rebase、自己改、自己验证、
+# 自己推。脚本不替它判断，也不等它 —— 下一轮定时器看到变绿（或看到 DSH 写回的
+# 失败结论）就够了。
+if [ "$NEEDS_AI" = "true" ]; then
+    if [ "$CHECK_ONLY" = "1" ]; then
+        log "需要判断：CHECK_ONLY，不派遣"
     else
-        log "需要 AI：今日已试 ${_tries} 次，不再重试，等人工"
-        ACTION="needs_human"
+        _kind="sync-failure"
+        _fp="sync-failure/$RUN_ID"
+        if [ "$HEALTH" = "STALE" ]; then
+            _kind="sync-stale"
+            _fp="sync-stale/${LAST_OK_AT:-unknown}"
+        fi
+        handoff_enqueue "$_kind" "$_fp" "$FULL_LOG"
+        if [ -n "$HANDOFF_TASK" ]; then
+            ACTION="handed_to_dsh"
+            jq --arg t "$HANDOFF_TASK" '.dsh_task=$t | .action.taken="handed_to_dsh"' \
+                "$STATE" > "$STATE.tmp" 2>/dev/null \
+                && mv "$STATE.tmp" "$STATE" || true
+        else
+            ACTION="handoff_failed"
+        fi
     fi
 fi
 
-log "健康=$HEALTH 类型=${KIND:-无} 落后=${BEHIND:-?} 动作=$ACTION 需AI=$NEEDS_AI"
+log "健康=$HEALTH 类型=${KIND:-无} 落后=${BEHIND:-?} 动作=$ACTION 需DSH=$NEEDS_AI${HANDOFF_TASK:+ 任务=$HANDOFF_TASK}"
 
 # ---------------------------------------------------------------- 7. 通知（同一故障只发一次）
 FP="$HEALTH/$KIND/$RUN_ID"
@@ -389,11 +383,12 @@ if [ "$HEALTH" != "OK" ] && [ "$HEALTH" != "RUNNING" ] && [ "$FP" != "$PREV_FP" 
 **落后上游**：${BEHIND:-未知} 个提交
 **运行**：$RUN_URL
 **自动动作**：$ACTION（今日已重试 $RETRY_COUNT 次）"
-    if [ -n "$AI_ADVICE" ]; then
+    if [ -n "$HANDOFF_TASK" ]; then
         BODY="$BODY
 
-**AI 归因**：
-$(printf '%s\n' "$AI_ADVICE" | sed 's/^/  /')"
+**已交给 DSH**：\`$HANDOFF_TASK\`
+DSH 会在这个任务上读日志、改仓库、验证后推送，结论写回任务。
+查看：\`bash ops/dsh/dsh-handoff.sh show $HANDOFF_TASK\`"
     fi
     if [ -n "$TRAILER_BAD" ]; then
         BODY="$BODY

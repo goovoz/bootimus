@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/goovoz/bootimus/ops/dsh/task.schema.json",
+  "title": "bootimus → DSH 交接任务",
+  "description": "由 ops/dsh/dsh-handoff.sh 管理。enqueue 只要求 kind + fingerprint，其余字段是约定俗成的证据位；DSH 以 evidence 里的实际文件为准，signal 只是提示。",
+  "type": "object",
+  "required": ["id", "kind", "fingerprint", "status", "created_at"],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "<UTC 时间戳>-<kind>-<指纹前 8 位>，由 enqueue 生成",
+      "examples": ["20261102T014023-sync-failure-23dc1b50"]
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["sync-failure", "sync-stale", "conflict-replay", "i18n-gap"],
+      "description": "任务类型，决定用哪本手册（见 HANDOFF-PROTOCOL.md 第 5 节）"
+    },
+    "fingerprint": {
+      "type": "string",
+      "description": "幂等键。同指纹存在 queued/claimed 任务时 enqueue 返回 SKIP",
+      "examples": ["sync-failure/41142094920", "i18n-gap/static/9f3c1a77b2e4"]
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "default": 5,
+      "description": "1 最高。sync-failure=1，i18n-gap=3(静态)/4(DOM)"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["queued", "claimed", "done", "failed"]
+    },
+    "created_at": { "type": "string", "description": "UTC，'YYYY-MM-DD HH:MM:SS'" },
+    "finished_at": { "type": "string" },
+    "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+    "claimed_by": { "type": ["string", "null"] },
+    "claimed_at": { "type": ["string", "null"] },
+    "lease_until": {
+      "type": ["integer", "null"],
+      "description": "epoch 秒。过期后任务可被重新 claim（list --stale 可见）"
+    },
+    "lease_until_iso": { "type": ["string", "null"] },
+
+    "signal": {
+      "type": "object",
+      "description": "入队方给的初步判断。DSH 不要只信它，以 evidence 为准",
+      "properties": {
+        "health": { "type": "string", "enum": ["FAILED", "STALE", "RUNNING", "OK"] },
+        "failure_kind": {
+          "type": "string",
+          "enum": ["TRAILER", "CONFLICT", "DETECT_UNKNOWN", "PERMISSION", "TEST_FAIL", "TRANSIENT", ""]
+        },
+        "step": { "type": "string", "description": "失败的 GitHub Actions 步骤名" },
+        "detail": { "type": "string" },
+        "behind_upstream": { "type": ["integer", "null"] },
+        "trailer_offenders": { "type": "string", "description": "缺 trailer 的提交，';' 分隔" },
+        "last_success_at": { "type": "string" },
+        "missing": { "type": "integer", "description": "i18n-gap: 缺失条数" },
+        "scope": { "type": "string", "enum": ["web/static", "rendered-dom"] }
+      }
+    },
+
+    "run": {
+      "type": "object",
+      "description": "sync-* 任务：触发它的那次 GitHub Actions 运行",
+      "properties": {
+        "id": { "type": "string" },
+        "sha": { "type": "string" },
+        "url": { "type": "string" }
+      }
+    },
+
+    "repo": {
+      "type": "object",
+      "properties": {
+        "workdir": { "type": "string", "examples": ["/root/work/bootimus"] },
+        "repo": { "type": "string", "examples": ["goovoz/bootimus"] },
+        "upstream": { "type": "string", "examples": ["garybowers/bootimus"] },
+        "branch": { "type": "string", "default": "main" }
+      }
+    },
+
+    "evidence": {
+      "type": "object",
+      "description": "101 上的绝对路径。DSH 通过 ssh 读取",
+      "properties": {
+        "ci_log": { "type": "string" },
+        "state_json": { "type": "string" },
+        "watchdog_log": { "type": "string" },
+        "evidence_dir": { "type": "string", "description": "conflict-* 任务的现场目录" },
+        "missing_list": { "type": "array", "items": { "type": "string" } },
+        "dom_list": { "type": "array", "items": { "type": "string" }, "description": "最多 300 条" },
+        "dom_list_file": { "type": "string", "description": "完整清单路径" }
+      }
+    },
+
+    "playbook": { "type": "string", "examples": ["ops/dsh/HANDOFF-PROTOCOL.md#sync-failure"] },
+
+    "result": {
+      "type": ["object", "null"],
+      "description": "report 写入",
+      "properties": {
+        "status": { "type": "string", "enum": ["done", "failed"] },
+        "message": { "type": "string" },
+        "commit": { "type": "string" },
+        "branch": { "type": "string" },
+        "detail": { "type": ["string", "null"] },
+        "at": { "type": "string" }
+      }
+    }
+  }
+}
