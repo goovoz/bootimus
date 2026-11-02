@@ -1,375 +1,270 @@
 #!/usr/bin/env bash
-# 同步冲突自动解决：AI 出合并方案 → 本地编译测试 → 通过才推
+# 同步冲突处理工具箱 —— 现在由 DSH 驱动，脚本只当「手」，不当下判断的「脑」
 #
-# 触发条件：sync-watchdog 判定 needs_ai=true（不是瞬时故障，是真的语义冲突）
+# 以前这个文件叫 auto-resolve-sync.sh：自己检出冲突分支 → 逐冲突块问 AI 网关
+# → 把答案写回文件 → 编译测试 → 通过就推。问题是问答式模型看不到仓库上下文，
+# 一个块一个块地猜，猜错就得整体回滚；而且它把「怎么改」和「改了能不能过」
+# 绑在一起，出问题时只剩一条日志。
 #
-# 流程：
-#   1. 检出最新的 sync-conflict/* 分支（workflow 留下的现场）
-#   2. 重新 rebase upstream/main，让冲突重现
-#   3. 每个冲突块单独问 AI 合并方案（带文件路径和上下文）
-#   4. 缩进归一化后写回，git add + rebase --continue
-#   5. go build + go test 兜底
-#   6. 全过 → force-with-lease 推 main；任何一步失败 → abort + 记录到 issue
+# 现在拆成四个确定性动作，由 DSH 串起来（判断、怎么合并、要不要放弃都在 DSH 那边）：
 #
-# 为什么敢让 AI 改代码：它的输出只是「候选」，最终由编译器和测试决定生死。
-# 通不过就整体回滚，仓库不会留下半成品。
+#   --collect        把冲突现场导成证据（不解决、不留 rebase 残局），给 DSH 看
+#   --fix-trailers   补齐缺 Fork-Patch / Fork-Meta 的提交（纯机械，可回滚）
+#   --verify         gofmt / go build / go test / i18n 审计 / 标记复查 —— 推送闸门
+#   --publish        验证通过后 force-with-lease 推 main
+#
+# 典型用法（DSH 在 101 上通过 ssh 执行）：
+#   bash ops/watchdog/auto-resolve-sync.sh --collect
+#   # …DSH 自己 rebase、改文件…
+#   bash ops/watchdog/auto-resolve-sync.sh --fix-trailers
+#   bash ops/watchdog/auto-resolve-sync.sh --verify
+#   bash ops/watchdog/auto-resolve-sync.sh --publish
+#
+# 退出码：0 成功；1 动作失败（原因在 stdout/日志）；2 参数不对；3 环境不对
 set -uo pipefail
 
 WORKDIR=${WORKDIR:-/root/work/bootimus}
 UPSTREAM_BRANCH=${UPSTREAM_BRANCH:-main}
 LOG=${LOG:-/var/log/bootimus-sync-watch.log}
-STATE_DIR=${STATE_DIR:-/var/lib/bootimus-sync-watch}
-MAX_ROUNDS=${MAX_ROUNDS:-20}          # 一个分支最多处理多少个冲突块
+EVID_DIR=${EVID_DIR:-/var/lib/bootimus-dsh/evidence}
 DRY_RUN=${DRY_RUN:-0}
 
-# 网关配置：优先用 /root/ai_gateway.env，其次 /etc/default/bootimus-sync-watch
-[ -r /root/ai_gateway.env ] && { set -a; . /root/ai_gateway.env; set +a; }
-[ -r /etc/default/bootimus-sync-watch ] && { set +a; . /etc/default/bootimus-sync-watch; set +a; }
-: "${AI_BASE_URL:=}"
-: "${AI_MODEL:=cn:deepseek-v4.1-flash}"
-: "${AI_API_KEY:=}"
-: "${AI_EFFORT:=max}"
+log() { printf '%s  [sync-tool] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"; }
+die() { local rc="${2:-1}"; log "ERROR: $*"; exit "$rc"; }
 
-log() { printf '%s  [auto-resolve] %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"; }
-die() { log "ERROR: $*"; exit 1; }
+[ -d "$WORKDIR" ] || die "进不去 $WORKDIR" 3
+cd "$WORKDIR" || die "进不去 $WORKDIR" 3
+command -v git >/dev/null || die "缺 git" 3
+command -v jq  >/dev/null || die "缺 jq" 3
 
-cd "$WORKDIR" || die "进不去 $WORKDIR"
+GO=$(command -v go || echo /usr/local/go/bin/go)
+GOFMT=$("$GO" env GOROOT 2>/dev/null)/bin/gofmt
 
-# ---------------------------------------------------------------- 推送
-# key 来自 /etc/default/bootimus-sync-watch（600 权限，不进仓库）。
-# 成功和失败都发 —— 用户明确要求知道 AI 到底做了什么。
-notify() {
-    local title="$1" body="$2"
-    if [ -n "${SC_SENDKEY:-}" ]; then
-        if curl -sS --max-time 20 -X POST "https://sctapi.ftqq.com/${SC_SENDKEY}.send" \
-                --data-urlencode "title=$title" --data-urlencode "desp=$body" >/dev/null 2>&1; then
-            log "  已推送：$title"
-            return 0
+# ---------------------------------------------------------------- --collect
+# 让冲突重现一次，逐文件导出冲突块，然后干净地 abort。
+# 不留在 rebase 中间态：DSH 要自己在终端里一步步来，残局只会碍事。
+do_collect() {
+    local branch
+    branch=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/heads/sync-conflict/*' | head -1)
+    [ -n "$branch" ] || branch=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' \
+        'refs/remotes/origin/sync-conflict/*' | head -1 | sed 's#^origin/##')
+
+    git rebase --abort >/dev/null 2>&1 || true
+    git checkout -q -f main 2>/dev/null || git checkout -q -f master 2>/dev/null \
+        || die "切不回 main" 3
+    git fetch -q upstream || die "fetch upstream 失败"
+    git fetch -q origin   || die "fetch origin 失败"
+
+    local sha behind dirty
+    sha=$(git rev-parse --short HEAD)
+    behind=$(git rev-list --count "HEAD..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo '?')
+    dirty=$(git status --porcelain | wc -l)
+
+    mkdir -p "$EVID_DIR" || die "建不了 $EVID_DIR" 3
+    local stamp; stamp=$(date -u '+%Y%m%dT%H%M%S')
+    local out="$EVID_DIR/conflict-$stamp"
+    mkdir -p "$out"
+
+    log "冲突分支：${branch:-（无）}  落后上游：$behind  HEAD=$sha  脏文件：$dirty"
+
+    # 先把上游新增的提交和 fork 自己的补丁各留一份 —— 判断「上游为什么这么改」靠它
+    git log --oneline -20 "HEAD..upstream/$UPSTREAM_BRANCH" > "$out/upstream-new.log" 2>/dev/null || true
+    git log --format='%H %s%n%b' -20 "upstream/$UPSTREAM_BRANCH..HEAD" > "$out/fork-patches.log" 2>/dev/null || true
+
+    # 真去 rebase 一次，只为把冲突逼出来
+    local rebase_ok=0
+    GIT_EDITOR=true git rebase "upstream/$UPSTREAM_BRANCH" > "$out/rebase.log" 2>&1 || rebase_ok=1
+
+    if [ "$rebase_ok" = "0" ]; then
+        log "rebase 无冲突（上游可能已经把补丁合并了）"
+        git rebase --abort >/dev/null 2>&1 || true
+    else
+        local files; files=$(git diff --name-only --diff-filter=U)
+        if [ -z "$files" ]; then
+            log "rebase 失败但没有冲突文件，看 $out/rebase.log"
+        else
+            log "冲突文件：$(echo "$files" | tr '\n' ' ')"
+            local f n=0
+            for f in $files; do
+                n=$((n + 1))
+                {
+                    printf '# 冲突文件：%s\n' "$f"
+                    printf '# 冲突块数：%s\n\n' "$(grep -c '^<<<<<<<' "$f" 2>/dev/null || echo 0)"
+                    cat "$f"
+                } > "$out/$(printf '%02d' "$n")-$(echo "$f" | tr '/' '_').conflict" 2>/dev/null
+                # 三方对照（base/ours/theirs）比两方对照好判断得多
+                git show ":1:$f" > "$out/$(printf '%02d' "$n")-$(echo "$f" | tr '/' '_').base" 2>/dev/null || true
+            done
+            git diff --name-only --diff-filter=U > "$out/conflicted-files.txt"
         fi
-        log "  推送失败：$title"
-        return 1
+        git rebase --abort >/dev/null 2>&1 || true
     fi
-    log "  （未配 SC_SENDKEY，跳过推送）$title"
-    return 0
+
+    git checkout -q main 2>/dev/null || true
+
+    jq -n --arg dir "$out" --arg branch "${branch:-}" --arg sha "$sha" \
+          --arg behind "$behind" \
+          --argjson ok "$([ "$rebase_ok" = 0 ] && echo true || echo false)" \
+          --arg files "$(cat "$out/conflicted-files.txt" 2>/dev/null | tr '\n' ' ')" \
+        '{evidence_dir:$dir, conflict_branch:$branch, head_sha:$sha,
+          behind_upstream:($behind|tonumber? // null), rebase_clean:$ok,
+          conflicted_files:($files|split(" ")|map(select(length>0)))}' > "$out/summary.json"
+
+    log "证据目录：$out"
+    cat "$out/summary.json"
+    if [ "$rebase_ok" = "0" ]; then return 0; else return 1; fi
 }
 
-# 失败时统一收口：写日志 + 推送 + 退出
-fail_notify() {
-    local reason="$1" rc="${2:-1}"
-    log "失败：$reason"
-    notify "❌ bootimus AI 解冲突失败" "**原因**：${reason}
-
-**落后上游**：$(git rev-list --count HEAD.."upstream/${UPSTREAM_BRANCH}" 2>/dev/null || echo 未知) 个提交
-**现场**：\`/var/log/bootimus-sync-watch.log\`
-**处理手册**：\`docs/FORK-SYNC-CONFLICTS.md\`
-
-需要人工介入。"
-    exit "$rc"
-}
-
-# ---------------------------------------------------------------- TRAILER 修复
-# 找出 upstream..HEAD 里缺 Fork-Patch 标记的提交并补上。
-# 返回 0=没有缺的，1=补了（需要重新验证），2=补失败
-fix_missing_trailers() {
-    local bad=()
-    local sha body
+# ---------------------------------------------------------------- --fix-trailers
+# 给 upstream..HEAD 里缺 Fork-Patch / Fork-Meta 的提交补标记。
+# 纯机械改写，不需要判断，但确实改写历史 —— 所以工作区脏就拒绝动手。
+do_fix_trailers() {
+    local bad=() sha body
     for sha in $(git rev-list "upstream/$UPSTREAM_BRANCH"..HEAD); do
         body=$(git log -1 --format='%B' "$sha")
         printf '%s' "$body" | grep -qE '^Fork-(Patch|Meta):' || bad+=("$sha")
     done
 
-    if [ ${#bad[@]} -eq 0 ]; then
-        return 0
-    fi
+    if [ ${#bad[@]} -eq 0 ]; then log "标记齐全，无需补"; return 0; fi
 
-    log "发现 ${#bad[@]} 个提交缺 Fork-Patch 标记："
-    for sha in "${bad[@]}"; do
-        log "  $(git log -1 --format='%h %s' "$sha")"
-    done
+    log "缺标记的提交 ${#bad[@]} 个："
+    for sha in "${bad[@]}"; do log "  $(git log -1 --format='%h %s' "$sha")"; done
 
-    # 工作区必须干净，filter-branch 不认脏工作区
-    if [ -n "$(git status --porcelain)" ]; then
-        log "  ✗ 工作区不干净，不敢改写历史"
-        return 2
-    fi
+    [ -n "$(git status --porcelain)" ] && die "工作区不干净，不敢改写历史" 1
 
-    local backup
-    backup=$(git rev-parse HEAD)
-    log "  改写前的 HEAD: $backup（失败可 git reset --hard $backup 回滚）"
+    local backup; backup=$(git rev-parse HEAD)
+    log "改写前 HEAD=$backup（失败用 git reset --hard $backup 回滚）"
 
-    # 用 msg-filter 补标记。只动没标记的，已有的原样保留。
-    if ! FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter '
+    FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter '
         body=$(cat)
         if printf "%s" "$body" | grep -qE "^Fork-(Patch|Meta):"; then
             printf "%s\n" "$body"
         else
             title=$(printf "%s" "$body" | head -1)
-            # 取 type(scope) 当 slug，取不到就用 sha
             slug=$(printf "%s" "$title" | sed -n "s/^\([a-z][a-z]*\)(\([a-z0-9_-]*\)):.*/\1-\2/p")
             [ -z "$slug" ] && slug="auto-$(printf "%s" "$GIT_COMMIT" | cut -c1-8)"
             printf "%s\n\nFork-Patch: %s\n" "$body" "$slug"
         fi
-    ' "upstream/$UPSTREAM_BRANCH"..HEAD >/tmp/ar-trailer.log 2>&1; then
-        log "  ✗ filter-branch 失败"
-        tail -5 /tmp/ar-trailer.log | while read -r l; do log "    $l"; done
-        return 2
-    fi
+    ' "upstream/$UPSTREAM_BRANCH"..HEAD > /tmp/synctool-trailer.log 2>&1 \
+        || { tail -5 /tmp/synctool-trailer.log | while read -r l; do log "    $l"; done
+             die "filter-branch 失败" 1; }
 
-    # 复查
     local still=0
     for sha in $(git rev-list "upstream/$UPSTREAM_BRANCH"..HEAD); do
         body=$(git log -1 --format='%B' "$sha")
         printf '%s' "$body" | grep -qE '^Fork-(Patch|Meta):' || still=$((still + 1))
     done
-    if [ "$still" -ne 0 ]; then
-        log "  ✗ 补完还有 $still 个缺"
-        return 2
+    [ "$still" -ne 0 ] && die "补完还有 $still 个缺标记" 1
+
+    log "✓ 标记已补齐：$backup → $(git rev-parse --short HEAD)"
+    return 0
+}
+
+# ---------------------------------------------------------------- --verify
+# 推送前唯一闸门，全绿才允许 --publish。
+do_verify() {
+    local fail=0
+
+    log "=== 1/5 gofmt ==="
+    if [ -x "$GOFMT" ]; then
+        if ! "$GOFMT" -l . > /tmp/synctool-fmt.log 2>&1; then
+            log "  ✗ gofmt 执行失败"; fail=1
+        elif [ -s /tmp/synctool-fmt.log ]; then
+            log "  ! 有未格式化文件，自动格式化：$(wc -l < /tmp/synctool-fmt.log) 个"
+            # shellcheck disable=SC2046
+            "$GOFMT" -w $(cat /tmp/synctool-fmt.log) 2>/dev/null || true
+        else
+            log "  ✓ 格式一致"
+        fi
+    else
+        log "  ! 没有 gofmt，跳过"
     fi
 
-    log "  ✓ 全部补齐（$(git log -1 --format='%h' "$(git rev-list "upstream/$UPSTREAM_BRANCH"..HEAD | tail -1)")...$(git rev-parse --short HEAD)）"
+    log "=== 2/5 go build ==="
+    if CGO_ENABLED=0 "$GO" build ./... > /tmp/synctool-build.log 2>&1; then
+        log "  ✓ 编译通过"
+    else
+        log "  ✗ 编译失败：$(tail -5 /tmp/synctool-build.log | tr '\n' ' ' | head -c 300)"
+        fail=1
+    fi
+
+    log "=== 3/5 go test ==="
+    if "$GO" test ./internal/admin/ ./internal/autoinstall/ > /tmp/synctool-test.log 2>&1; then
+        log "  ✓ 测试通过"
+    else
+        log "  ✗ 测试失败：$(tail -5 /tmp/synctool-test.log | tr '\n' ' ' | head -c 300)"
+        fail=1
+    fi
+
+    log "=== 4/5 汉化审计 ==="
+    if python3 ops/i18n/audit.py > /tmp/synctool-i18n.log 2>&1; then
+        if grep -q '缺失 0 条' /tmp/synctool-i18n.log; then
+            log "  ✓ 汉化无缺失"
+        else
+            log "  ! 汉化有缺失（不阻塞同步，会另开 i18n-gap 任务）"
+            grep '缺失' /tmp/synctool-i18n.log | head -1 | sed 's/^/    /'
+        fi
+    else
+        log "  ! 审计脚本跑不起来，跳过"
+    fi
+
+    log "=== 5/5 Fork-Patch 标记 ==="
+    local missing=0 sha body
+    for sha in $(git rev-list "upstream/$UPSTREAM_BRANCH"..HEAD); do
+        body=$(git log -1 --format='%B' "$sha")
+        if ! printf '%s' "$body" | grep -qE '^Fork-(Patch|Meta):'; then
+            missing=$((missing + 1))
+            log "    $(git log -1 --format='%h %s' "$sha")"
+        fi
+    done
+    if [ "$missing" -eq 0 ]; then
+        log "  ✓ 标记齐全"
+    else
+        log "  ✗ $missing 个提交缺标记（先跑 --fix-trailers）"; fail=1
+    fi
+
+    if [ "$fail" -eq 0 ]; then log "=== 验证全绿 ==="; return 0; fi
+    log "=== 验证未通过 ==="
     return 1
 }
 
-[ -n "$AI_BASE_URL" ] || fail_notify "没配 AI_BASE_URL"
-command -v jq >/dev/null || die "缺 jq"
-GO=$(command -v go || echo /usr/local/go/bin/go)
-GOFMT=$("$GO" env GOROOT)/bin/gofmt
+# ---------------------------------------------------------------- --publish
+do_publish() {
+    git rev-parse --verify HEAD >/dev/null 2>&1 || die "没有可推的提交" 1
+    local want; want=$(git rev-parse origin/main 2>/dev/null || echo "")
+    [ -n "$want" ] || die "取不到 origin/main" 1
+    local sha; sha=$(git rev-parse --short HEAD)
 
-# ---------------------------------------------------------------- AI 调用
-SYS='你在做 git rebase 冲突的合并决策。仓库是 bootimus 的 fork。
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY_RUN：本应把 $sha 推成 main（origin/main=$want）"
+        return 0
+    fi
 
-规则：
-1. <<<<<<< HEAD 一侧是上游的新代码
-2. >>>>>>> 一侧是 fork 自己的补丁（带 [bootimus-fork L1] 锚点 / Fork-Patch 标记）
-3. fork 的补丁必须保留，不能因为合并丢掉
-4. 两边各自新增不同语句 → 两段都保留，上游在前
-5. 同一个东西的两个版本 → 用上游的新版本，但 fork 额外加的行保留
-6. 如果两边逻辑上真的互斥、无法共存，只输出一个词：UNRESOLVABLE
-
-输出要求：
-- 只输出合并后的代码行（含缩进），不要冲突标记、不要解释、不要 markdown 代码块
-- 缩进从第 0 列开始不带外层包裹
-
-输出会被直接写进文件，语法错误会导致编译失败、整次尝试回滚。'
-
-ask_ai() {
-    local path="$1" block="$2"
-    local body resp
-    body=$(jq -n --arg m "$AI_MODEL" --arg s "$SYS" --arg e "$AI_EFFORT" \
-        --arg p "$path" --arg b "$block" '{
-        model:$m, temperature:0, max_tokens:4000, reasoning_effort:$e,
-        messages:[
-          {role:"system",content:$s},
-          {role:"user",content:("文件：" + $p + "\n\n冲突块：\n" + $b)}
-        ]}')
-    resp=$(curl -sS --noproxy '*' --max-time 180 -X POST "${AI_BASE_URL%/}/chat/completions" \
-        -H "Authorization: Bearer ${AI_API_KEY:-placeholder}" \
-        -H 'Content-Type: application/json' -d "$body" 2>/dev/null) || return 1
-    printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null
+    log "推送到 main（force-with-lease，基线 $want）"
+    if git push --force-with-lease=main:"$want" origin HEAD:main > /tmp/synctool-push.log 2>&1; then
+        log "  ✓ 已推送 $sha"
+        log "  落后上游：$(git rev-list --count "HEAD..upstream/$UPSTREAM_BRANCH" 2>/dev/null || echo '?') 个提交"
+        return 0
+    fi
+    tail -5 /tmp/synctool-push.log | while read -r l; do log "    $l"; done
+    die "推送失败（改动还在本地 $sha）" 1
 }
 
-# ---------------------------------------------------------------- 缩进归一化 + 替换
-resolve_file() {
-    local path="$1"
-    python3 - "$path" <<'PY'
-import json, re, subprocess, sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-src = path.read_text(encoding='utf-8')
-
-BLOCK = re.compile(r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> ([^\n]*)\n', re.S)
-
-def indent_of(ln):
-    return ln[:len(ln) - len(ln.lstrip())]
-
-def normalize(ai_text, target_indent):
-    lines = [ln for ln in ai_text.splitlines() if ln.strip()]
-    if not lines:
-        return ''
-    ai_min = min(indent_of(ln) for ln in lines)
-    out = []
-    for ln in ai_text.splitlines():
-        out.append('' if not ln.strip() else target_indent + ln[len(ai_min):])
-    return '\n'.join(out)
-
-blocks = list(BLOCK.finditer(src))
-if not blocks:
-    print('NO_CONFLICT')
-    sys.exit(0)
-
-results = []
-for i, m in enumerate(blocks, 1):
-    ours, theirs = m.group(1), m.group(2)
-    target = min(indent_of(ln) for ln in (ours + theirs).splitlines() if ln.strip())
-    block_text = m.group(0)
-    # 由 bash 侧逐块调 AI（这里只把块交给外部）
-    results.append({'index': i, 'target': target, 'block': block_text})
-
-# 输出块清单，交给 bash 逐块处理
-print(json.dumps(results, ensure_ascii=False))
-PY
-}
-
-# ---------------------------------------------------------------- 主流程
-BRANCH=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/heads/sync-conflict/*' | head -1)
-[ -n "$BRANCH" ] || BRANCH=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/remotes/origin/sync-conflict/*' | head -1 | sed 's#^origin/##')
-[ -n "$BRANCH" ] || fail_notify "找不到 sync-conflict 分支"
-
-log "处理分支: $BRANCH"
-
-# 先看有没有缺标记的提交 —— 纪律检查会卡在这里，比冲突更早。
-fix_missing_trailers
-case $? in
-    0) log "标记齐全" ;;
-    1) log "已补标记，重新走一遍" ;;
-    2) fail_notify "补 Fork-Patch 标记失败，需要人工" 4 ;;
+# ---------------------------------------------------------------- 入口
+MODE=${1:-}
+case "$MODE" in
+    --collect)      do_collect ;;
+    --fix-trailers) do_fix_trailers ;;
+    --verify)       do_verify ;;
+    --publish)      do_publish ;;
+    --auto)
+        # 一条命令跑全套机械动作（不再问模型）
+        do_fix_trailers || exit 1
+        do_verify       || exit 1
+        do_publish      || exit 1
+        ;;
+    ""|-h|--help)
+        sed -n '1,26p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *) die "未知参数：$MODE（--collect / --fix-trailers / --verify / --publish）" 2 ;;
 esac
-
-# 干净起点
-git rebase --abort 2>/dev/null || true
-git checkout -q -f main 2>/dev/null || git checkout -q -f master
-git fetch -q upstream
-git fetch -q origin
-
-WORK="auto-resolve/$(date +%Y%m%d-%H%M)"
-git branch -D "$WORK" 2>/dev/null || true
-git checkout -q -b "$WORK" main || die "切分支失败"
-
-log "rebase 到 upstream/$UPSTREAM_BRANCH"
-if ! git rebase "upstream/$UPSTREAM_BRANCH" >/tmp/ar-rebase.log 2>&1; then
-    CONFLICTS=$(git diff --name-only --diff-filter=U)
-    [ -n "$CONFLICTS" ] || { log "rebase 失败但没有冲突文件"; tail -5 /tmp/ar-rebase.log; exit 1; }
-    log "冲突文件: $(echo "$CONFLICTS" | tr '\n' ' ')"
-
-    ROUND=0
-    while [ -n "$CONFLICTS" ]; do
-        for f in $CONFLICTS; do
-            ROUND=$((ROUND + 1))
-            [ "$ROUND" -gt "$MAX_ROUNDS" ] && die "超过 $MAX_ROUNDS 轮，停手"
-
-            # 逐块问 AI
-            python3 - "$f" > /tmp/ar-blocks.json <<'PY'
-import json, re, sys
-from pathlib import Path
-src = Path(sys.argv[1]).read_text(encoding='utf-8')
-BLOCK = re.compile(r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> ([^\n]*)\n', re.S)
-out = []
-for i, m in enumerate(BLOCK.finditer(src), 1):
-    out.append({'index': i, 'text': m.group(0)})
-print(json.dumps(out, ensure_ascii=False))
-PY
-
-            N=$(jq 'length' /tmp/ar-blocks.json 2>/dev/null || echo 0)
-            log "  $f: $N 个冲突块"
-            [ "$N" -eq 0 ] && { git add "$f"; continue; }
-
-            for k in $(seq 0 $((N - 1))); do
-                BLK=$(jq -r ".[$k].text" /tmp/ar-blocks.json)
-                ANS=$(ask_ai "$f" "$BLK")
-                if [ -z "$ANS" ] || [ "$ANS" = "UNRESOLVABLE" ]; then
-                    git rebase --abort
-                    fail_notify "AI 判定无法自动合并：$f 第 $((k+1)) 块" 3
-                fi
-                # 写回：用 python 做归一化替换
-                printf '%s' "$ANS" > /tmp/ar-answer.txt
-                python3 - "$f" "$((k+1))" /tmp/ar-answer.txt <<'PY'
-import re, sys
-from pathlib import Path
-path, idx, ansfile = Path(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3])
-src = path.read_text(encoding='utf-8')
-BLOCK = re.compile(r'<<<<<<< HEAD\n(.*?)=======\n(.*?)>>>>>>> ([^\n]*)\n', re.S)
-blocks = list(BLOCK.finditer(src))
-if idx > len(blocks):
-    sys.exit('块序号越界')
-m = blocks[idx - 1]
-ours, theirs = m.group(1), m.group(2)
-def indent_of(ln): return ln[:len(ln) - len(ln.lstrip())]
-target = min(indent_of(ln) for ln in (ours + theirs).splitlines() if ln.strip())
-ans = ansfile.read_text(encoding='utf-8')
-lines = [ln for ln in ans.splitlines() if ln.strip()]
-ai_min = min(indent_of(ln) for ln in lines) if lines else ''
-norm = '\n'.join('' if not ln.strip() else target + ln[len(ai_min):] for ln in ans.splitlines())
-src = src[:m.start()] + norm + '\n' + src[m.end():]
-path.write_text(src, encoding='utf-8')
-PY
-                log "  ✓ $f 第 $((k+1)) 块已合并"
-            done
-            git add "$f"
-        done
-
-        if git diff --name-only --diff-filter=U | grep -q .; then
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
-            continue
-        fi
-        if ! GIT_EDITOR=true git rebase --continue >>/tmp/ar-rebase.log 2>&1; then
-            CONFLICTS=$(git diff --name-only --diff-filter=U)
-            [ -n "$CONFLICTS" ] || { log "continue 失败且无冲突"; tail -5 /tmp/ar-rebase.log; exit 1; }
-            log "下一批冲突: $(echo "$CONFLICTS" | tr '\n' ' ')"
-        else
-            CONFLICTS=""
-        fi
-    done
-else
-    log "rebase 无冲突，可能上游已合并"
-fi
-
-# ---------------------------------------------------------------- 验证
-log "验证：gofmt / build / test"
-if ! "$GOFMT" -l . >/tmp/ar-fmt.log 2>&1; then
-    log "  ✗ gofmt 执行失败"; exit 1
-fi
-if [ -s /tmp/ar-fmt.log ]; then
-    log "  格式化了 $(wc -l < /tmp/ar-fmt.log) 个文件"
-    "$GOFMT" -w $(cat /tmp/ar-fmt.log) 2>/dev/null || true
-fi
-
-if ! CGO_ENABLED=0 "$GO" build ./... >/tmp/ar-build.log 2>&1; then
-    _err=$(tail -5 /tmp/ar-build.log | tr "\n" " " | head -c 300)
-    fail_notify "编译失败：${_err}" 2
-fi
-log "  ✓ 编译通过"
-
-if ! "$GO" test ./internal/admin/ ./internal/autoinstall/ >/tmp/ar-test.log 2>&1; then
-    _err=$(tail -5 /tmp/ar-test.log | tr "\n" " " | head -c 300)
-    fail_notify "测试失败：${_err}" 2
-fi
-log "  ✓ 测试通过"
-
-# 汉化别被打断
-if ! python3 ops/i18n/audit.py 2>/dev/null | grep -q '缺失 0 条'; then
-    log "  ! 汉化审计有缺失（不阻塞，交给 autofix 后续补）"
-fi
-
-# 补丁标记还在吗
-if git log --format='%B' "upstream/$UPSTREAM_BRANCH"..HEAD | grep -q 'Fork-Patch:'; then
-    log "  ✓ Fork-Patch 标记还在"
-else
-    log "  ! 没找到 Fork-Patch 标记，检查是否丢了补丁"
-fi
-
-if [ "$DRY_RUN" = "1" ]; then
-    log "DRY_RUN：不推送。分支 $WORK 留着"
-    exit 0
-fi
-
-# ---------------------------------------------------------------- 推送
-log "推送到 main"
-if git push --force-with-lease=main:"$(git rev-parse origin/main)" origin "$WORK:main" >/tmp/ar-push.log 2>&1; then
-    _sha=$(git rev-parse --short HEAD)
-    log "  ✓ 已推送 $_sha"
-    git checkout -q main && git reset -q --hard "$WORK"
-    _behind=$(git rev-list --count HEAD.."upstream/$UPSTREAM_BRANCH")
-    log "完成：落后 $_behind 个提交"
-    notify "✅ bootimus 同步已由 AI 自动修复" "**提交**：${_sha}
-**落后上游**：${_behind} 个提交（已归零）
-**处理分支**：${BRANCH}
-**验证**：gofmt / go build / go test 全通过
-**日志**：\`/var/log/bootimus-sync-watch.log\`
-
-构建已由 push 自动触发。"
-else
-    log "  ✗ 推送失败"
-    tail -5 /tmp/ar-push.log | while read -r l; do log "    $l"; done
-    exit 1
-fi
