@@ -1,82 +1,48 @@
 #!/usr/bin/env bash
-# autofix 系列的公共件：日志、调网关、写词表、复查、提交推送。
+# autofix 系列的公共件：日志、交接给 DSH、写词表、复查、提交推送。
 #
 # autofix.sh（扫源码字面量）和 autofix-dom.sh（扫真实 DOM）只在
-# 「怎么拿到待翻文本」这一步不同，后面四步完全一样。以前这些各写一份，
+# 「怎么拿到待翻文本」这一步不同，后面几步完全一样。以前这些各写一份，
 # 加判定规则时要改两处 —— 已经因为漏改一边出过问题。
+#
+# 2026-11 起「翻什么、怎么翻」不再交给 AI 网关：翻译单看一串字面量是做不好的，
+# 得看调用点、看 DOM 语境、看术语在别处怎么翻。这些都在 DSH 手里。
+# 于是这里只剩三类函数：
+#   * 交给 DSH —— dsh_enqueue
+#   * 落盘规则 —— apply_translations（只新增不覆盖，DSH 也得守这条）
+#   * 推送闸门 —— verify_all / commit_and_build（DSH 干完活回来调）
 #
 # 用法：在脚本里 `. "$(dirname "$0")/_common.sh"`，然后调下面的函数。
 # 本文件不设 set -e，由调用方决定严格程度。
 
 : "${LOG:=/var/log/bootimus-i18n-autofix.log}"
-: "${AI_TIMEOUT:=240}"
-: "${AI_EFFORT:=max}"
-: "${AI_MODEL:=cn:deepseek-v4.1-flash}"
-
-# 上一次 llm_call 的用量（prompt_tokens / completion_thinking_tokens / credit）
-LLM_USAGE='{}'
 
 log() { printf '%s  %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG"; }
 
-# load_ai_env 读网关配置。缺 AI_BASE_URL 时返回 1，调用方据此静默退出。
-load_ai_env() {
-    [ -r /root/ai_gateway.env ] && { set -a; . /root/ai_gateway.env; set +a; }
-    if [ -z "${AI_BASE_URL:-}" ]; then
-        log "跳过：没配 AI_BASE_URL"
-        return 1
-    fi
-    : "${AI_MODEL:=cn:deepseek-v4.1-flash}"
-    : "${AI_EFFORT:=max}"
+# ---------------------------------------------------------------- 交给 DSH
+# dsh_enqueue <kind> <fingerprint> <任务 JSON>
+# 退出码：0 已入队（含「队列里已有同指纹」）；1 入队失败
+dsh_enqueue() {
+    local kind="$1" fp="$2" payload="$3"
+    local tool=${DSH_HANDOFF:-${REPO:-.}/ops/dsh/dsh-handoff.sh}
+    [ -r "$tool" ] || { log "  没有 $tool，跳过交班"; return 1; }
+    local out
+    out=$(printf '%s' "$payload" | DSH_HANDOFF_HOME="${DSH_HANDOFF_HOME:-/var/lib/bootimus-dsh}" \
+            bash "$tool" enqueue --kind "$kind" --fingerprint "$fp") \
+        || { log "  入队失败：$out"; return 1; }
+    case "$out" in
+        SKIP\ *) log "  队列里已有同指纹任务：${out#SKIP }" ;;
+        "")      log "  入队无输出"; return 1 ;;
+        *)       log "  已交给 DSH（任务 ${out}）" ;;
+    esac
     return 0
 }
 
-log_usage() {
-    printf '%s' "$LLM_USAGE" | jq -r '"  用量: 输入=\(.prompt_tokens // 0) 思考=\(.completion_thinking_tokens // 0) 输出=\(.completion_tokens // 0) credit=\(.credit // 0)"' >> "$LOG" 2>/dev/null
-}
-
-# llm_call <system_prompt> <json_array> [max_tokens] → stdout 是模型输出
-#
-# temperature=0 保证同样的输入得到同样的输出，便于前后对比；
-# effort=max 是实测下来思考最充分的一档（同一份日志：low 278 / high 324 / max 612 tokens）。
-llm_call() {
-    local sys="$1" input="$2" max="${3:-8000}"
-    local body resp content
-
-    body=$(jq -n --arg m "$AI_MODEL" --arg s "$sys" --argjson u "$input" \
-        --arg e "$AI_EFFORT" --argjson mt "$max" '{
-            model: $m, temperature: 0, max_tokens: $mt, reasoning_effort: $e,
-            messages: [
-              {role: "system", content: $s},
-              {role: "user", content: ($u | tojson)}
-            ]}') || return 1
-
-    resp=$(curl -sS --max-time "$AI_TIMEOUT" -X POST "${AI_BASE_URL%/}/chat/completions" \
-        -H "Authorization: Bearer ${AI_API_KEY:-placeholder}" \
-        -H 'Content-Type: application/json' -d "$body" 2>/dev/null) || return 1
-
-    LLM_USAGE=$(printf '%s' "$resp" | jq -c '.usage // {}' 2>/dev/null)
-    [ -n "$LLM_USAGE" ] || LLM_USAGE='{}'
-    log_usage
-
-    content=$(printf '%s' "$resp" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
-    printf '%s' "$content"
-}
-
-# json_extract <raw> → 去掉 ``` 包裹后的纯 JSON
-json_extract() {
-    python3 - "$1" <<'PY'
-import re, sys
-raw = sys.argv[1].strip()
-if raw.startswith('```'):
-    raw = re.sub(r'^```[a-z]*\n?', '', raw)
-    raw = re.sub(r'\n?```$', '', raw)
-print(raw.strip())
-PY
-}
-
+# ---------------------------------------------------------------- 落盘规则
 # apply_translations <json_file> [dry]
 #
-# json 形如 {"原文":"译文"}。只新增，不覆盖已有词条 —— LLM 不能改坏人工校对过的译文。
+# json 形如 {"原文":"译文"}。只新增，不覆盖已有词条 —— 人工校对过的译文
+# 不许被自动流程改坏，DSH 也一样要守这条。
 # 空译文、译文与原文相同的一律丢弃。
 # 退出码：0 已写入 / 2 没有可新增的 / 1 失败
 apply_translations() {
@@ -124,6 +90,7 @@ print('  ✓ 写入 zh.json，共 %d 条' % len(zh))
 PY
 }
 
+# ---------------------------------------------------------------- 推送闸门
 # verify_all 推送前的三道关：i18n.js 能重建、审计归零、Go 还能编译。
 verify_all() {
     log "=== 复查 ==="
@@ -159,8 +126,8 @@ commit_and_build() {
     git commit -q -F - <<MSG
 $title
 
-由 ops/i18n/autofix 自动生成：审计发现缺失 → LLM 翻译 → 只新增不覆盖 →
-复查（审计归零 + i18n.js 可复现 + go build）通过后提交。
+由 DSH 按 ops/dsh 的交接流程生成：审计发现缺失 → DSH 翻译（带仓库上下文和
+术语表）→ 只新增不覆盖 → 复查（审计归零 + i18n.js 可复现 + go build）通过后提交。
 
 Fork-Patch: i18n-zh-full
 MSG

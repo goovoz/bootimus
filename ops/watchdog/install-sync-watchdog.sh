@@ -41,19 +41,23 @@ if [ -z "$TOKEN" ] && [ -r "$CONF" ]; then
 fi
 [ -n "$TOKEN" ] || { echo "找不到 GitHub PAT：设 GH_TOKEN 环境变量，或放到 /root/gh_pat.txt"; exit 1; }
 
-# ---- 可选的 AI 网关参数（不配就只走规则归因）----
-if [ -z "${AI_BASE_URL:-}" ] && [ -r /root/ai_gateway.env ]; then
-    AI_BASE_URL=$(sed -n 's/^AI_BASE_URL=//p' /root/ai_gateway.env | head -1 | tr -d '"'"'"' ')
-    AI_API_KEY=$(sed -n 's/^AI_API_KEY=//p'  /root/ai_gateway.env | head -1 | tr -d '"'"'"' ')
-fi
-AI_MODEL=${AI_MODEL:-cn:deepseek-v4.1-flash}
+# ---- 交班对象（DSH）----
+# 2026-11 起不再调用 AI 网关：需要判断的事交给本机的 DSH（见 ops/dsh/）。
+# 这里只需要把队列客户端和队列目录定下来。
+DSH_HANDOFF=${DSH_HANDOFF:-$HERE/../dsh/dsh-handoff.sh}
+DSH_HANDOFF_HOME=${DSH_HANDOFF_HOME:-/var/lib/bootimus-dsh}
+DSH_HANDOFF=$(cd "$(dirname "$DSH_HANDOFF")" && pwd)/$(basename "$DSH_HANDOFF")
 
 echo "=== 安装计划 ==="
 echo "  脚本   : $HERE/sync-watchdog.sh  ->  $BIN"
+echo "  工具箱 : $HERE/auto-resolve-sync.sh  ->  $(dirname "$BIN")/bootimus-sync-tool"
+echo "  队列   : $HERE/../dsh/dsh-handoff.sh  ->  $(dirname "$BIN")/bootimus-dsh-handoff"
 echo "  unit   : bootimus-sync-watch.{service,timer}  ->  $UNIT_DIR"
 echo "  配置   : $CONF（含 GH_TOKEN，权限 600）"
 echo "  状态   : $STATE_DIR/state.json"
+echo "  队列目录: $DSH_HANDOFF_HOME（tasks/ + evidence/）"
 echo "  节奏   : 每 30 分钟（OnBootSec=5min）"
+echo "  说明   : 不调用任何模型；需要判断的任务入队等 DSH 领走"
 
 if [ "$DRY" = "1" ]; then
     echo
@@ -64,10 +68,20 @@ fi
 install -m 0755 "$HERE/sync-watchdog.sh" "$BIN"
 
 
-install -m 0755 "$HERE/auto-resolve-sync.sh" "$(dirname "$BIN")/bootimus-auto-resolve"
+# auto-resolve 现在只是「工具箱」（--collect / --verify / --publish），不再自己
+# 问模型；名字也跟着改，免得以后有人以为它还会自动解决冲突。
+install -m 0755 "$HERE/auto-resolve-sync.sh" "$(dirname "$BIN")/bootimus-sync-tool"
+install -m 0755 "$HERE/../dsh/dsh-handoff.sh" "$(dirname "$BIN")/bootimus-dsh-handoff"
+# 老的 /usr/local/sbin/bootimus-auto-resolve 里还留着调 AI 网关的代码，已经没人调它了，
+# 留着只会让人以为「自动解冲突」还在 —— 直接删掉。
+if [ -f "$(dirname "$BIN")/bootimus-auto-resolve" ]; then
+    rm -f "$(dirname "$BIN")/bootimus-auto-resolve"
+    echo "已删除过时的 /usr/local/sbin/bootimus-auto-resolve（原 AI 解冲突器）"
+fi
+chmod 0755 "$DSH_HANDOFF" 2>/dev/null || true
 install -m 0644 "$HERE/bootimus-sync-watch.service" "$UNIT_DIR/"
 install -m 0644 "$HERE/bootimus-sync-watch.timer"   "$UNIT_DIR/"
-mkdir -p "$STATE_DIR"
+mkdir -p "$STATE_DIR" "$DSH_HANDOFF_HOME/tasks" "$DSH_HANDOFF_HOME/evidence"
 
 if [ ! -f "$CONF" ]; then
     cat > "$CONF" <<EOF
@@ -89,14 +103,10 @@ MAX_RETRY_PER_DAY=2
 # Server酱 SendKey（SCT 开头）。设了才会推送，不设只写日志。
 # SC_SENDKEY=SCTxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# 可选：用 LLM 做失败归因（只生成文案，不参与动作决策）。
-# 不填 AI_BASE_URL 就退回纯规则归因，功能不受影响。
-# 模型别用 cn:auto —— 会路由到任意模型；思考强度用 AI_EFFORT，
-# deepseek-v4.1-flash 在 CN 面支持 low/high/max，max 实测思考量是 high 的 1.9 倍。
-AI_BASE_URL=${AI_BASE_URL:-}
-AI_MODEL=${AI_MODEL:-cn:deepseek-v4.1-flash}
-AI_EFFORT=${AI_EFFORT:-max}
-AI_API_KEY=${AI_API_KEY:-}
+# 交给谁处理：DSH 的交接队列（见 ops/dsh/）。本脚本不调用任何模型。
+# 队列客户端由 DSH 通过 ssh 调用（claim / report），两边共用这一份。
+DSH_HANDOFF=$DSH_HANDOFF
+DSH_HANDOFF_HOME=$DSH_HANDOFF_HOME
 EOF
     chmod 600 "$CONF"
     echo "已生成 $CONF"
@@ -108,14 +118,19 @@ else
     else
         echo "$CONF 已有 GH_TOKEN，保持不动"
     fi
-    if [ -n "${AI_BASE_URL:-}" ] && ! grep -q '^AI_BASE_URL=.\+' "$CONF"; then
+    if grep -q '^AI_' "$CONF"; then
+        # 老版本留下的网关参数，现在没人读了；改成注释，留个痕方便回溯
+        sed -i 's|^AI_|# [2026-11 已停用，改由 DSH 接管] AI_|' "$CONF"
+        echo "已把 $CONF 里的 AI_* 网关参数注释掉（不再调用网关）"
+    fi
+    if ! grep -q '^DSH_HANDOFF=.\+' "$CONF"; then
         {
             echo ""
-            echo "AI_BASE_URL=$AI_BASE_URL"
-            echo "AI_MODEL=$AI_MODEL"
-            echo "AI_API_KEY=$AI_API_KEY"
+            echo "# 交给谁处理：DSH 的交接队列（见 ops/dsh/）"
+            echo "DSH_HANDOFF=$DSH_HANDOFF"
+            echo "DSH_HANDOFF_HOME=$DSH_HANDOFF_HOME"
         } >> "$CONF"
-        echo "已补写 AI 网关参数"
+        echo "已补写 DSH 交接参数"
     fi
     chmod 600 "$CONF"
 fi
