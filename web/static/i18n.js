@@ -3517,7 +3517,13 @@ const SOURCE_TEXT = {
         "Boot menu password": "启动菜单密码",
         "Image password": "镜像密码",
         "Remove the boot menu password": "移除启动菜单密码",
-        "Remove the image password": "移除镜像密码"
+        "Remove the image password": "移除镜像密码",
+        "Boot passwords": "启动密码",
+        "Leave blank to keep the current password. Checked separately from the menu password, including automatic boots. Direct image downloads remain accessible.": "留空则保持当前密码。与菜单密码分开校验，自动启动时也会校验。直接下载镜像仍然可用。",
+        "Leave blank to keep the current password. Requires admin HTTPS and a compatible bootloader that trusts its certificate. Local boot stays available; image downloads are not protected.": "留空则保持当前密码。需要管理端 HTTPS，以及信任该证书的兼容引导加载器。本地启动仍然可用；镜像下载不受保护。",
+        "No +, ; or spaces (iPXE v2.0.0 compatibility).": "不能包含 +、; 或空格（兼容 iPXE v2.0.0）。",
+        "No password set.": "未设置密码。",
+        "Versioned menu and image boot password verifiers for replicas. Requires an admin-scope token and HTTPS.": "供副本使用的带版本菜单/镜像启动密码校验器。需要 admin 作用域令牌和 HTTPS。"
     }
 };
 
