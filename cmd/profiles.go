@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"log"
+	"strings"
 
 	"bootimus/internal/profiles"
 
@@ -25,8 +26,8 @@ This is an on-demand action. Bootimus never contacts the remote catalogue on
 its own; the profiles baked into the binary are used until you run this command
 (or click "Check for Updates" in the admin UI under Boot > Distro Profiles).
 
-Remote URL contacted:
-  ` + profiles.RemoteProfilesURL + `
+Remote URL contacted (mirrors are tried in order, first success wins):
+  ` + strings.Join(profiles.RemoteProfilesURLs, ", ") + `
 
 Respects --disable-remote-profiles, which blocks all remote profile fetches.`,
 	Run: runProfilesUpdate,

@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
+
+	"bootimus/internal/remotefetch"
 )
 
 type ISOCatalogue struct {
@@ -43,21 +44,9 @@ func LoadISOCatalogue() (*ISOCatalogue, error) {
 }
 
 func FetchRemoteISOCatalogue(ctx context.Context) (*ISOCatalogue, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, RemoteProfilesURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	data, _, err := remotefetch.Get(ctx, &http.Client{Timeout: 30 * time.Second}, RemoteProfilesURLs)
 	if err != nil {
 		return nil, fmt.Errorf("fetch remote catalogue: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("remote catalogue returned HTTP %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read remote catalogue: %w", err)
 	}
 	return ParseISOCatalogue(data)
 }
