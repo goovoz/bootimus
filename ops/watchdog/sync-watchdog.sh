@@ -270,19 +270,28 @@ if [ "$HEALTH" = "FAILED" ]; then
     fi
     ERRLINE=$(printf '%s\n' "$LOG_TAIL" | grep -o '::error::.*' | tail -2 | tr '\n' ' ')
 
-    case "$STEP" in
-        校验提交标记*)
-            KIND=TRAILER
-            TRAILER_BAD=$(printf '%s\n' "$LOG_TAIL" | grep -o '::error::提交 [0-9a-f]* [^￼]*' | head -10 | sed 's/::error:://' | tr '\n' ';')
-            DETAIL="有提交没带 Fork-Patch / Fork-Meta 标记，同步在校验阶段停手"
-            ;;
-        上游已实现*|上游未实现*|重放*)  KIND=CONFLICT;       DETAIL="补丁重放冲突，需人工解决" ;;
-        判定失败*)                      KIND=DETECT_UNKNOWN; DETAIL="探测器给不出判定，可能上游结构大改" ;;
-        推送*)                          KIND=PERMISSION;     DETAIL="推送被拒，通常是 SYNC_TOKEN 缺失或权限不足" ;;
-        编译与测试)                     KIND=TEST_FAIL;      DETAIL="重放后编译或测试不通过" ;;
-        "")                             KIND=TRANSIENT;      DETAIL="看不出失败步骤，按瞬时故障处理" ;;
-        *)                              KIND=TRANSIENT;      DETAIL="失败步骤：$STEP" ;;
-    esac
+    # 认证类失败必须先于步骤名判定：Checkout 阶段的 401 / 缺凭据不是瞬时故障，
+    # 盲重试多少次结论都一样（2026-11-03 SYNC_TOKEN 失效，白跑了两轮 dispatch）。
+    # 注意要扫 FULL_LOG 而不是 LOG_TAIL：checkout 失败时日志尾部是 cleanup，
+    # 真正的 401 在中间（实测 tail -60 抓不到）。
+    if printf '%s\n' "$FULL_LOG" | grep -qE 'could not read Username|Bad credentials|[Aa]uthentication failed|remote: Invalid username or password|401 Unauthorized'; then
+        KIND=PERMISSION
+        DETAIL="GitHub 认证失败（检查 secret SYNC_TOKEN 是否有效、是否有 workflows 写权限）"
+    else
+        case "$STEP" in
+            校验提交标记*)
+                KIND=TRAILER
+                TRAILER_BAD=$(printf '%s\n' "$LOG_TAIL" | grep -o '::error::提交 [0-9a-f]* [^￼]*' | head -10 | sed 's/::error:://' | tr '\n' ';')
+                DETAIL="有提交没带 Fork-Patch / Fork-Meta 标记，同步在校验阶段停手"
+                ;;
+            上游已实现*|上游未实现*|重放*)  KIND=CONFLICT;       DETAIL="补丁重放冲突，需人工解决" ;;
+            判定失败*)                      KIND=DETECT_UNKNOWN; DETAIL="探测器给不出判定，可能上游结构大改" ;;
+            推送*)                          KIND=PERMISSION;     DETAIL="推送被拒，通常是 SYNC_TOKEN 缺失或权限不足" ;;
+            编译与测试)                     KIND=TEST_FAIL;      DETAIL="重放后编译或测试不通过" ;;
+            "")                             KIND=TRANSIENT;      DETAIL="看不出失败步骤，按瞬时故障处理" ;;
+            *)                              KIND=TRANSIENT;      DETAIL="失败步骤：$STEP" ;;
+        esac
+    fi
     [ -n "$ERRLINE" ] && DETAIL="$DETAIL ｜ $ERRLINE"
 fi
 
