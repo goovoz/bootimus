@@ -1,16 +1,17 @@
 package profiles
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"bootimus/internal/models"
+	"bootimus/internal/remotefetch"
 	"bootimus/internal/storage"
 )
 
@@ -18,6 +19,10 @@ import (
 var embeddedProfiles embed.FS
 
 const RemoteProfilesURL = "https://raw.githubusercontent.com/garybowers/bootimus/main/distro-profiles.json"
+
+// RemoteProfilesURLs = 主地址 + jsDelivr 镜像，按顺序试（见 internal/remotefetch）。
+// 国内直连 raw.githubusercontent.com 经常挂到超时。
+var RemoteProfilesURLs = remotefetch.WithMirrors(RemoteProfilesURL)
 
 type ProfileFile struct {
 	Version  string        `json:"version"`
@@ -96,20 +101,11 @@ func (m *Manager) UpdateFromRemote() (added int, updated int, version string, er
 		return 0, 0, "", fmt.Errorf("remote profile updates are disabled")
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(RemoteProfilesURL)
+	body, used, err := remotefetch.Get(context.Background(), client, RemoteProfilesURLs)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("failed to fetch remote profiles: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, 0, "", fmt.Errorf("remote profiles returned HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, 0, "", fmt.Errorf("failed to read response: %w", err)
-	}
+	log.Printf("Profiles: fetched from %s", used)
 
 	var pf ProfileFile
 	if err := json.Unmarshal(body, &pf); err != nil {
