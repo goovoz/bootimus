@@ -1831,5 +1831,7 @@
   "Leave blank to keep the current password. Requires admin HTTPS and a compatible bootloader that trusts its certificate. Local boot stays available; image downloads are not protected.": "留空则保持当前密码。需要管理端 HTTPS，以及信任该证书的兼容引导加载器。本地启动仍然可用；镜像下载不受保护。",
   "No +, ; or spaces (iPXE v2.0.0 compatibility).": "不能包含 +、; 或空格（兼容 iPXE v2.0.0）。",
   "No password set.": "未设置密码。",
-  "Versioned menu and image boot password verifiers for replicas. Requires an admin-scope token and HTTPS.": "供副本使用的带版本菜单/镜像启动密码校验器。需要 admin 作用域令牌和 HTTPS。"
+  "Versioned menu and image boot password verifiers for replicas. Requires an admin-scope token and HTTPS.": "供副本使用的带版本菜单/镜像启动密码校验器。需要 admin 作用域令牌和 HTTPS。",
+  "Boot passwords must not contain +, ; or spaces (iPXE v2.0.0 compatibility)": "启动密码不能包含 +、; 或空格（iPXE v2.0.0 兼容性）",
+  "This URL does not end in .iso — the server will append it. Fill in \"File name\" to control the result.": "该地址不以 .iso 结尾 —— 服务器会自动补上。想控制最终文件名，请填写「文件名」。"
 }

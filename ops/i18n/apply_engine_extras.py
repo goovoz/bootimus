@@ -83,6 +83,8 @@ const AUDIT_SUMMARY_RE = new RegExp('^(' +
 
 const BOOT_METHOD_ZH = { kernel: '内核', sanboot: 'SAN', nbd: 'NBD', nfs: 'NFS', wimboot: 'WIM', http: 'HTTP' };
 
+const DELETE_TYPE_ZH = { file: '文件', folder: '目录', 'extracted contents': '已解压内容', 'ISO file': 'ISO 文件', 'boot folder': '引导目录', image: '镜像', images: '镜像' };
+
 const SOURCE_PATTERNS = {
     'zh-CN': [
         [/^Enabled \\((\\d+) share\\(s\\) active, port (\\d+)\\)$/, '已启用（$1 个共享，端口 $2）'],
@@ -125,6 +127,42 @@ const SOURCE_PATTERNS = {
         // 服务端拼的：镜像/工具更新检查（handlers.go:3913）
         [/^(\d+) image and (\d+) tool updates available$/,
             (m, i, t) => `有 ${i} 个镜像、${t} 个工具可更新`],
+        // ---- 飘窗（showAlert / showNotification）——2026-11-03 实机点按补 ----
+        // 服务端拼的：镜像扫描完成（handlers.go:2281）
+        [/^Scan complete\\. Found (\\d+) new images?, removed (\\d+) missing images?\\.$/,
+            (m, a, b) => '扫描完成：新增 ' + a + ' 个镜像，移除 ' + b + ' 个已丢失镜像'],
+        // 拉远端发行版配置失败：URL 与 Go 的底层错误原样保留，只翻前后两截
+        [/^failed to fetch remote profiles: (.+)$/,
+            (m, rest) => '获取远端发行版配置失败：' + rest
+                .replace(/^Get "([^"]+)": /, function (mm, url) { return '请求 ' + url + ' 时 '; })
+                .replace(/context deadline exceeded \\(Client\\.Timeout exceeded while awaiting headers\\)/, '超时（等待响应头超时）')],
+        // 服务器信息 → Windows SMB 状态行（不带 Enabled 前缀的那半截）
+        [/^(\\d+) share\\(s\\) active, port (\\d+)$/, (m, n, prt) => n + ' 个共享启用，端口 ' + prt],
+        // 批量操作汇总：动词 + 成功数 [+ 失败数]
+        [/^(Enabled|Disabled) (\\d+)(?:, (\\d+) failed)?$/,
+            (m, verb, ok, bad) => (verb === 'Enabled' ? '已启用 ' : '已禁用 ') + ok + ' 个' + (bad ? '，' + bad + ' 个失败' : '')],
+        [/^Wake sent to (\\d+)(?:, (\\d+) failed)?$/,
+            (m, ok, bad) => '已发送唤醒包 ' + ok + ' 个' + (bad ? '，' + bad + ' 个失败' : '')],
+        [/^Assigned (\\d+)(?:, (\\d+) failed)?$/,
+            (m, ok, bad) => '已分配 ' + ok + ' 个' + (bad ? '，' + bad + ' 个失败' : '')],
+        [/^Deleted (\\d+)(?:, (\\d+) failed)?$/,
+            (m, ok, bad) => '已删除 ' + ok + ' 个' + (bad ? '，' + bad + ' 个失败' : '')],
+        // 引导方式 / 引导程序集
+        [/^Boot method set to (.+)$/, (m, method) => '引导方式已设为 ' + (BOOT_METHOD_ZH[method] || method)],
+        [/^Set "(.+?)" (created|deleted)$/,
+            (m, name, what) => '引导程序集「' + name + '」已' + (what === 'created' ? '创建' : '删除')],
+        // 上传 / 下载
+        [/^Uploaded: (.+)$/, (m, f) => '已上传：' + f],
+        [/^Downloading (.+?) [–-] progress is shown in the downloads list$/,
+            (m, f) => '正在下载 ' + f + '，进度见下载列表'],
+        [/^Failed to download (.+)$/, (m, name) => '下载 ' + name + ' 失败'],
+        // 镜像文件浏览器：<类型> deleted successfully / Failed to delete <类型>[: 错误]
+        [/^(.+?) deleted successfully$/, (m, what) => {
+            const raw = DELETE_TYPE_ZH[what] || what;
+            return raw + (/[\u4e00-\u9fa5]$/.test(raw) ? '已删除' : ' 已删除');
+        }],
+        [/^Failed to delete (.+?): (.+)$/, (m, what, err) => '删除' + (DELETE_TYPE_ZH[what] || what) + '失败：' + err],
+        [/^Failed to delete (.+)$/, (m, what) => '删除' + (DELETE_TYPE_ZH[what] || what) + '失败'],
         [/^Deleted (.+)$/, (m, name) => '已删除 ' + name]
     ]
 };"""
