@@ -20,7 +20,8 @@ permissions:
 
 jobs:
 
-  汉化审计:
+  i18n-audit:
+    name: 汉化审计
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
