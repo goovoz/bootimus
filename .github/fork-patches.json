@@ -122,6 +122,25 @@
       "retire_policy": "探测到 IMPLEMENTED（上游有 iso-catalog/resolve 或版本号解析）→ 只告警不自动退役，需人工确认覆盖范围（目录列表解析 + 数字序比较）后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
+    },
+    {
+      "id": "cdn-fallback",
+      "status": "active",
+      "summary": "远端清单（distro-profiles.json / tools-profiles.json）改成「主地址 + jsDelivr 三个边缘节点」按顺序取，单源 12 秒超时，谁先 200 用谁；全失败才报错，并把 Go 的网络错误压成一句话",
+      "rationale": "清单放在 raw.githubusercontent.com 上，国内经常连不通，原来一次 30 秒 GET 超时后整块功能失败、飘窗刷一大段 URL；jsDelivr 能直接代理 GitHub 仓库文件，换几个边缘域名轮询即可自愈",
+      "trailer": "Fork-Patch: cdn-fallback",
+      "detector": ".github/scripts/detect-cdn-fallback.sh",
+      "touches": [
+        "internal/remotefetch/remotefetch.go",
+        "internal/remotefetch/remotefetch_test.go",
+        "internal/profiles/manager.go",
+        "internal/profiles/iso_catalogue.go",
+        "internal/tools/manager.go",
+        "cmd/profiles.go"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游自己加了镜像/多源/重试）→ 人工确认覆盖范围后再移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
     }
   ]
 }

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"archive/zip"
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 	"bootimus/internal/extractor"
 	"bootimus/internal/models"
+	"bootimus/internal/remotefetch"
 	"bootimus/internal/storage"
 )
 
@@ -24,6 +26,9 @@ import (
 var embeddedTools embed.FS
 
 const RemoteToolsURL = "https://raw.githubusercontent.com/garybowers/bootimus/main/tools-profiles.json"
+
+// RemoteToolsURLs = 主地址 + jsDelivr 镜像，按顺序试（见 internal/remotefetch）。
+var RemoteToolsURLs = remotefetch.WithMirrors(RemoteToolsURL)
 
 type ToolDefinition struct {
 	Name            string `json:"name"`
@@ -157,20 +162,11 @@ func (m *Manager) UpdateFromRemote() (added int, updated int, version string, er
 		return 0, 0, "", fmt.Errorf("remote tool updates are disabled")
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(RemoteToolsURL)
+	body, used, err := remotefetch.Get(context.Background(), client, RemoteToolsURLs)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("failed to fetch remote tools manifest: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, 0, "", fmt.Errorf("remote tools manifest returned HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, 0, "", fmt.Errorf("failed to read response: %w", err)
-	}
+	log.Printf("Tools: fetched from %s", used)
 
 	var mnf toolsManifest
 	if err := json.Unmarshal(body, &mnf); err != nil {
