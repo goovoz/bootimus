@@ -65,7 +65,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | `iso-catalog-resolve` | active | 「获取镜像」下载前解析真实文件名：URL 失效时按目录里最新的同类文件改写，15 分钟缓存 | `internal/admin/iso_resolve.go`、`internal/admin/handlers.go`、`internal/server/server.go`、`web/static/app.js`、`distro-profiles.json` |
 | `token-purge` | active | 已吊销的 API 令牌可以删除：`DELETE /api/tokens?id=N&purge=1` 只接受 `revoked=true` 的记录，操作列在吊销后显示「删除」 | `internal/storage/{interface,tokens}.go`、`internal/admin/{tokens,openapi}.go`、`web/static/app.js`、`web/static/i18n.js` |
 | `cdn-fallback` | active | 远端清单（distro/tools profiles）改走「主地址 + jsDelivr 三个边缘节点」轮询：单源 12 秒超时、谁先 200 用谁，全失败才报错；网络错误压成「请求超时/连接被重置」一句话 | `internal/remotefetch/*`、`internal/profiles/{manager,iso_catalogue}.go`、`internal/tools/manager.go`、`cmd/profiles.go` |
-| `clipboard-fallback` | active | 复制动作统一走 copyTextToClipboard()：安全上下文用 Clipboard API，否则 execCommand('copy')，再不行弹窗让人手抄；顺手把写死的 8080 换成配置里的 http_port | `web/static/app.js` |
+| `clipboard-fallback` | active | 复制动作统一走 copyTextToClipboard()：安全上下文用 Clipboard API，否则 execCommand('copy')，再不行弹窗让人手抄；顺手把写死的 8080 换成配置里的 http_port（上游 125 issue / 109 PR 里没有相同报告，2026-11-04 检索 clipboard、navigator.clipboard、secure context、http_port 均 0 条） | `web/static/app.js` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 

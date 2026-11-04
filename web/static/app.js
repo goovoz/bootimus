@@ -6104,6 +6104,11 @@ async function deleteFile(fileId, filename) {
 // 打开管理台时它是 undefined，直接调用会抛 TypeError —— 而且是同步抛出，连 .catch() 都
 // 进不去，按钮看起来就是「点了没反应」。这里统一走三级兜底：
 //   Clipboard API → document.execCommand('copy') → 弹框让用户手工复制
+//
+// 上游 b5228a1 的 copyFileDownloadURL / copyFileURL / copyAPIRefCurl / copyMenuPreview /
+// copyAPITokenSecret / copyTOTPRecoveryCodes 全部如此，是上游 bug 不是本 fork 引入；
+// 2026-11-04 检索上游 125 issue + 109 PR，没有相同报告（clipboard / navigator.clipboard /
+// secure context / http_port 均 0 条），可直接拿这段注释和下面的复现步骤去提 PR。
 async function copyTextToClipboard(text) {
     if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
         try {
