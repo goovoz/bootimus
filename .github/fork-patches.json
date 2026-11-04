@@ -141,6 +141,21 @@
       "retire_policy": "探测到 IMPLEMENTED（上游自己加了镜像/多源/重试）→ 人工确认覆盖范围后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
+    },
+    {
+      "id": "winpe-net-diagnostics",
+      "status": "active",
+      "summary": "WinPE 脚本在 ping 服务器失败时自动打印 ipconfig /all 并解释「列表为空 = boot.wim 缺网卡驱动」，把 virtio 网卡缺驱动这个最常见原因直接点出来",
+      "rationale": "微软原版 boot.wim 不带 virtio-net 驱动，Proxmox 默认网卡就是 virtio，表现为 WinPE 里连不上服务器；原来只打印一句 ERROR: Could not reach，用户无从判断是驱动缺失还是网络问题",
+      "trailer": "Fork-Patch: winpe-net-diagnostics",
+      "detector": ".github/scripts/detect-winpe-net-diagnostics.sh",
+      "touches": [
+        "internal/admin/handlers.go",
+        "internal/admin/startnet_test.go"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游自己打印网卡信息）→ 人工确认后移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
     }
   ]
 }
