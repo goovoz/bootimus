@@ -116,10 +116,7 @@ func systemCommandsVar() Var {
 		Name:  "system_commands",
 		Label: "First-boot commands as SYSTEM (one per line)",
 		Type:  "textarea",
-		Help: "Runs in the specialize pass as SYSTEM, before OOBE and before anyone signs in. " +
-			"Each line is executed as a Path without a shell, so use full paths — " +
-			"'cmd /c ...' for redirection, 'powershell -NoProfile -Command ...' for PowerShell. " +
-			"A failing command makes Setup report an error, so guard it yourself.",
+		Help: "Runs in the specialize pass as SYSTEM, before OOBE and before anyone signs in. Each line is executed as a Path without a shell, so use full paths — 'cmd /c ...' for redirection, 'powershell -NoProfile -Command ...' for PowerShell. A failing command makes Setup report an error, so guard it yourself.",
 	}
 }
 
