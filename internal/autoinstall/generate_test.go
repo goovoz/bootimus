@@ -838,3 +838,37 @@ func TestLateCommandsRenderPerFormat(t *testing.T) {
 		}
 	}
 }
+
+// [bootimus-fork L1] fork-patch: autoinstall-generator
+// 「首次开机以 SYSTEM 执行」落进 specialize 阶段的 Microsoft-Windows-Deployment\
+// RunSynchronous：早于 OOBE、不需要有人登录，Path 直接执行（不经过 shell）。
+// 这里确认两条命令按 Order 排好、XML 特殊字符被转义，且没填时整段不出现。
+func TestSystemCommandsRenderAsRunSynchronous(t *testing.T) {
+	base := map[string]string{"password": "Sup3rSecret!", "local_user": "user"}
+	vals := map[string]string{
+		"password": "Sup3rSecret!", "local_user": "user",
+		"system_commands": "cmd /c echo a > C:\\Temp\\x.txt\npowershell -NoProfile -Command \"Get-Date\"",
+	}
+	out, err := RenderTemplate("windows-autounattend", vals)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		"Microsoft-Windows-Deployment",
+		"<Order>1</Order>",
+		"<Order>2</Order>",
+		"<Path>cmd /c echo a &gt; C:\\Temp\\x.txt</Path>",
+		"<Path>powershell -NoProfile -Command &#34;Get-Date&#34;</Path>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("缺少 %q\n%s", want, out)
+		}
+	}
+	plain, err := RenderTemplate("windows-autounattend", base)
+	if err != nil {
+		t.Fatalf("render empty: %v", err)
+	}
+	if strings.Contains(plain, "RunSynchronous") {
+		t.Errorf("没填额外命令时不该出现 RunSynchronous:\n%s", plain)
+	}
+}
