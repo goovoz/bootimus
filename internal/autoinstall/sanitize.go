@@ -145,7 +145,7 @@ func sanitizeValue(format string, v Var, val string) (string, error) {
 
 	// [bootimus-fork L1] late_commands 由 RenderTemplate 按格式各自转义（YAML 加引号 /
 	// XML 转义 / 原样拼接），这里不能提前处理，否则会双重转义。
-	if v.Name == "late_commands" {
+	if v.Name == "late_commands" || v.Name == "system_commands" {
 		return val, nil
 	}
 
