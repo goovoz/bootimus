@@ -145,6 +145,12 @@
           <PlainText>true</PlainText>
         </AdministratorPassword>
       </UserAccounts>
-    </component>
+{{if .late_command_win}}      <FirstLogonCommands>
+{{range .late_command_win}}        <SynchronousCommand wcm:action="add">
+          <Order>{{.Order}}</Order>
+          <CommandLine>{{.Line}}</CommandLine>
+        </SynchronousCommand>
+{{end}}      </FirstLogonCommands>
+{{end}}    </component>
   </settings>
 </unattend>
