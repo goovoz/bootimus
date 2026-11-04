@@ -3546,7 +3546,12 @@ const SOURCE_TEXT = {
         "Boot passwords must not contain +, ; or spaces (iPXE v2.0.0 compatibility)": "启动密码不能包含 +、; 或空格（iPXE v2.0.0 兼容性）",
         "This URL does not end in .iso — the server will append it. Fill in \"File name\" to control the result.": "该地址不以 .iso 结尾 —— 服务器会自动补上。想控制最终文件名，请填写「文件名」。",
         "Show": "显示",
-        "Hide": "隐藏"
+        "Hide": "隐藏",
+        "Extra late-commands (one per line)": "额外 late-commands（每行一条）",
+        "Joined with ; and appended to preseed/late_command, which d-i runs in the installer environment — /target is the new system's root.": "用 ; 连接后追加到 preseed/late_command：d-i 在安装器环境里执行，/target 是新系统的根目录。",
+        "Appended to the %post section, which Anaconda runs chrooted into /mnt/sysimage, so the commands see the installed system.": "追加到 %post 段：Anaconda 会 chroot 到 /mnt/sysimage 执行，命令看到的就是装好的系统。",
+        "Appended to late-commands; each line runs inside the target chroot. Prefix a line with 'curtin in-target --' to run it in the installed system.": "追加到 late-commands：每行在目标系统 chroot 里执行；要跑在装好的系统里，行首加 curtin in-target --。",
+        "Appended to FirstLogonCommands: runs once at first sign-in with full administrator rights and no UAC prompt. For PowerShell use: powershell -NoProfile -ExecutionPolicy Bypass -Command '...'": "追加到 FirstLogonCommands：首次登录后以完整管理员权限执行，不弹 UAC。PowerShell 请写成 powershell -NoProfile -ExecutionPolicy Bypass -Command '...'"
     }
 };
 

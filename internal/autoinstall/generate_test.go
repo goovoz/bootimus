@@ -805,3 +805,36 @@ func TestRootPasswordHashSurvivesCurtinShell(t *testing.T) {
 		}
 	}
 }
+
+// [bootimus-fork L1] fork-patch: autoinstall-generator
+// 「额外 late-commands」在四种格式里的落点各不相同，转义方式也不同：YAML 要加双引号、
+// preseed 用 ; 连接、kickstart 追加到 %post、Windows 走 FirstLogonCommands。
+// 这里逐格式确认命令真写进去了，而且原文（含冒号、引号）没被吃掉、注释行被丢掉。
+func TestLateCommandsRenderPerFormat(t *testing.T) {
+	values := map[string]string{
+		"hostname": "node1", "username": "ubuntu", "password": "Sup3rSecret!",
+		"timezone": "UTC", "locale": "en_US.UTF-8", "keymap": "us",
+		"late_commands": "echo \"hi: there\" > /root/x\n# 注释行会被丢掉\n\nsystemctl enable --now foo",
+	}
+	want := map[string][]string{
+		"ubuntu-autoinstall":   {`- "echo \"hi: there\" > /root/x"`, `- "systemctl enable --now foo"`},
+		"debian-preseed":       {`echo "hi: there" > /root/x; systemctl enable --now foo`},
+		"rhel-kickstart":       {`echo "hi: there" > /root/x`, `systemctl enable --now foo`},
+		"windows-autounattend": {`<CommandLine>echo &#34;hi: there&#34; &gt; /root/x</CommandLine>`},
+	}
+	for id, wants := range want {
+		out, err := RenderTemplate(id, values)
+		if err != nil {
+			t.Errorf("%s: render: %v", id, err)
+			continue
+		}
+		for _, w := range wants {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: 缺少 %q\n%s", id, w, out)
+			}
+		}
+		if strings.Contains(out, "注释行") {
+			t.Errorf("%s: 注释行不该进答案文件:\n%s", id, out)
+		}
+	}
+}
