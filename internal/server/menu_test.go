@@ -120,7 +120,7 @@ func TestBuildKernelBootSectionProxmoxLoadsISOAsSecondInitrd(t *testing.T) {
 	if !strings.Contains(out, "initrd http://10.0.0.1:8080/boot/proxmox-ve_9.1-1/initrd\n") {
 		t.Errorf("expected the installer initrd line, got:\n%s", out)
 	}
-	if !strings.Contains(out, "initrd http://10.0.0.1:8080/isos/proxmox-ve_9.1-1.iso?mac=aa:bb:cc:dd:ee:ff proxmox.iso\n") {
+	if !strings.Contains(out, "initrd --name proxmox.iso http://10.0.0.1:8080/isos/proxmox-ve_9.1-1.iso?mac=aa:bb:cc:dd:ee:ff\n") {
 		t.Errorf("expected the ISO to be loaded as proxmox.iso, got:\n%s", out)
 	}
 }
@@ -365,7 +365,7 @@ func TestBuildWindowsBootSectionAutoUnattendInitrd(t *testing.T) {
 		BootMethod: "kernel",
 		Distro:     "windows",
 	}
-	unattendLine := "initrd http://10.0.0.1:8080/autoinstall/Win11_25H2.iso?mac=aa:bb:cc:dd:ee:ff AutoUnattend.xml\n"
+	unattendLine := "initrd --name AutoUnattend.xml http://10.0.0.1:8080/autoinstall/Win11_25H2.iso?mac=aa:bb:cc:dd:ee:ff\n"
 
 	cases := []struct {
 		name  string

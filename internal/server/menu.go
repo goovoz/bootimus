@@ -499,7 +499,11 @@ func (mb *MenuBuilder) buildKernelBootSection(img *models.Image, encodedFilename
 		sb.WriteString("echo Loading Windows boot files via wimboot...\n")
 		sb.WriteString(fmt.Sprintf("kernel %s/wimboot%s\n", localURL, bootParams))
 		if mb.autoInstallTypes[img.ID] == "autounattend" {
-			sb.WriteString(fmt.Sprintf("initrd %s/autoinstall/%s?mac=%s AutoUnattend.xml\n", localURL, encodedFilename, mb.macAddress))
+			// 名字必须用 --name 显式压短：wimboot 枚举 iPXE 的 EFI 文件系统时用的是固定
+			// 31 字符缓冲（VDISK_NAME_LEN），而 iPXE 给镜像取名取的是 URL 的 basename、
+			// 忽略行尾那个名字参数 —— /autoinstall/<ISO 文件名> 的 basename 有 58 字符，
+			// 会让 wimboot 直接 die：“Could not read root directory: 0x8000000000000005”。
+			sb.WriteString(fmt.Sprintf("initrd --name AutoUnattend.xml %s/autoinstall/%s?mac=%s\n", localURL, encodedFilename, mb.macAddress))
 		}
 		// Ship only boot.wim and let wimboot synthesize the ramdisk BCD +
 		// boot.sdi (the documented minimal setup). Feeding the ISO's DVD BCD
@@ -525,7 +529,7 @@ func (mb *MenuBuilder) buildKernelBootSection(img *models.Image, encodedFilename
 		sb.WriteString(fmt.Sprintf("kernel %s/boot/%s/%s%s%s\n", baseURL, cacheDir, kernelPath, autoInstallParam, bootParams))
 		sb.WriteString(fmt.Sprintf("initrd %s%s/boot/%s/%s\n", initrdName, baseURL, cacheDir, initrdPath))
 		if img.Distro == autoinstall.DistroProxmox {
-			sb.WriteString(fmt.Sprintf("initrd %s/isos/%s?mac=%s proxmox.iso\n", baseURL, encodedFilename, mb.macAddress))
+			sb.WriteString(fmt.Sprintf("initrd --name proxmox.iso %s/isos/%s?mac=%s\n", baseURL, encodedFilename, mb.macAddress))
 		}
 		if img.ShimPath != "" {
 			sb.WriteString(fmt.Sprintf("iseq ${platform} efi && shim %s/boot/%s/%s ||\n", baseURL, cacheDir, encodePathSegments(img.ShimPath)))

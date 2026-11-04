@@ -155,6 +155,21 @@
       "retire_policy": "探测到 IMPLEMENTED（上游 app.js 里已有 execCommand 兜底）→ 只告警不自动退役，人工确认覆盖面后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
+    },
+    {
+      "id": "wimboot-initrd-name",
+      "status": "active",
+      "summary": "Windows 的 AutoUnattend.xml 改用 initrd --name 压短名字（以及 Proxmox 的 proxmox.iso 同理），避免 wimboot 的 31 字符名字缓冲溢出导致 efi_extract 直接 die",
+      "rationale": "wimboot 枚举 iPXE 暴露的 EFI 文件系统时用固定 31 字符缓冲（VDISK_NAME_LEN）；iPXE 给镜像取名取 URL basename、忽略行尾名字参数。bootimus 的应答文件 URL 是 /autoinstall/<ISO 文件名>（58 字符），于是 wimboot 报 Could not read root directory: 0x8000000000000005 并退出，装 Win10 LTSC 2021 时表现为「加自动安装文件就引导失败」",
+      "trailer": "Fork-Patch: wimboot-initrd-name",
+      "detector": ".github/scripts/detect-wimboot-initrd-name.sh",
+      "touches": [
+        "internal/server/menu.go",
+        "internal/server/menu_test.go"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游也用了 --name）→ 只告警不自动退役，人工确认覆盖 proXmox 那条后再移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
     }
   ]
 }
