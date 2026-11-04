@@ -3525,7 +3525,9 @@ const SOURCE_TEXT = {
         "No password set.": "未设置密码。",
         "Versioned menu and image boot password verifiers for replicas. Requires an admin-scope token and HTTPS.": "供副本使用的带版本菜单/镜像启动密码校验器。需要 admin 作用域令牌和 HTTPS。",
         "Boot passwords must not contain +, ; or spaces (iPXE v2.0.0 compatibility)": "启动密码不能包含 +、; 或空格（iPXE v2.0.0 兼容性）",
-        "This URL does not end in .iso — the server will append it. Fill in \"File name\" to control the result.": "该地址不以 .iso 结尾 —— 服务器会自动补上。想控制最终文件名，请填写「文件名」。"
+        "This URL does not end in .iso — the server will append it. Fill in \"File name\" to control the result.": "该地址不以 .iso 结尾 —— 服务器会自动补上。想控制最终文件名，请填写「文件名」。",
+        "Show": "显示",
+        "Hide": "隐藏"
     }
 };
 

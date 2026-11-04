@@ -31,8 +31,18 @@ autoinstall:
 {{range .package_list}}    - {{.}}
 {{end}}{{end}}  late-commands:
     - curtin in-target -- systemctl enable ssh
-{{if eq .root_login "true"}}    - curtin in-target -- sh -c 'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config'
-{{end}}{{if .root_hash}}    - curtin in-target -- sh -c 'echo "root:{{.root_hash}}" | chpasswd -e'
+{{if eq .root_login "true"}}    # root 登录：写 sshd_config.d 下的 00- 分片。sshd 对同一关键字取「最先读到」
+    # 的值，而 Ubuntu 的 sshd_config 在顶部 Include 整个目录 —— 只改主文件会被
+    # 50-cloud-init.conf 盖回去，所以分片必须排在它前面。
+    - curtin in-target -- sh -c 'mkdir -p /etc/ssh/sshd_config.d && printf "%s\n" "PermitRootLogin yes" "PasswordAuthentication yes" "KbdInteractiveAuthentication yes" > /etc/ssh/sshd_config.d/00-bootimus-root.conf'
+    - curtin in-target -- sh -c 'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config'
+{{end}}{{if .root_hash}}    # 口令哈希里的 $ 必须转义：这行要穿过两层 shell，裸 $ 会被当成变量名展开，
+    # 真正落到 /etc/shadow 的只是一串残渣，root 从此登不上。
+    - curtin in-target -- sh -c 'echo "root:{{.root_hash_shell}}" | chpasswd -e'
+    # 首次开机 cloud-init 默认 disable_root: true，会 passwd -l 把 root 重新锁回去，
+    # 安装时设的口令等于白设；这里放一个优先级更高的分片让它别动 root。
+    # （冒号用 %s 拼，不在同一行写两处「冒号+空格」：YAML 普通标量容不下。）
+    - curtin in-target -- sh -c 'mkdir -p /etc/cloud/cloud.cfg.d && printf "disable_root%s false\nssh_pwauth%s true\n" ":" ":" > /etc/cloud/cloud.cfg.d/99-bootimus-root.cfg'
 {{end}}{{if .ssh_key_list}}    - curtin in-target -- mkdir -p /root/.ssh
     - curtin in-target -- rm -f /root/.ssh/authorized_keys
 {{range .ssh_key_list}}    - curtin in-target -- sh -c 'echo "{{.}}" >> /root/.ssh/authorized_keys'
