@@ -307,6 +307,12 @@ ping 127.0.0.1 -n 2 >nul 2>&1
 goto waitnet
 :netfail
 echo ERROR: Could not reach {{ .ServerAddr }} after 60 seconds.
+echo.
+echo Adapters WinPE can see (an empty list means boot.wim has no driver for this NIC):
+ipconfig /all
+echo.
+echo If the list above is empty: virtio NICs need the virtio-win driver injected into
+echo boot.wim, or set the VM adapter model to Intel E1000 / vmxnet3.
 echo Dropping to shell. Try: ipconfig, ping {{ .ServerAddr }}
 echo Type 'exit' to reboot.
 cmd.exe
