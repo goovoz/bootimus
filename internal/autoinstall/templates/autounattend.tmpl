@@ -117,7 +117,15 @@
       <ComputerName>{{.hostname}}</ComputerName>
       <TimeZone>{{.win_timezone}}</TimeZone>
     </component>
-  </settings>
+{{if .system_command_win}}    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <RunSynchronous>
+{{range .system_command_win}}        <RunSynchronousCommand wcm:action="add">
+          <Order>{{.Order}}</Order>
+          <Path>{{.Line}}</Path>
+        </RunSynchronousCommand>
+{{end}}      </RunSynchronous>
+    </component>
+{{end}}  </settings>
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
       <OOBE>

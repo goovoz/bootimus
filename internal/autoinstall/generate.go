@@ -108,6 +108,21 @@ func lateCommandsVar(format string) Var {
 	return v
 }
 
+// systemCommandsVar is the autounattend-only "run as SYSTEM at first boot" field.
+// It lands in the specialize pass (Microsoft-Windows-Deployment\RunSynchronous),
+// which runs before OOBE and before any user logs in.
+func systemCommandsVar() Var {
+	return Var{
+		Name:  "system_commands",
+		Label: "First-boot commands as SYSTEM (one per line)",
+		Type:  "textarea",
+		Help: "Runs in the specialize pass as SYSTEM, before OOBE and before anyone signs in. " +
+			"Each line is executed as a Path without a shell, so use full paths — " +
+			"'cmd /c ...' for redirection, 'powershell -NoProfile -Command ...' for PowerShell. " +
+			"A failing command makes Setup report an error, so guard it yourself.",
+	}
+}
+
 func selectVar(name, label, def string, opts ...Option) Var {
 	return Var{Name: name, Label: label, Type: "select", Default: def, Options: opts}
 }
@@ -331,6 +346,7 @@ var templates = []Template{
 			numberVar("image_index", "Install image index", "1", "Index inside install.wim / install.esd (/IMAGE/INDEX)."),
 			numberVar("disk_id", "Disk number", "0", ""), text("product_key", "Product key (optional)", "", "Leave empty to skip the key and activate later.", false),
 			lateCommandsVar("autounattend"),
+			systemCommandsVar(),
 		},
 	},
 }
@@ -514,6 +530,13 @@ func RenderTemplate(id string, values map[string]string) (string, error) {
 		winCmds = append(winCmds, winCommand{Order: i + 1, Line: xmlEscape(l)})
 	}
 	data["late_command_win"] = winCmds
+
+	sysCmds := splitCommandLines(asString(data["system_commands"]))
+	sysWin := make([]winCommand, 0, len(sysCmds))
+	for i, l := range sysCmds {
+		sysWin = append(sysWin, winCommand{Order: i + 1, Line: xmlEscape(l)})
+	}
+	data["system_command_win"] = sysWin
 
 	// 开了 root 登录，却既没给密码也没给公钥 —— 这条配置装完是登不上的。
 	// Ubuntu 装完 root 账号是锁定的（shadow 里是 !），只把 PermitRootLogin 改成 yes
