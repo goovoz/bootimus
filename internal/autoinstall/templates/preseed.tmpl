@@ -50,9 +50,12 @@ d-i grub-installer/bootdev string default
 
 #### Finish
 d-i finish-install/reboot_in_progress note
-{{if .ssh_key_list}}
+{{if or .ssh_key_list .late_command_joined}}
 d-i preseed/late_command string \
-    mkdir -p /target/root/.ssh && \
+{{if .ssh_key_list}}    mkdir -p /target/root/.ssh && \
 {{range $i, $k := .ssh_key_list}}    echo "{{$k}}" {{if eq $i 0}}>{{else}}>>{{end}} /target/root/.ssh/authorized_keys && \
-{{end}}    chmod 700 /target/root/.ssh && chmod 600 /target/root/.ssh/authorized_keys
+{{end}}    chmod 700 /target/root/.ssh && chmod 600 /target/root/.ssh/authorized_keys{{if .late_command_joined}} && \
+    {{.late_command_joined}}{{end}}
+{{else}}    {{.late_command_joined}}
+{{end}}
 {{end}}

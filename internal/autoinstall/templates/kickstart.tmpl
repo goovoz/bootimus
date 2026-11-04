@@ -35,4 +35,5 @@ systemctl enable sshd
 sed -i -E 's|^# *baseurl=https?://repo\.almalinux\.org/almalinux|baseurl={{.repo_base}}|' /etc/yum.repos.d/almalinux*.repo 2>/dev/null || true
 {{else}}sed -i -E 's|^mirrorlist=|#mirrorlist=|' /etc/yum.repos.d/rocky*.repo 2>/dev/null || true
 sed -i -E 's|^# *baseurl=https?://dl\.rockylinux\.org/\$contentdir|baseurl={{.repo_base}}|' /etc/yum.repos.d/rocky*.repo 2>/dev/null || true
-{{end}}{{end}}%end
+{{end}}{{end}}{{range .late_command_list}}{{.}}
+{{end}}%end

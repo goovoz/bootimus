@@ -79,6 +79,35 @@ func passwordVar(name, label string, required bool) Var {
 	return Var{Name: name, Label: label, Type: "password", Help: "Stored in the generated file as plain text — keep the file on a trusted network.", Required: required}
 }
 
+// winCommand is one FirstLogonCommands entry of an autounattend answer file.
+// Windows runs them in <Order> sequence and the numbers must start at 1.
+type winCommand struct {
+	Order int
+	Line  string
+}
+
+// lateCommandsVar is the "extra commands after install" textarea. The same text
+// ends up in four very different places, so the help text carries the detail and
+// the renderer does the per-format escaping.
+func lateCommandsVar(format string) Var {
+	v := Var{
+		Name:  "late_commands",
+		Label: "Extra late-commands (one per line)",
+		Type:  "textarea",
+	}
+	switch format {
+	case "preseed":
+		v.Help = "Joined with ; and appended to preseed/late_command, which d-i runs in the installer environment — /target is the new system's root."
+	case "kickstart":
+		v.Help = "Appended to the %post section, which Anaconda runs chrooted into /mnt/sysimage, so the commands see the installed system."
+	case "autoinstall":
+		v.Help = "Appended to late-commands; each line runs inside the target chroot. Prefix a line with 'curtin in-target --' to run it in the installed system."
+	case "autounattend":
+		v.Help = "Appended to FirstLogonCommands: runs once at first sign-in with full administrator rights and no UAC prompt. For PowerShell use: powershell -NoProfile -ExecutionPolicy Bypass -Command '...'"
+	}
+	return v
+}
+
 func selectVar(name, label, def string, opts ...Option) Var {
 	return Var{Name: name, Label: label, Type: "select", Default: def, Options: opts}
 }
@@ -221,6 +250,7 @@ var templates = []Template{
 			selectVar("tasks", "Task selection", "standard, ssh-server",
 				opt("standard", "Standard system"), opt("standard, ssh-server", "Standard + SSH server"), opt("none", "None")),
 			text("disk", "Target disk (optional)", "", "Empty = let the installer pick the only disk. e.g. /dev/sda, /dev/vda, /dev/nvme0n1", false),
+			lateCommandsVar("preseed"),
 		),
 	},
 	{
@@ -237,6 +267,7 @@ var templates = []Template{
 			selectVarHelp("repo_family", "Repository family", "rocky", "Which repository files the mirror rewrite applies to; pick the family you are actually installing.", opt("rocky", "Rocky Linux"), opt("almalinux", "AlmaLinux")),
 			selectVar("partition", "Partitioning", "lvm",
 				opt("lvm", "LVM"), opt("btrfs", "Btrfs"), opt("plain", "Plain partitions")),
+			lateCommandsVar("kickstart"),
 		),
 	},
 	{
@@ -268,6 +299,7 @@ var templates = []Template{
 			selectVar("root_login", "Allow root login", "false",
 				opt("false", "Disabled"), opt("true", "Enabled")),
 			passwordVar("root_password", "Root password (optional)", false),
+			lateCommandsVar("autoinstall"),
 		),
 	},
 	{
@@ -298,6 +330,7 @@ var templates = []Template{
 			text("win_timezone", "Windows time zone", "China Standard Time", "Windows zone name, e.g. China Standard Time, UTC", true),
 			numberVar("image_index", "Install image index", "1", "Index inside install.wim / install.esd (/IMAGE/INDEX)."),
 			numberVar("disk_id", "Disk number", "0", ""), text("product_key", "Product key (optional)", "", "Leave empty to skip the key and activate later.", false),
+			lateCommandsVar("autounattend"),
 		},
 	},
 }
@@ -464,6 +497,24 @@ func RenderTemplate(id string, values map[string]string) (string, error) {
 	// 字符串塞进单条命令里。
 	data["ssh_key_list"] = splitSSHKeys(asString(data["ssh_key"]))
 
+	// 额外 late-commands：同一段文本在四种格式里落点完全不同（d-i 的
+	// preseed/late_command、Anaconda 的 %post、subiquity 的 late-commands、
+	// Windows 的 FirstLogonCommands），所以这里一次性算好四份表示，
+	// 各模板只取自己要的那份，转义也在这里做，模板里不做。
+	extraCmds := splitCommandLines(asString(data["late_commands"]))
+	data["late_command_list"] = extraCmds
+	yamlCmds := make([]string, 0, len(extraCmds))
+	for _, l := range extraCmds {
+		yamlCmds = append(yamlCmds, yamlEscape(l))
+	}
+	data["late_command_yaml"] = yamlCmds
+	data["late_command_joined"] = strings.Join(extraCmds, "; ")
+	winCmds := make([]winCommand, 0, len(extraCmds))
+	for i, l := range extraCmds {
+		winCmds = append(winCmds, winCommand{Order: i + 1, Line: xmlEscape(l)})
+	}
+	data["late_command_win"] = winCmds
+
 	// 开了 root 登录，却既没给密码也没给公钥 —— 这条配置装完是登不上的。
 	// Ubuntu 装完 root 账号是锁定的（shadow 里是 !），只把 PermitRootLogin 改成 yes
 	// 并不能解除锁定；用户往往要到登录失败时才发现，很难自己定位到这一层。
@@ -492,6 +543,22 @@ func RenderTemplate(id string, values map[string]string) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// splitCommandLines turns the "extra late-commands" textarea into one command per
+// line. Blank lines and full-line # comments are dropped: an empty late-command is
+// a syntax error on every one of the four formats, and a stray comment line would
+// otherwise become a bogus command in the Windows first-logon list.
+func splitCommandLines(raw string) []string {
+	var out []string
+	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 var packageSplit = regexp.MustCompile(`[\s,]+`)
