@@ -435,6 +435,14 @@ func RenderTemplate(id string, values map[string]string) (string, error) {
 	// 始终设置该键，避免 missingkey=error 在 {{if .root_hash}} 上报错。
 	rp, _ := data["root_password"].(string)
 	data["root_hash"] = HashPassword(rp)
+	// [bootimus-fork L1] fork-patch: autoinstall-generator
+	// 这张哈希要拼进 "sh -c 'echo root:<hash> | chpasswd -e'"，而这条命令要穿过两层
+	// shell：curtin 先用 sh -c 执行整条 late-command，目标系统里再跑一次 sh -c。
+	// 裸 $ 会被内层 shell 当变量名展开 —— 实测 $6$7mBqa...$NAZR... 落成
+	// "mBqaEfXPgZWQRcO.wxSDVqu4jRr0tZLxoqxsJOBEimz7u1E/"，/etc/shadow 里存下的
+	// 就是一串 48 字符残渣：装机成功，root 却永远登不上（2026-11-04 线上复现）。
+	// 所以模板只能拿这一份转义过的版本去拼命令。
+	data["root_hash_shell"] = strings.ReplaceAll(data["root_hash"].(string), "$", "\\$")
 
 	// Windows 本地账户口令留空时沿用管理员口令，少填一次
 	if lp, ok := data["local_password"].(string); ok && lp == "" {
