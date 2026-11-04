@@ -49,3 +49,7 @@ autoinstall:
 {{end}}    - curtin in-target -- chmod 700 /root/.ssh
     - curtin in-target -- chmod 600 /root/.ssh/authorized_keys
 {{end}}
+{{if .late_command_list}}    # 额外命令：原样追加，逐行加双引号 —— YAML 普通标量容不下
+    # 冒号加空格、井号这些字符，命令里几乎一定会出现。
+{{range .late_command_yaml}}    - "{{.}}"
+{{end}}{{end}}
