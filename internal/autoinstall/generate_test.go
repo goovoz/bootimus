@@ -4,6 +4,7 @@ package autoinstall
 // 与实现同生共死：上游若自带模板生成能力，本文件连同 generate.go 一并删除。
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -756,5 +757,51 @@ func TestKickstartMirrorRewritesRepo(t *testing.T) {
 	}
 	if strings.Contains(out, "rocky*.repo") {
 		t.Errorf("almalinux 分支不应碰 rocky*.repo:\n%s", out)
+	}
+}
+
+// [bootimus-fork L1] fork-patch: autoinstall-generator
+// 2026-11-04 线上故障的回归：模板曾把 root 哈希原样塞进 sh -c "..."，内层 shell 把
+// $6$salt$hash 当变量展开，chpasswd 收到一串 48 字符残渣 —— 装机成功，root 登不上。
+// 这里按 curtin 的方式（sh -c 执行整条 late-command）把命令真跑一遍，确认哈希原样送达。
+func TestRootPasswordHashSurvivesCurtinShell(t *testing.T) {
+	values := map[string]string{
+		"hostname": "node1", "username": "ubuntu", "password": "Sup3rSecret!",
+		"timezone": "UTC", "locale": "en_US.UTF-8", "keymap": "us",
+		"root_login": "true", "root_password": "RootPass1!",
+	}
+	out, err := RenderTemplate("ubuntu-autoinstall", values)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "chpasswd -e") {
+			line = strings.TrimSpace(l)
+		}
+	}
+	if line == "" {
+		t.Fatalf("autoinstall 里没有 chpasswd 行:\n%s", out)
+	}
+	if !strings.Contains(line, "\\$6\\$") {
+		t.Errorf("root 哈希没有对 shell 转义，装完必然登不上：%s", line)
+	}
+	// 用 cat 顶替 chpasswd -e，把命令真正送达的口令行读回来
+	cmd := strings.Replace(strings.TrimPrefix(line, "- curtin in-target -- "), "chpasswd -e", "cat", 1)
+	got, err := exec.Command("sh", "-c", cmd).Output()
+	if err != nil {
+		t.Fatalf("run %q: %v", cmd, err)
+	}
+	pw := strings.TrimSpace(string(got))
+	if !strings.HasPrefix(pw, "root:$6$") || strings.Count(strings.TrimPrefix(pw, "root:"), "$") != 3 {
+		t.Fatalf("哈希被 shell 展开成残渣：%q", pw)
+	}
+	for _, want := range []string{
+		"/etc/ssh/sshd_config.d/00-bootimus-root.conf",
+		"/etc/cloud/cloud.cfg.d/99-bootimus-root.cfg",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("autoinstall 缺少 %q", want)
+		}
 	}
 }
