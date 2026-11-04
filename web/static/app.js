@@ -3891,7 +3891,7 @@ async function copyAPIRefCurl(btn) {
     if (!wrap) return;
     const code = wrap.querySelector('code').textContent;
     try {
-        await navigator.clipboard.writeText(code);
+        await copyTextToClipboard(code);
         btn.classList.add('copied');
         const orig = btn.innerHTML;
         btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
@@ -6034,8 +6034,8 @@ async function showEditFileModal(fileId) {
         document.getElementById('edit-file-size').value = formatBytes(file.size);
 
         const serverAddr = window.location.hostname;
-        const port = 8080;
-        const url = `http://${serverAddr}:${port}/files/${file.filename}`;
+        // 端口要跟配置走（cachedHTTPPort），写死 8080 在改了 http_port 的部署上会给出错的链接
+        const url = `http://${serverAddr}:${cachedHTTPPort}/files/${file.filename}`;
         document.getElementById('edit-file-url').textContent = url;
 
         showModal('edit-file-modal');
@@ -6099,25 +6099,58 @@ async function deleteFile(fileId, filename) {
     }
 }
 
-function copyFileDownloadURL(filename) {
-    const serverAddr = window.location.hostname;
-    const port = 8080;
-    const url = `http://${serverAddr}:${port}/files/${filename}`;
-
-    navigator.clipboard.writeText(url).then(() => {
-        showNotification('Download URL copied to clipboard', 'success');
-    }).catch(() => {
-        showNotification('Failed to copy URL', 'error');
-    });
+// [bootimus-fork L1] fork-patch: clipboard-fallback
+// navigator.clipboard 只在安全上下文（HTTPS 或 localhost）里存在。用 http://<内网IP>:<端口>
+// 打开管理台时它是 undefined，直接调用会抛 TypeError —— 而且是同步抛出，连 .catch() 都
+// 进不去，按钮看起来就是「点了没反应」。这里统一走三级兜底：
+//   Clipboard API → document.execCommand('copy') → 弹框让用户手工复制
+async function copyTextToClipboard(text) {
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (err) {
+            // 权限被拒或用户拒绝：继续走兜底
+        }
+    }
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.left = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) return true;
+    } catch (err) {
+        // 继续兜底
+    }
+    window.prompt('Copy manually (Ctrl+C):', text);
+    return false;
 }
 
-function copyFileURL() {
-    const url = document.getElementById('edit-file-url').textContent;
-    navigator.clipboard.writeText(url).then(() => {
-        showNotification('URL copied to clipboard', 'success');
-    }).catch(() => {
+async function copyFileDownloadURL(filename) {
+    const url = `http://${window.location.hostname}:${cachedHTTPPort}/files/${filename}`;
+    if (await copyTextToClipboard(url)) {
+        showNotification('Download URL copied to clipboard', 'success');
+    } else {
         showNotification('Failed to copy URL', 'error');
-    });
+    }
+}
+
+async function copyFileURL() {
+    const url = document.getElementById('edit-file-url').textContent;
+    if (await copyTextToClipboard(url)) {
+        showNotification('URL copied to clipboard', 'success');
+    } else {
+        showNotification('Failed to copy URL', 'error');
+    }
 }
 
 function formatBytes(bytes) {
@@ -8975,7 +9008,7 @@ async function previewBootMenu(mac) {
 async function copyMenuPreview() {
     if (!menuPreviewData) return;
     try {
-        await navigator.clipboard.writeText(menuPreviewData.script || '');
+        await copyTextToClipboard(menuPreviewData.script || '');
         showAlert('Boot menu script copied', 'success');
     } catch (err) {
         showAlert('Copy failed: ' + err.message, 'error');
@@ -9234,7 +9267,7 @@ async function createAPIToken(e) {
 async function copyAPITokenSecret() {
     const secret = document.getElementById('api-token-secret-value').textContent;
     try {
-        await navigator.clipboard.writeText(secret);
+        await copyTextToClipboard(secret);
         showAlert('Token copied', 'success');
     } catch (err) {
         showAlert('Copy failed: ' + err.message, 'error');
@@ -9355,7 +9388,7 @@ async function enableTOTP() {
 
 async function copyTOTPRecoveryCodes() {
     try {
-        await navigator.clipboard.writeText(document.getElementById('totp-recovery-codes').textContent);
+        await copyTextToClipboard(document.getElementById('totp-recovery-codes').textContent);
         showAlert('Recovery codes copied', 'success');
     } catch (err) {
         showAlert('Copy failed: ' + err.message, 'error');

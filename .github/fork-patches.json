@@ -141,6 +141,20 @@
       "retire_policy": "探测到 IMPLEMENTED（上游自己加了镜像/多源/重试）→ 人工确认覆盖范围后再移除",
       "retired_at": null,
       "retired_upstream_commit": null
+    },
+    {
+      "id": "clipboard-fallback",
+      "status": "active",
+      "summary": "管理台的复制动作统一走 copyTextToClipboard()：安全上下文用 Clipboard API，否则退回 execCommand('copy')，再不行弹框让人手工复制；顺手把两处写死的 8080 换成配置里的 http_port",
+      "rationale": "navigator.clipboard 只在安全上下文（HTTPS 或 localhost）里存在。内网用 http://IP:端口 打开管理台时它是 undefined，调用会同步抛 TypeError —— 连 .catch() 都进不去，按钮看起来完全没反应；内网部署基本不会上 TLS",
+      "trailer": "Fork-Patch: clipboard-fallback",
+      "detector": ".github/scripts/detect-clipboard-fallback.sh",
+      "touches": [
+        "web/static/app.js"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游 app.js 里已有 execCommand 兜底）→ 只告警不自动退役，人工确认覆盖面后再移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
     }
   ]
 }
