@@ -120,8 +120,13 @@ function renderAiTemplateForm(tpl) {
         } else if (v.type === 'textarea') {
             input = `<textarea class="form-control" id="${id}" data-var="${v.name}" rows="2" oninput="scheduleAiTemplatePreview()">${escapeHtml(v.default || '')}</textarea>`;
         } else {
-            const type = v.type === 'password' ? 'password' : 'text';
-            input = `<input type="${type}" class="form-control" id="${id}" data-var="${v.name}" value="${escapeHtml(v.default || '')}" oninput="scheduleAiTemplatePreview()">`;
+            // [bootimus-fork L1] 口令字段默认明文显示：生成出来的答案文件里本来就存着哈希/明文，
+            // 遮起来只会让人看不清自己刚设的密码。右侧给一个 Hide 按钮，需要时再遮回去。
+            const secret = v.type === 'password';
+            input = `<input type="text" class="form-control" id="${id}" data-var="${v.name}" value="${escapeHtml(v.default || '')}" autocomplete="off" spellcheck="false" oninput="scheduleAiTemplatePreview()">`;
+            if (secret) {
+                input += ` <button type="button" class="btn btn-sm" style="margin-top: 4px;" onclick="toggleAiSecret('${id}', this)">Hide</button>`;
+            }
         }
         // 支持按客户端取值的字段：勾上就把值换成占位符，由 bootimus 在下发时替换
         const perClient = v.placeholder
@@ -138,6 +143,15 @@ function renderAiTemplateForm(tpl) {
             + `<label for="${id}" style="margin-bottom: 2px;">${escapeHtml(v.label)}${required}${badge}</label>`
             + input + randomBtn + perClient + help + '</div>';
     }).join('');
+}
+
+// 口令字段的显隐切换。用 input.type 记状态，不看按钮文案 —— 文案会被 i18n 换成中文。
+function toggleAiSecret(id, btn) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const hidden = el.type === 'password';
+    el.type = hidden ? 'text' : 'password';
+    if (btn) btn.textContent = hidden ? 'Hide' : 'Show';
 }
 
 function randomHostnameFor(tpl) {
