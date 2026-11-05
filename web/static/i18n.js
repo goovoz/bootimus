@@ -3563,7 +3563,13 @@ const SOURCE_TEXT = {
         "pending": "待处理",
         "completed": "已完成",
         "failed": "失败",
-        "cancelled": "已取消"
+        "cancelled": "已取消",
+        "approved": "已批准",
+        "rejected": "已拒绝",
+        "installed": "已安装",
+        "installing": "安装中",
+        "booted": "已启动",
+        "running": "运行中"
     }
 };
 
