@@ -109,7 +109,7 @@ func TestHandleRecordsSentReply(t *testing.T) {
 	defer conn.Close()
 	req := discover(t, "00:11:22:33:44:55", "PXEClient:Arch:00000:UNDI:002001")
 	src := conn.LocalAddr().(*net.UDPAddr)
-	s.handle(conn, src, req, false)
+	s.handle(conn, src, req, false, 0)
 	events := rec.Events()
 	if len(events) != 1 {
 		t.Fatalf("recorded %d events, want 1", len(events))

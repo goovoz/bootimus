@@ -562,6 +562,14 @@ tftp 192.168.1.10
 docker logs bootimus | grep TFTP
 ```
 
+### 客户端拿到地址，但拿不到 bootfile
+
+bootimus 日志里明明有 `proxyDHCP: DISCOVER -> ... bootfile=undionly.kpxe`，客户端却打印 `Nothing to boot`、退回去启动本地磁盘，或者压根没显示 `Next server`。reply 是发出去了 —— 但发往 `255.255.255.255:68`，走的是路由表：机器上不止一块网卡时（docker 网桥、管理口、VPN tun），广播会从**默认路由**那块网卡出去，而不是客户端所在的 LAN。
+
+bootimus 会在 UDP/67 上打开 `IP_PKTINFO`，记住请求从哪块网卡进来，reply 就从那块网卡、用它自己的地址作为源地址发回去。这样「一块 LAN + 若干 docker 网桥」的机器就能正常工作。如果机器上真有多块 LAN，或者客户端在 DHCP 中继后面，用 `--bind-interface <nic>` 把服务端钉在一块网卡上 —— 它会给所有监听套接字加 `SO_BINDTODEVICE`。
+
+proxyDHCP 事件日志（`GET /api/proxydhcp/events`，或管理台的 proxyDHCP 页）记了每条请求的源地址和 reply 的去向，是最快的确认手段。
+
 ### iPXE 加载但没有菜单
 
 ```bash
