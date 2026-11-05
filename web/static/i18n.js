@@ -3553,7 +3553,17 @@ const SOURCE_TEXT = {
         "Appended to late-commands; each line runs inside the target chroot. Prefix a line with 'curtin in-target --' to run it in the installed system.": "追加到 late-commands：每行在目标系统 chroot 里执行；要跑在装好的系统里，行首加 curtin in-target --。",
         "Appended to FirstLogonCommands: runs once at first sign-in with full administrator rights and no UAC prompt. For PowerShell use: powershell -NoProfile -ExecutionPolicy Bypass -Command '...'": "追加到 FirstLogonCommands：首次登录后以完整管理员权限执行，不弹 UAC。PowerShell 请写成 powershell -NoProfile -ExecutionPolicy Bypass -Command '...'",
         "First-boot commands as SYSTEM (one per line)": "首次开机以 SYSTEM 执行（每行一条）",
-        "Runs in the specialize pass as SYSTEM, before OOBE and before anyone signs in. Each line is executed as a Path without a shell, so use full paths — 'cmd /c ...' for redirection, 'powershell -NoProfile -Command ...' for PowerShell. A failing command makes Setup report an error, so guard it yourself.": "在 specialize 阶段以 SYSTEM 权限执行，早于 OOBE、不需要有人登录。每行按 Path 直接执行（不经过 shell），所以要写全路径：重定向用 cmd /c …，PowerShell 用 powershell -NoProfile -Command …。命令失败会让安装报错，注意自己兜底。"
+        "Runs in the specialize pass as SYSTEM, before OOBE and before anyone signs in. Each line is executed as a Path without a shell, so use full paths — 'cmd /c ...' for redirection, 'powershell -NoProfile -Command ...' for PowerShell. A failing command makes Setup report an error, so guard it yourself.": "在 specialize 阶段以 SYSTEM 权限执行，早于 OOBE、不需要有人登录。每行按 Path 直接执行（不经过 shell），所以要写全路径：重定向用 cmd /c …，PowerShell 用 powershell -NoProfile -Command …。命令失败会让安装报错，注意自己兜底。",
+        "Copy manually (Ctrl+C):": "请手动复制（Ctrl+C）：",
+        "Deploy": "部署",
+        "deploy": "部署",
+        "capture": "抓取",
+        "ready": "就绪",
+        "capturing": "抓取中",
+        "pending": "待处理",
+        "completed": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消"
     }
 };
 
@@ -3806,6 +3816,12 @@ const NATIVE_TEXT_PATTERNS = {
             (m, name) => '吊销令牌「' + name + '」？正在使用它的地方会立即失效。'],
         [/^Delete the token "(.+?)"\? The record is removed from this list; anything that used it stopped working when it was revoked\.$/,
             (m, name) => '确定删除令牌「' + name + '」？该记录会从列表里移除；它吊销之后本来就已经失效了。'],
+        // 磁盘镜像部署：Clonezilla 会覆盖目标盘，文案里带镜像名/磁盘/分区大小三处变量
+        [/^Deploy (.+?) and overwrite disk (.+?) on the selected target on its next PXE boot\? Partition sizing: (.+?)\.$/,
+            (m, image, disk, sizing) => '确定部署 ' + image + ' 并覆盖磁盘 ' + disk + '？目标机下次 PXE 启动时执行。分区大小：' +
+                (sizing === 'partitions scaled to the target disk' ? '分区按目标盘缩放' : '保持镜像的分区表') + '。'],
+        [/^Deploy (.+?) and overwrite disk (.+?) on the selected target on its next PXE boot\?$/,
+            (m, image, disk) => '确定部署 ' + image + ' 并覆盖磁盘 ' + disk + '？目标机下次 PXE 启动时执行。'],
 
     ]
 };
