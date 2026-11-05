@@ -185,6 +185,25 @@
       "retire_policy": "探测到 IMPLEMENTED（上游自己打印网卡信息）→ 人工确认后移除",
       "retired_at": null,
       "retired_upstream_commit": null
+    },
+    {
+      "id": "proxydhcp-reply-via-ingress",
+      "status": "active",
+      "summary": "proxyDHCP 的 OFFER/ACK 从请求进来的那块网卡回：UDP/67 上开 IP_PKTINFO 记下 ingress ifindex，回包用该网卡地址作源、走同一块网卡发出",
+      "rationale": "reply 发往 255.255.255.255:68 时内核按路由表选出口；多网卡机器（docker 网桥 / 管理口 / VPN tun）上广播会从默认路由那块出去，客户端收不到，而日志里显示「已回复」—— 现场表现为「内置 proxyDHCP 的 iPXE 应答收不到」",
+      "trailer": "Fork-Patch: proxydhcp-reply-via-ingress",
+      "detector": ".github/scripts/detect-proxydhcp-reply-via-ingress.sh",
+      "touches": [
+        "internal/netbind/pktinfo_linux.go",
+        "internal/netbind/pktinfo_other.go",
+        "internal/proxydhcp/proxydhcp.go",
+        "internal/proxydhcp/recorder_test.go",
+        "docs/en/dhcp.md",
+        "docs/zh-CN/dhcp.md"
+      ],
+      "retire_policy": "探测到 IMPLEMENTED（上游用 IP_PKTINFO 决定回包出口）→ 只告警不自动退役：需人工确认上游也处理了多网卡与中继两种场景后再移除",
+      "retired_at": null,
+      "retired_upstream_commit": null
     }
   ]
 }

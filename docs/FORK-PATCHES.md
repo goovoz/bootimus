@@ -68,6 +68,7 @@ main = 上游 main + 一串「带 Fork-Patch trailer 的补丁提交」
 | `clipboard-fallback` | active | 复制动作统一走 copyTextToClipboard()：安全上下文用 Clipboard API，否则 execCommand('copy')，再不行弹窗让人手抄；顺手把写死的 8080 换成配置里的 http_port（上游 125 issue / 109 PR 里没有相同报告，2026-11-04 检索 clipboard、navigator.clipboard、secure context、http_port 均 0 条） | `web/static/app.js` |
 | `wimboot-initrd-name` | active | Windows 的 AutoUnattend.xml 改用 `initrd --name` 压短名字（Proxmox 的 proxmox.iso 同理）：iPXE 忽略行尾名字、按 URL basename 取名，58 字符会让 wimboot 的 31 字符缓冲溢出并直接退出 | `internal/server/menu.go`、`internal/server/menu_test.go` |
 | `winpe-net-diagnostics` | active | WinPE 连不上服务器时自动打印 ipconfig /all 并说明「列表为空 = boot.wim 缺网卡驱动（virtio 需要 virtio-win 或改用 e1000）」 | `internal/admin/handlers.go`、`internal/admin/startnet_test.go` |
+| `proxydhcp-reply-via-ingress` | active | proxyDHCP 的 OFFER/ACK 从请求进来的那块网卡回（UDP/67 开 `IP_PKTINFO`）：否则多网卡机器上广播按默认路由从错误的口出去，客户端「收不到 ipxe 应答」而日志显示已回复 | `internal/netbind/pktinfo_{linux,other}.go`、`internal/proxydhcp/proxydhcp.go` |
 
 清单的机器可读版本在 `.github/fork-patches.json`（含探测器路径、退役策略、触碰文件）。
 

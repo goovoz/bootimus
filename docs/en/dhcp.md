@@ -566,6 +566,14 @@ tftp 192.168.1.10
 docker logs bootimus | grep TFTP
 ```
 
+### The Client Gets an Address but Never a Bootfile
+
+Bootimus logs `proxyDHCP: DISCOVER -> ... bootfile=undionly.kpxe` and the client still prints `Nothing to boot` (or never shows a `Next server` line at all). The reply *was* sent — but to `255.255.255.255:68`, which follows the routing table. On a host with more than one network interface (a docker bridge, a management port, a VPN tun device) it leaves through the **default-route** interface instead of the LAN the client sits on.
+
+Bootimus asks the kernel for `IP_PKTINFO` on the UDP/67 socket and sends every reply back out of the interface the request arrived on, using that interface's address as the source. That covers the usual "one LAN plus docker bridges" host. If the machine really has several LANs, or the client is behind a DHCP relay, pin the server to one NIC with `--bind-interface <nic>` — that binds every listener with `SO_BINDTODEVICE`.
+
+The proxyDHCP event log (`GET /api/proxydhcp/events`, or the proxyDHCP tab) records the source address of each request and where the reply went, which is the quickest way to confirm this is what you are hitting.
+
 ### iPXE Loads But No Menu
 
 ```bash

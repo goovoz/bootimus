@@ -91,6 +91,13 @@ func (s *Server) Start() error {
 		return fmt.Errorf("enable broadcast on UDP/67: %w", err)
 	}
 	s.conn = conn
+	// [bootimus-fork L1] fork-patch: proxydhcp-reply-via-ingress
+	// 不指定 --bind-interface 时，靠 IP_PKTINFO 记住请求从哪块网卡进来，回包也从那块走。
+	if s.cfg.Interface == "" {
+		if err := netbind.EnablePacketInfo(conn); err != nil {
+			log.Printf("proxyDHCP: cannot enable IP_PKTINFO (%v); broadcast replies will follow the default route, so pass --bind-interface on a host with more than one NIC", err)
+		}
+	}
 
 	conn4011, err := netbind.ListenUDP(s.cfg.Interface, "udp4", "0.0.0.0:4011")
 	if err != nil {
@@ -140,7 +147,7 @@ func (s *Server) loop(conn *net.UDPConn, bootp bool) {
 			return
 		default:
 		}
-		n, src, err := conn.ReadFromUDP(buf)
+		n, src, ifindex, err := netbind.ReadFromUDP(conn, buf)
 		if err != nil {
 			select {
 			case <-s.done:
@@ -155,11 +162,11 @@ func (s *Server) loop(conn *net.UDPConn, bootp bool) {
 			log.Printf("proxyDHCP: parse error: %v", err)
 			continue
 		}
-		s.handle(conn, src, req, bootp)
+		s.handle(conn, src, req, bootp, ifindex)
 	}
 }
 
-func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, req *dhcpv4.DHCPv4, bootp bool) {
+func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, req *dhcpv4.DHCPv4, bootp bool, ifindex int) {
 	port := 4011
 	if bootp {
 		port = 67
@@ -174,10 +181,19 @@ func (s *Server) handle(conn *net.UDPConn, src *net.UDPAddr, req *dhcpv4.DHCPv4,
 
 	dst := replyAddr(src, req, bootp)
 	ev.ReplyTo = dst.String()
-	if _, err := conn.WriteToUDP(resp.ToBytes(), dst); err != nil {
-		log.Printf("proxyDHCP: send reply: %v", err)
+	// [bootimus-fork L1] fork-patch: proxydhcp-reply-via-ingress
+	// 有 ifindex 就从请求进来的那块网卡回（源地址也用那块网卡的 IP），
+	// 否则在装了 docker / 有多块网卡的机器上，广播会按默认路由从错误的口发出去。
+	var sendErr error
+	if ifindex != 0 {
+		_, sendErr = netbind.WriteToUDP(conn, resp.ToBytes(), dst, ifindex, netbind.InterfaceIPv4ByIndex(ifindex))
+	} else {
+		_, sendErr = conn.WriteToUDP(resp.ToBytes(), dst)
+	}
+	if sendErr != nil {
+		log.Printf("proxyDHCP: send reply: %v", sendErr)
 		ev.Outcome = OutcomeFailed
-		ev.Decision = fmt.Sprintf("Reply could not be sent to %s: %v", dst, err)
+		ev.Decision = fmt.Sprintf("Reply could not be sent to %s: %v", dst, sendErr)
 		s.observe(ev)
 		return
 	}
