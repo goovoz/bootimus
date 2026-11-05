@@ -2,6 +2,7 @@
 bootimus
 bootimus-*
 !/ops/watchdog/bootimus-*
+!/ops/i18n/systemd/bootimus-*
 !bootloaders/default/bootimus-arm64.efi
 *.exe
 *.dll
