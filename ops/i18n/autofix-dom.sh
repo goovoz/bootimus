@@ -73,11 +73,11 @@ done
 python3 - <<'PY' || log "  ! 预置磁盘镜像数据失败（该页徽章可能扫不到）"
 import datetime, sqlite3
 db = "/tmp/autofix-dom-data/bootimus.db"
-now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S+00:00")
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S+00:00")
 con = sqlite3.connect(db, timeout=10)
 cur = con.cursor()
 cur.execute("INSERT INTO disk_images (created_at, updated_at, name, description, source_mac, source_client_name, disk, size_bytes, state) VALUES (?,?,?,?,?,?,?,?,?)",
-            (now, now, "audit-sample", "", "aa:bb:cc:dd:ee:01", "lab-01", "sda", 4456448000, "ready"))
+            (now, now, "demo-image", "", "aa:bb:cc:dd:ee:01", "lab-01", "sda", 4456448000, "ready"))
 img = cur.lastrowid
 for kind, state, msg in (("deploy", "pending", ""), ("deploy", "completed", ""), ("capture", "completed", ""), ("deploy", "failed", "ocs-sr_exit_1")):
     cur.execute("INSERT INTO disk_jobs (created_at, updated_at, client_mac, client_name, kind, disk_image_id, disk, resize, state, token, message) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
