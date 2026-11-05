@@ -241,6 +241,12 @@ const NATIVE_TEXT_PATTERNS = {
             (m, name) => '吊销令牌「' + name + '」？正在使用它的地方会立即失效。'],
         [/^Delete the token "(.+?)"\\? The record is removed from this list; anything that used it stopped working when it was revoked\\.$/,
             (m, name) => '确定删除令牌「' + name + '」？该记录会从列表里移除；它吊销之后本来就已经失效了。'],
+        // 磁盘镜像部署：Clonezilla 会覆盖目标盘，文案里带镜像名/磁盘/分区大小三处变量
+        [/^Deploy (.+?) and overwrite disk (.+?) on the selected target on its next PXE boot\\? Partition sizing: (.+?)\\.$/,
+            (m, image, disk, sizing) => '确定部署 ' + image + ' 并覆盖磁盘 ' + disk + '？目标机下次 PXE 启动时执行。分区大小：' +
+                (sizing === 'partitions scaled to the target disk' ? '分区按目标盘缩放' : '保持镜像的分区表') + '。'],
+        [/^Deploy (.+?) and overwrite disk (.+?) on the selected target on its next PXE boot\\?$/,
+            (m, image, disk) => '确定部署 ' + image + ' 并覆盖磁盘 ' + disk + '？目标机下次 PXE 启动时执行。'],
 
     ]
 };
