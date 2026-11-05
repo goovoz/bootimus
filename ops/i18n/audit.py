@@ -30,6 +30,7 @@ APP_JS = ROOT / 'web/static/app.js'
 INDEX = ROOT / 'web/static/index.html'
 FORK_UI = ROOT / 'web/static/fork-ui.js'
 GEN_GO = ROOT / 'internal/autoinstall/generate.go'
+MODELS_GO = ROOT / 'internal/models/models.go'
 
 # 过滤规则放 audit-rules.json，与 audit-dom.js 共用一份。
 # 以前两边各写一份，加白名单时只改了一边 —— LVM/ZFS/AlmaLinux 这些在静态侧排除了，
@@ -123,6 +124,27 @@ def collect_go_labels(path):
     return out
 
 
+ENUM_CONST = re.compile(r'^\t([A-Za-z][A-Za-z0-9_]*(?:State|Kind|Status|Mode)[A-Za-z0-9_]*)\s*=\s*"([^"]*)"', re.M)
+
+
+def collect_enum_values(path):
+    """后端状态/类型常量：徽章里显示的 ready / pending / deploy 就是这些值。
+
+    app.js 会把它们直接塞进 <span class="badge">，源码里没有任何字面量，
+    所以纯静态扫描永远看不见 —— 2026-11-05 磁盘镜像页那几个英文就是这么漏的。
+    这些值只要后端加一个枚举，UI 上就多一处英文，所以必须在这里卡住。
+    """
+    out = {}
+    if not path.exists():
+        return out
+    for m in ENUM_CONST.finditer(path.read_text(encoding='utf-8')):
+        value = m.group(2).strip()
+        if not value:
+            continue
+        out.setdefault(value, '%s:%s' % (path.name, m.group(1)))
+    return out
+
+
 def is_candidate(text):
     if not HAS_LATIN.search(text):
         return False
@@ -157,6 +179,10 @@ def main():
     # 模板字段文案（generate.go 里的 Var 定义）
     for t, src in collect_go_labels(GEN_GO).items():
         found.setdefault(t, src)
+    # 后端枚举值：徽章直接渲染的那些（ready / pending / deploy …）
+    enums = collect_enum_values(MODELS_GO)
+    for t, src in enums.items():
+        found.setdefault(t, src)
 
     missing, fragmented = [], []
     for t in found:
@@ -172,6 +198,8 @@ def main():
     for p in (APP_JS, FORK_UI, INDEX):
         if p.exists():
             src_all += p.read_text(encoding='utf-8')
+    # 枚举值不算 stale：它们本来就不在 web/static 里
+    src_all += '\n'.join(enums)
     stale = []
     for k in zh:
         if not is_candidate(k):

@@ -1,0 +1,16 @@
+[Unit]
+Description=bootimus 汉化 DOM 审计（真实渲染扫描 → 入队 i18n-gap）
+Documentation=https://github.com/goovoz/bootimus/blob/main/ops/i18n/README.md
+After=network-online.target bootimus-i18n-autofix.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# oneshot 不带 HOME，go 推不出 GOPATH，编译临时实例会失败
+Environment=HOME=/root
+Environment=PATH=/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+EnvironmentFile=-/etc/default/bootimus-i18n-dom-audit
+ExecStart=/bin/bash /root/work/bootimus/ops/i18n/autofix-dom.sh
+TimeoutStartSec=1200
+# 1 = 扫到了新缺口并已入队，属于正常汇报
+SuccessExitStatus=0 1

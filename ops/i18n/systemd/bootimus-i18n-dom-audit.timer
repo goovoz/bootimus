@@ -1,0 +1,11 @@
+[Unit]
+Description=每天扫一次真实 DOM 的汉化缺口（05:40，排在静态审计之后）
+
+[Timer]
+OnCalendar=*-*-* 05:40:00 Asia/Shanghai
+Persistent=true
+AccuracySec=5min
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
