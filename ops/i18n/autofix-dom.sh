@@ -66,6 +66,26 @@ for i in 1 2 3; do
   curl -sS -X POST "http://127.0.0.1:$PORT/api/clients" -H "Authorization: Bearer $TOK" \
     -H 'Content-Type: application/json' -d "{\"mac\":\"aa:bb:cc:dd:ee:0$i\",\"hostname\":\"lab-0$i\"}" >/dev/null 2>&1
 done
+
+# 磁盘镜像页的徽章（READY / PENDING / deploy …）是后端字段直接渲染的：表格空着，
+# 徽章就不出现，DOM 审计也就扫不到 —— 2026-11-05 就是这么漏的。直接往 SQLite
+# 里插最小数据集，让那一页真的渲染出来。
+python3 - <<'PY' || log "  ! 预置磁盘镜像数据失败（该页徽章可能扫不到）"
+import datetime, sqlite3
+db = "/tmp/autofix-dom-data/bootimus.db"
+now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S+00:00")
+con = sqlite3.connect(db, timeout=10)
+cur = con.cursor()
+cur.execute("INSERT INTO disk_images (created_at, updated_at, name, description, source_mac, source_client_name, disk, size_bytes, state) VALUES (?,?,?,?,?,?,?,?,?)",
+            (now, now, "audit-sample", "", "aa:bb:cc:dd:ee:01", "lab-01", "sda", 4456448000, "ready"))
+img = cur.lastrowid
+for kind, state, msg in (("deploy", "pending", ""), ("deploy", "completed", ""), ("capture", "completed", ""), ("deploy", "failed", "ocs-sr_exit_1")):
+    cur.execute("INSERT INTO disk_jobs (created_at, updated_at, client_mac, client_name, kind, disk_image_id, disk, resize, state, token, message) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (now, now, "aa:bb:cc:dd:ee:01", "lab-01", kind, img, "sda", "", state, "audit-%s-%s" % (kind, state), msg))
+con.commit()
+con.close()
+print("  预置 1 个磁盘镜像 + 4 个任务")
+PY
 log "  实例就绪 :$PORT"
 
 # ---------- 2. 扫描 ----------
