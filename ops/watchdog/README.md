@@ -1,16 +1,73 @@
 # bootimus 运维巡检
 
-本目录两套**只读**巡检，都不碰 docker、不改 compose：
+本目录四套巡检，都**只读**（唯一的写操作是往 DSH 交接队列入队），不碰 docker、不改 compose：
 
-| 脚本 | 干什么 |
-|---|---|
-| `ghcr-audit.sh` | 每天问 registry「现在有哪些 tag、指向哪个 digest」，跟昨天比；`latest` 不见了才告警 |
-| `sync-watchdog.sh` | 盯 `sync-upstream` 是否失败，按失败步骤归因；瞬时故障自动重试，其余交给 AI / 人 |
+| 脚本 | 干什么 | 频率 |
+|---|---|---|
+| `ghcr-audit.sh` | 每天问 registry「现在有哪些 tag、指向哪个 digest」，跟昨天比；`latest` 不见了才告警 | 每天 |
+| `sync-watchdog.sh` | 盯 `sync-upstream` 是否失败，按失败步骤归因；瞬时故障自动重试，其余入队交给 DSH | 30 分钟 |
+| `watch-upstream.sh` | 上游 `main` 一变就催 `workflow_dispatch`（GitHub 的 cron 会迟到数小时） | 5 分钟 |
+| `sync-conflict-watch.sh` | 还有「需人工」的同步 PR / 新冲突分支挂着，就入队交给 DSH | 15 分钟 |
 
 > 早先还有一个「自动更新镜像」的 watchdog（按 `latest` 的 digest 变化拉镜像重启容器）。
 > 那个方案已经不用了：现在由 `sync-upstream` 同步成功后自动触发构建，生产端按需手动拉取。
 > 对应的 `watchdog.sh` / `replace_image.py` / `install.sh` / `bootimus-watchdog.*` / `default.env`
 > 已从仓库删除。
+
+## 上游哨兵与冲突哨兵
+
+这两块是 2026-11-06 加的，针对同一类事故：**信号只在 GitHub 页面上，没人看就等于没发生。**
+
+### 为什么需要
+
+| 事故 | 现象 | 谁看不见 |
+|---|---|---|
+| GitHub cron 不可靠 | `19:23Z` 的任务实际 `00:25Z` 才跑（迟 5h02m），前一天那次干脆没出现 | `sync-watchdog` 只能事后说「落后了」 |
+| PR 挂着没人管 | 2026-10-29～30 三条 `sync-conflict/*` 分支推上去、PR 也开了，然后静默躺着 | `sync-watchdog` 只认 **CI run 失败**，PR 是长期对象，它看不到 |
+
+### A. 上游哨兵 `watch-upstream.sh`
+
+每 5 分钟看一眼上游 `main` 的 SHA，变了就 `workflow_dispatch` 一次 `sync-upstream`（cron 保留作兜底）。
+**不判断补丁、不合并、不推送、不碰仓库内容** —— 判断仍然是 `sync-watchdog` 和 DSH 的活。
+
+四种判定，输出 `RESULT=…`：
+
+| 判定 | 含义 |
+|---|---|
+| `DISPATCH` | 上游有新提交、main 还没有、当前没有在跑的同步 → 催一次 |
+| `SKIP:already-dispatched` | 这个上游 SHA 已经催过了（状态文件记着） |
+| `SKIP:already-contained` | `compare` 返回 `identical`/`ahead`，main 已经包含它 |
+| `SKIP:running` | 已有 queued/in_progress 的同步运行，别插队 |
+
+### B. 冲突哨兵 `sync-conflict-watch.sh`
+
+判定「还需要 DSH 处理」，任一成立即入队（`kind=sync-failure`，`failure_kind=CONFLICT`，`source=pr-state`）：
+
+1. open PR 标题含「需人工」
+2. open PR 的 `mergeable_state=dirty`
+3. 没有 PR，但远端 `sync-conflict/*` 分支的 head commit 带 `Fork-Meta: conflict`（`gh pr create` 403 时的兜底）
+
+幂等键是**该分支 head SHA**：同一个 head 只入队一次，解决后 head 变了才会再来。
+超过 `BRANCH_FRESH_DAYS`（默认 3 天）的遗留分支不叫醒 DSH，交给 `prune-conflict-branches.sh`。
+
+### 安装与验证
+
+```bash
+bash ops/watchdog/install-handoff-watch.sh --dry-run   # 看计划
+bash ops/watchdog/install-handoff-watch.sh             # 装脚本 + 两个 unit + 两份 EnvironmentFile（600）
+bash ops/watchdog/watch-upstream.sh --selftest         # 3 个用例
+bash ops/watchdog/sync-conflict-watch.sh --selftest    # 6 个用例（含幂等、旧分支跳过）
+systemctl list-timers 'bootimus-*-watch.timer'
+```
+
+日志：`/var/lib/bootimus-upstream-watch/watch.log`、`/var/lib/bootimus-conflict-watch/watch.log`；
+状态：`/var/lib/bootimus-upstream-watch/state.json`（记 `last_dispatched_sha`、`dispatch_count`）。
+
+### 边界
+
+- 两个哨兵都**不修改仓库**；A 唯一的写操作是 `workflow_dispatch`，B 唯一的写操作是入队。
+- 都不调用任何模型：判断由 DSH 做，见 [../dsh/HANDOFF-PROTOCOL.md](../dsh/HANDOFF-PROTOCOL.md)。
+- 失败（取不到 API、dispatch 非 2xx）退出码 3，systemd 里会显示 failed，不会被当成「一切正常」。
 
 ## ghcr 标签巡检（只读）
 
