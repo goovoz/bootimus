@@ -140,7 +140,13 @@ C:\Users\hhh\Documents\bootimus\   DSH 工作区 bootimus（只读镜像 + 说�
 
 ### sync-failure
 
-**触发**：`sync-watchdog.sh` 判定 `health=FAILED` 且 `failure.kind` 不是 `TRANSIENT`。
+**触发**（两个来源，任务里的 `signal.source` 指明是哪一个）：
+
+- `ci-run`：`sync-watchdog.sh` 判定 `health=FAILED` 且 `failure.kind` 不是 `TRANSIENT`。
+- `pr-state`：`sync-conflict-watch.sh` 发现 open PR 标题含「需人工」、`mergeable_state=dirty`，
+  或远端 `sync-conflict/*` 分支的 head 就是那次冲突提交。这类情况**CI run 早跑完了、记录可能已被清理**，
+  只看 run 会漏 —— 2026-10-29～30 就漏过三条。处理前先 `git fetch origin`：分支可能已被
+  `prune-conflict-branches.sh` 删掉，或者上游又动了、冲突已经不成立（那就直接关 PR / 删分支并在 report 里说明）。
 
 **先看什么**（按顺序）：
 
