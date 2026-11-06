@@ -1,0 +1,13 @@
+[Unit]
+Description=每 5 分钟看一眼上游 main 有没有新提交
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+RandomizedDelaySec=20
+Persistent=true
+Unit=bootimus-upstream-watch.service
+
+[Install]
+WantedBy=timers.target

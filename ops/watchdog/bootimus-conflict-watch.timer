@@ -1,0 +1,13 @@
+[Unit]
+Description=每 15 分钟检查一次有没有「需人工」的同步 PR 挂着
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=15min
+AccuracySec=30s
+RandomizedDelaySec=45
+Persistent=true
+Unit=bootimus-conflict-watch.service
+
+[Install]
+WantedBy=timers.target
