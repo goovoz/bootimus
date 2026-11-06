@@ -1,0 +1,11 @@
+[Unit]
+Description=bootimus 冲突哨兵（有「需人工」的同步 PR 就交给 DSH）
+Documentation=https://github.com/goovoz/bootimus/blob/main/ops/watchdog/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/bootimus-conflict-watch
+ExecStart=/usr/local/sbin/bootimus-conflict-watch
+TimeoutStartSec=180
