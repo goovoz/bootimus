@@ -284,7 +284,8 @@ if [ "$HEALTH" = "FAILED" ]; then
                 TRAILER_BAD=$(printf '%s\n' "$LOG_TAIL" | grep -o '::error::提交 [0-9a-f]* [^￼]*' | head -10 | sed 's/::error:://' | tr '\n' ';')
                 DETAIL="有提交没带 Fork-Patch / Fork-Meta 标记，同步在校验阶段停手"
                 ;;
-            上游已实现*|上游未实现*|重放*)  KIND=CONFLICT;       DETAIL="补丁重放冲突，需人工解决" ;;
+            上游已实现*|上游未实现*|重放*|冲突*)
+                                            KIND=CONFLICT;       DETAIL="补丁重放冲突，需人工解决" ;;
             判定失败*)                      KIND=DETECT_UNKNOWN; DETAIL="探测器给不出判定，可能上游结构大改" ;;
             推送*)                          KIND=PERMISSION;     DETAIL="推送被拒，通常是 SYNC_TOKEN 缺失或权限不足" ;;
             编译与测试)                     KIND=TEST_FAIL;      DETAIL="重放后编译或测试不通过" ;;
