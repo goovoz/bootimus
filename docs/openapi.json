@@ -3554,7 +3554,7 @@
         "tags": [
           "Images"
         ],
-        "summary": "Partial update of an image. Omit boot_password to preserve it; an empty string removes it. Setting a password requires HTTPS. Passwords must be at most 72 bytes and cannot contain +, ; or ASCII spaces.",
+        "summary": "Partial update of an image. Omit boot_password to preserve it; an empty string removes it. Setting a password requires HTTPS. Passwords must be at most 72 bytes and cannot contain +, ; or ASCII spaces. boot_menu_exempt bypasses only the global menu password; image passwords and client visibility still apply.",
         "operationId": "putApiImages",
         "parameters": [
           {
@@ -3568,7 +3568,7 @@
           }
         ],
         "requestBody": {
-          "description": "{name, description, enabled, public, group_id, order, boot_method, distro, boot_params, auto_install_file, kernel_override, initrd_override, boot_password?}",
+          "description": "{name, description, enabled, public, group_id, order, boot_method, distro, boot_params, auto_install_file, kernel_override, initrd_override, boot_password?, boot_menu_exempt?}",
           "required": true,
           "content": {
             "application/json": {
@@ -5676,10 +5676,10 @@
         "tags": [
           "Settings"
         ],
-        "summary": "Update the boot menu theme. Omit boot_password to preserve it; an empty string removes it. Setting a password requires HTTPS. Passwords must be at most 72 bytes and cannot contain +, ; or ASCII spaces.",
+        "summary": "Update the boot menu theme. Omit boot_password to preserve it; an empty string removes it. Setting a password requires HTTPS. Passwords must be at most 72 bytes and cannot contain +, ; or ASCII spaces. Locked-menu local boot is opt-in; its timeout is 0 (wait) or 1-86400 seconds. Omitted locked-menu fields are preserved.",
         "operationId": "putApiTheme",
         "requestBody": {
-          "description": "{title, menu_timeout, default_menu_item, boot_password?}",
+          "description": "{title, menu_timeout, default_menu_item, boot_password?, locked_menu_local_boot?, locked_menu_timeout?}",
           "required": true,
           "content": {
             "application/json": {
@@ -6495,7 +6495,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 192
+=======
+        "x-bootimus-order": 188
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/autoinstall/{filename}": {
@@ -6530,7 +6534,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 196
+=======
+        "x-bootimus-order": 192
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/boot-auth": {
@@ -6565,7 +6573,54 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 205
+=======
+        "x-bootimus-order": 201
+      }
+    },
+    "/boot-menu-image": {
+      "get": {
+        "tags": [
+          "Boot"
+        ],
+        "summary": "Select an enabled, client-visible image explicitly allowed on the locked menu. Rechecks the exception and returns an image-password form when needed; never unlocks the full menu.",
+        "operationId": "getBootMenuImage",
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "query",
+            "description": "MAC address of the booting client",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "image",
+            "in": "query",
+            "description": "Image ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful response"
+          }
+        },
+        "x-bootimus-public": true,
+        "x-bootimus-readonly": true,
+        "x-bootimus-order": 187
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/boot/{cache_dir}/{path}": {
@@ -6609,7 +6664,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 195
+=======
+        "x-bootimus-order": 191
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/bootenv/{filename}": {
@@ -6644,7 +6703,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 199
+=======
+        "x-bootimus-order": 195
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/diskimage/callback": {
@@ -6704,7 +6767,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 203
+=======
+        "x-bootimus-order": 199
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/diskimage/job": {
@@ -6739,7 +6806,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 202
+=======
+        "x-bootimus-order": 198
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/files/{filename}": {
@@ -6774,7 +6845,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 198
+=======
+        "x-bootimus-order": 194
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/health": {
@@ -6849,7 +6924,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 197
+=======
+        "x-bootimus-order": 193
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/inventory": {
@@ -6884,7 +6963,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 193
+=======
+        "x-bootimus-order": 189
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/isos/{filename}": {
@@ -6919,7 +7002,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 194
+=======
+        "x-bootimus-order": 190
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/logout": {
@@ -6995,7 +7082,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 204
+=======
+        "x-bootimus-order": 200
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/menu.ipxe": {
@@ -7088,7 +7179,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 201
+=======
+        "x-bootimus-order": 197
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     },
     "/tools/{path}": {
@@ -7123,7 +7218,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 200
+=======
+        "x-bootimus-order": 196
+>>>>>>> 25738803a479914e632d164dd9043c2244bed88c
       }
     }
   },
