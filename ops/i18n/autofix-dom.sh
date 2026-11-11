@@ -80,8 +80,8 @@ cur.execute("INSERT INTO disk_images (created_at, updated_at, name, description,
             (now, now, "demo-image", "", "aa:bb:cc:dd:ee:01", "lab-01", "sda", 4456448000, "ready"))
 img = cur.lastrowid
 for kind, state, msg in (("deploy", "pending", ""), ("deploy", "completed", ""), ("capture", "completed", ""), ("deploy", "failed", "ocs-sr_exit_1")):
-    cur.execute("INSERT INTO disk_jobs (created_at, updated_at, client_mac, client_name, kind, disk_image_id, disk, resize, state, token, message) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (now, now, "aa:bb:cc:dd:ee:01", "lab-01", kind, img, "sda", "", state, "audit-%s-%s" % (kind, state), msg))
+    cur.execute("INSERT INTO disk_jobs (created_at, updated_at, client_mac, client_name, kind, disk_image_id, disk, state, token, message) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (now, now, "aa:bb:cc:dd:ee:01", "lab-01", kind, img, "sda", state, "audit-%s-%s" % (kind, state), msg))
 con.commit()
 con.close()
 print("  预置 1 个磁盘镜像 + 4 个任务")
