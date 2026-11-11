@@ -3577,7 +3577,10 @@ const SOURCE_TEXT = {
         "Driver packs": "驱动包",
         "Upload packs": "上传驱动包",
         "Apply changes": "应用更改",
-        "Windows answer files offered at boot": "启动菜单提供的 Windows 应答文件"
+        "Windows answer files offered at boot": "启动菜单提供的 Windows 应答文件",
+        "Driver build status, errors and prerequisites.": "驱动构建状态、错误与前置条件。",
+        "Skip the global menu password for this image only. Its own image password and client/profile visibility still apply. Shell, tools and other images remain locked.": "仅对此镜像跳过全局启动菜单密码。镜像自身的密码以及客户端/配置可见性仍然生效；Shell、工具和其它镜像仍保持锁定。",
+        "Upload ZIP packs containing the INF and all supporting files. Keep the vendor's folder structure. Changes take effect after you apply them.": "上传包含 INF 与全部配套文件的 ZIP 包，保留厂商的目录结构。更改在点击「应用更改」后生效。"
     }
 };
 
