@@ -1865,5 +1865,6 @@
   "Show on locked boot menu": "在锁定启动菜单中显示",
   "Driver packs": "驱动包",
   "Upload packs": "上传驱动包",
-  "Apply changes": "应用更改"
+  "Apply changes": "应用更改",
+  "Windows answer files offered at boot": "启动菜单提供的 Windows 应答文件"
 }
