@@ -3891,7 +3891,11 @@ async function copyAPIRefCurl(btn) {
     if (!wrap) return;
     const code = wrap.querySelector('code').textContent;
     try {
+<<<<<<< HEAD
         await copyTextToClipboard(code);
+=======
+        await copyText(code);
+>>>>>>> 471c60e60a6ad9c15369eb6b0a25e4e97b8477ad
         btn.classList.add('copied');
         const orig = btn.innerHTML;
         btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
@@ -4814,6 +4818,48 @@ function showUploadModal() {
 }
 
 // Utilities
+async function copyText(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try {
+            await navigator.clipboard.writeText(text);
+            return;
+        } catch (_) {
+            // Clipboard access can be denied even on HTTPS. Try the fallback.
+        }
+    }
+
+    // LAN HTTP pages have no Clipboard API. Keep this fallback in the click
+    // handler so browsers that support it still have the user's activation.
+    const active = document.activeElement;
+    const selection = window.getSelection();
+    const ranges = [];
+    if (selection) {
+        for (let i = 0; i < selection.rangeCount; i++) {
+            ranges.push(selection.getRangeAt(i).cloneRange());
+        }
+    }
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.readOnly = true;
+    field.tabIndex = -1;
+    field.style.cssText = 'position: fixed; left: -9999px; top: 0; opacity: 0';
+    document.body.appendChild(field);
+    try {
+        field.focus({ preventScroll: true });
+        field.select();
+        if (!document.execCommand('copy')) {
+            throw new Error('Select the text and copy it manually.');
+        }
+    } finally {
+        field.remove();
+        if (active instanceof HTMLElement) active.focus({ preventScroll: true });
+        if (selection) {
+            selection.removeAllRanges();
+            ranges.forEach(range => selection.addRange(range));
+        }
+    }
+}
+
 function showModal(id) {
     const modal = document.getElementById(id);
     applyReadOnlyToModal(modal);
@@ -6099,6 +6145,7 @@ async function deleteFile(fileId, filename) {
     }
 }
 
+<<<<<<< HEAD
 // [bootimus-fork L1] fork-patch: clipboard-fallback
 // navigator.clipboard 只在安全上下文（HTTPS 或 localhost）里存在。用 http://<内网IP>:<端口>
 // 打开管理台时它是 undefined，直接调用会抛 TypeError —— 而且是同步抛出，连 .catch() 都
@@ -6145,6 +6192,25 @@ async function copyFileDownloadURL(filename) {
     if (await copyTextToClipboard(url)) {
         showNotification('Download URL copied to clipboard', 'success');
     } else {
+=======
+function copyFileDownloadURL(filename) {
+    const serverAddr = window.location.hostname;
+    const port = 8080;
+    const url = `http://${serverAddr}:${port}/files/${filename}`;
+
+    copyText(url).then(() => {
+        showNotification('Download URL copied to clipboard', 'success');
+    }).catch(() => {
+        showNotification('Failed to copy URL', 'error');
+    });
+}
+
+function copyFileURL() {
+    const url = document.getElementById('edit-file-url').textContent;
+    copyText(url).then(() => {
+        showNotification('URL copied to clipboard', 'success');
+    }).catch(() => {
+>>>>>>> 471c60e60a6ad9c15369eb6b0a25e4e97b8477ad
         showNotification('Failed to copy URL', 'error');
     }
 }
@@ -9013,7 +9079,11 @@ async function previewBootMenu(mac) {
 async function copyMenuPreview() {
     if (!menuPreviewData) return;
     try {
+<<<<<<< HEAD
         await copyTextToClipboard(menuPreviewData.script || '');
+=======
+        await copyText(menuPreviewData.script || '');
+>>>>>>> 471c60e60a6ad9c15369eb6b0a25e4e97b8477ad
         showAlert('Boot menu script copied', 'success');
     } catch (err) {
         showAlert('Copy failed: ' + err.message, 'error');
@@ -9272,7 +9342,11 @@ async function createAPIToken(e) {
 async function copyAPITokenSecret() {
     const secret = document.getElementById('api-token-secret-value').textContent;
     try {
+<<<<<<< HEAD
         await copyTextToClipboard(secret);
+=======
+        await copyText(secret);
+>>>>>>> 471c60e60a6ad9c15369eb6b0a25e4e97b8477ad
         showAlert('Token copied', 'success');
     } catch (err) {
         showAlert('Copy failed: ' + err.message, 'error');
@@ -9393,7 +9467,11 @@ async function enableTOTP() {
 
 async function copyTOTPRecoveryCodes() {
     try {
+<<<<<<< HEAD
         await copyTextToClipboard(document.getElementById('totp-recovery-codes').textContent);
+=======
+        await copyText(document.getElementById('totp-recovery-codes').textContent);
+>>>>>>> 471c60e60a6ad9c15369eb6b0a25e4e97b8477ad
         showAlert('Recovery codes copied', 'success');
     } catch (err) {
         showAlert('Copy failed: ' + err.message, 'error');
