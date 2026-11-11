@@ -1858,5 +1858,12 @@
   "installed": "已安装",
   "installing": "安装中",
   "booted": "已启动",
-  "running": "运行中"
+  "running": "运行中",
+  "Default to local disk on the locked menu": "锁定菜单默认从本地磁盘启动",
+  "Locked menu timeout (seconds)": "锁定菜单超时（秒）",
+  "Drivers": "驱动",
+  "Show on locked boot menu": "在锁定启动菜单中显示",
+  "Driver packs": "驱动包",
+  "Upload packs": "上传驱动包",
+  "Apply changes": "应用更改"
 }
