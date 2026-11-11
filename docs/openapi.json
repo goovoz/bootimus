@@ -215,7 +215,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 187
+=======
+        "x-bootimus-order": 183
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/auth-info": {
@@ -596,7 +600,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 170
+=======
+        "x-bootimus-order": 166
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/backup/import": {
@@ -620,7 +628,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 173
+=======
+        "x-bootimus-order": 169
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "get": {
         "tags": [
@@ -642,7 +654,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 172
+=======
+        "x-bootimus-order": 168
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "post": {
         "tags": [
@@ -680,7 +696,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 171
+=======
+        "x-bootimus-order": 167
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/bootloaders": {
@@ -888,7 +908,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 177
+=======
+        "x-bootimus-order": 173
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/client-groups": {
@@ -1903,7 +1927,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 132
+=======
+        "x-bootimus-order": 130
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "post": {
         "tags": [
@@ -1936,7 +1964,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 133
+=======
+        "x-bootimus-order": 131
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/config": {
@@ -1971,7 +2003,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 136
+=======
+        "x-bootimus-order": 134
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "post": {
         "tags": [
@@ -2015,7 +2051,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 137
+=======
+        "x-bootimus-order": 135
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/config/template": {
@@ -2059,7 +2099,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 138
+=======
+        "x-bootimus-order": 136
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/delete": {
@@ -2094,7 +2138,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 135
+=======
+        "x-bootimus-order": 133
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/nodes": {
@@ -2129,7 +2177,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 139
+=======
+        "x-bootimus-order": 137
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/nodes/assign": {
@@ -2164,7 +2216,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 140
+=======
+        "x-bootimus-order": 138
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/nodes/mark-installed": {
@@ -2199,7 +2255,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 143
+=======
+        "x-bootimus-order": 141
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/nodes/reinstall": {
@@ -2234,7 +2294,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 142
+=======
+        "x-bootimus-order": 140
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/nodes/unassign": {
@@ -2269,7 +2333,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 141
+=======
+        "x-bootimus-order": 139
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/clusters/update": {
@@ -2315,7 +2383,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 134
+=======
+        "x-bootimus-order": 132
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/deployment-profiles": {
@@ -2824,7 +2896,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 130
+=======
+        "x-bootimus-order": 128
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/drivers/rebuild": {
@@ -2832,8 +2908,43 @@
         "tags": [
           "Driver Packs"
         ],
-        "summary": "Rebuild boot.wim with the driver packs.",
+        "summary": "Apply driver changes in the background; poll /api/drivers/status for completion.",
         "operationId": "postApiDriversRebuild",
+        "parameters": [
+          {
+            "name": "imageId",
+            "in": "query",
+            "description": "Image ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            },
+            "description": "Rebuild accepted; completion is reported by the status endpoint"
+          }
+        },
+        "x-bootimus-public": false,
+        "x-bootimus-readonly": false,
+        "x-bootimus-order": 129
+      }
+    },
+    "/api/drivers/status": {
+      "get": {
+        "tags": [
+          "Driver Packs"
+        ],
+        "summary": "Driver build status, errors and prerequisites.",
+        "operationId": "getApiDriversStatus",
         "parameters": [
           {
             "name": "imageId",
@@ -2858,8 +2969,13 @@
           }
         },
         "x-bootimus-public": false,
+<<<<<<< HEAD
         "x-bootimus-readonly": false,
         "x-bootimus-order": 131
+=======
+        "x-bootimus-readonly": true,
+        "x-bootimus-order": 126
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/drivers/upload": {
@@ -2903,7 +3019,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 129
+=======
+        "x-bootimus-order": 127
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/enrolment-rules": {
@@ -3416,7 +3536,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 174
+=======
+        "x-bootimus-order": 170
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "put": {
         "tags": [
@@ -3449,7 +3573,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 175
+=======
+        "x-bootimus-order": 171
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/housekeeping/run": {
@@ -3473,7 +3601,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 176
+=======
+        "x-bootimus-order": 172
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/images": {
@@ -3554,7 +3686,7 @@
         "tags": [
           "Images"
         ],
-        "summary": "Partial update of an image. Omit boot_password to preserve it; an empty string removes it. Setting a password requires HTTPS. Passwords must be at most 72 bytes and cannot contain +, ; or ASCII spaces.",
+        "summary": "Partial update of an image. Omit boot_password to preserve it; an empty string removes it. Setting a password requires HTTPS. Passwords must be at most 72 bytes and cannot contain +, ; or ASCII spaces. boot_menu_exempt bypasses only the global menu password; image passwords and client visibility still apply.",
         "operationId": "putApiImages",
         "parameters": [
           {
@@ -3568,7 +3700,7 @@
           }
         ],
         "requestBody": {
-          "description": "{name, description, enabled, public, group_id, order, boot_method, distro, boot_params, auto_install_file, kernel_override, initrd_override, boot_password?}",
+          "description": "{name, description, enabled, public, group_id, order, boot_method, distro, boot_params, auto_install_file, kernel_override, initrd_override, boot_password?, boot_menu_exempt?}",
           "required": true,
           "content": {
             "application/json": {
@@ -4380,7 +4512,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 148
+=======
+        "x-bootimus-order": 146
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/login": {
@@ -4457,7 +4593,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 184
+=======
+        "x-bootimus-order": 180
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/logs/buffer": {
@@ -4481,7 +4621,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 186
+=======
+        "x-bootimus-order": 182
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/logs/stream": {
@@ -4505,7 +4649,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 185
+=======
+        "x-bootimus-order": 181
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/me": {
@@ -4647,7 +4795,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 144
+=======
+        "x-bootimus-order": 142
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "post": {
         "tags": [
@@ -4680,7 +4832,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 145
+=======
+        "x-bootimus-order": 143
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/node-images/delete": {
@@ -4715,7 +4871,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 147
+=======
+        "x-bootimus-order": 145
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/node-images/download": {
@@ -4750,7 +4910,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 146
+=======
+        "x-bootimus-order": 144
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/oidc/callback": {
@@ -5021,7 +5185,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 188
+=======
+        "x-bootimus-order": 184
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/proxydhcp/events/clear": {
@@ -5045,7 +5213,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 190
+=======
+        "x-bootimus-order": 186
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/proxydhcp/stream": {
@@ -5069,7 +5241,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 189
+=======
+        "x-bootimus-order": 185
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/replica/status": {
@@ -5093,7 +5269,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 182
+=======
+        "x-bootimus-order": 178
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/replica/sync": {
@@ -5117,7 +5297,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 183
+=======
+        "x-bootimus-order": 179
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/san-targets": {
@@ -5299,7 +5483,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 152
+=======
+        "x-bootimus-order": 150
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "post": {
         "tags": [
@@ -5332,7 +5520,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 153
+=======
+        "x-bootimus-order": 151
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/scheduled-tasks/delete": {
@@ -5367,7 +5559,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 155
+=======
+        "x-bootimus-order": 153
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/scheduled-tasks/run": {
@@ -5402,7 +5598,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 156
+=======
+        "x-bootimus-order": 154
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/scheduled-tasks/update": {
@@ -5448,7 +5648,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 154
+=======
+        "x-bootimus-order": 152
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/server-info": {
@@ -5563,7 +5767,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 181
+=======
+        "x-bootimus-order": 177
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/sync/boot-verifiers": {
@@ -5587,7 +5795,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 179
+=======
+        "x-bootimus-order": 175
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/sync/manifest": {
@@ -5611,7 +5823,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 178
+=======
+        "x-bootimus-order": 174
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/sync/tool-files": {
@@ -5646,7 +5862,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 180
+=======
+        "x-bootimus-order": 176
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/theme": {
@@ -5670,16 +5890,20 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 166
+=======
+        "x-bootimus-order": 164
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "put": {
         "tags": [
           "Settings"
         ],
-        "summary": "Update the boot menu theme. Omit boot_password to preserve it; an empty string removes it. Setting a password requires HTTPS. Passwords must be at most 72 bytes and cannot contain +, ; or ASCII spaces.",
+        "summary": "Update the boot menu theme. Omit boot_password to preserve it; an empty string removes it. Setting a password requires HTTPS. Passwords must be at most 72 bytes and cannot contain +, ; or ASCII spaces. Locked-menu local boot is opt-in; its timeout is 0 (wait) or 1-86400 seconds. Omitted locked-menu fields are preserved.",
         "operationId": "putApiTheme",
         "requestBody": {
-          "description": "{title, menu_timeout, default_menu_item, boot_password?}",
+          "description": "{title, menu_timeout, default_menu_item, boot_password?, locked_menu_local_boot?, locked_menu_timeout?}",
           "required": true,
           "content": {
             "application/json": {
@@ -5703,7 +5927,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 169
+=======
+        "x-bootimus-order": 165
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/tokens": {
@@ -5746,7 +5974,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 165
+=======
+        "x-bootimus-order": 163
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "get": {
         "tags": [
@@ -5768,7 +6000,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 163
+=======
+        "x-bootimus-order": 161
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "post": {
         "tags": [
@@ -5801,7 +6037,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 164
+=======
+        "x-bootimus-order": 162
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/tools": {
@@ -6210,7 +6450,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 160
+=======
+        "x-bootimus-order": 158
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "get": {
         "tags": [
@@ -6232,7 +6476,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 157
+=======
+        "x-bootimus-order": 155
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "post": {
         "tags": [
@@ -6265,7 +6513,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 158
+=======
+        "x-bootimus-order": 156
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "put": {
         "tags": [
@@ -6309,7 +6561,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 159
+=======
+        "x-bootimus-order": 157
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/users/reset-password": {
@@ -6355,7 +6611,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 161
+=======
+        "x-bootimus-order": 159
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/users/totp/reset": {
@@ -6390,7 +6650,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 162
+=======
+        "x-bootimus-order": 160
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/webhook": {
@@ -6414,7 +6678,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 149
+=======
+        "x-bootimus-order": 147
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       },
       "put": {
         "tags": [
@@ -6447,7 +6715,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 150
+=======
+        "x-bootimus-order": 148
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/api/webhook/test": {
@@ -6471,7 +6743,11 @@
         },
         "x-bootimus-public": false,
         "x-bootimus-readonly": false,
+<<<<<<< HEAD
         "x-bootimus-order": 151
+=======
+        "x-bootimus-order": 149
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/autoexec.ipxe": {
@@ -6495,7 +6771,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 192
+=======
+        "x-bootimus-order": 189
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/autoinstall/{filename}": {
@@ -6530,7 +6810,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 196
+=======
+        "x-bootimus-order": 193
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/boot-auth": {
@@ -6565,7 +6849,54 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 205
+=======
+        "x-bootimus-order": 202
+      }
+    },
+    "/boot-menu-image": {
+      "get": {
+        "tags": [
+          "Boot"
+        ],
+        "summary": "Select an enabled, client-visible image explicitly allowed on the locked menu. Rechecks the exception and returns an image-password form when needed; never unlocks the full menu.",
+        "operationId": "getBootMenuImage",
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "query",
+            "description": "MAC address of the booting client",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "image",
+            "in": "query",
+            "description": "Image ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful response"
+          }
+        },
+        "x-bootimus-public": true,
+        "x-bootimus-readonly": true,
+        "x-bootimus-order": 188
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/boot/{cache_dir}/{path}": {
@@ -6609,7 +6940,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 195
+=======
+        "x-bootimus-order": 192
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/bootenv/{filename}": {
@@ -6644,7 +6979,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 199
+=======
+        "x-bootimus-order": 196
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/diskimage/callback": {
@@ -6704,7 +7043,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 203
+=======
+        "x-bootimus-order": 200
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/diskimage/job": {
@@ -6739,7 +7082,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 202
+=======
+        "x-bootimus-order": 199
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/files/{filename}": {
@@ -6774,7 +7121,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 198
+=======
+        "x-bootimus-order": 195
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/health": {
@@ -6849,7 +7200,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 197
+=======
+        "x-bootimus-order": 194
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/inventory": {
@@ -6884,7 +7239,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 193
+=======
+        "x-bootimus-order": 190
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/isos/{filename}": {
@@ -6919,7 +7278,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 194
+=======
+        "x-bootimus-order": 191
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/logout": {
@@ -6995,7 +7358,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 204
+=======
+        "x-bootimus-order": 201
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/menu.ipxe": {
@@ -7029,7 +7396,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 191
+=======
+        "x-bootimus-order": 187
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/metrics": {
@@ -7088,7 +7459,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 201
+=======
+        "x-bootimus-order": 198
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     },
     "/tools/{path}": {
@@ -7123,7 +7498,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 200
+=======
+        "x-bootimus-order": 197
+>>>>>>> e1da6125d049ec43bc5a08558d20beb605720662
       }
     }
   },
