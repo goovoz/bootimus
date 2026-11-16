@@ -6565,7 +6565,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 198
+=======
+        "x-bootimus-order": 194
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/boot-auth": {
@@ -6600,7 +6604,78 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 207
+=======
+        "x-bootimus-order": 203
+      }
+    },
+    "/boot-event": {
+      "get": {
+        "tags": [
+          "Boot"
+        ],
+        "summary": "Record that a client started booting an image, tool, SAN target or disk imaging job. The generated menu calls it once per boot; pass exactly one of image, tool, san or diskimage. Always answers with an empty iPXE script so a failed record never blocks the boot.",
+        "operationId": "getBootEvent",
+        "parameters": [
+          {
+            "name": "mac",
+            "in": "query",
+            "description": "MAC address of the booting client",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "image",
+            "in": "query",
+            "description": "ID of an enabled image visible to the client",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "description": "Name of an enabled tool",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "san",
+            "in": "query",
+            "description": "ID of a SAN target",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "diskimage",
+            "in": "query",
+            "description": "Set to 1 when the client boots its active disk imaging job",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Response"
+                }
+              }
+            },
+            "description": "Successful response"
+          }
+        },
+        "x-bootimus-public": true,
+        "x-bootimus-readonly": true,
+        "x-bootimus-order": 191
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/boot-menu-image": {
@@ -6687,7 +6762,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 197
+=======
+        "x-bootimus-order": 193
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/bootenv/{filename}": {
@@ -6722,7 +6801,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 201
+=======
+        "x-bootimus-order": 197
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/diskimage/callback": {
@@ -6782,7 +6865,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 205
+=======
+        "x-bootimus-order": 201
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/diskimage/job": {
@@ -6817,7 +6904,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 204
+=======
+        "x-bootimus-order": 200
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/files/{filename}": {
@@ -6852,7 +6943,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 200
+=======
+        "x-bootimus-order": 196
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/health": {
@@ -6927,7 +7022,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 199
+=======
+        "x-bootimus-order": 195
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/inventory": {
@@ -6997,7 +7096,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 196
+=======
+        "x-bootimus-order": 192
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/logout": {
@@ -7073,7 +7176,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 206
+=======
+        "x-bootimus-order": 202
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/menu.ipxe": {
@@ -7166,7 +7273,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 203
+=======
+        "x-bootimus-order": 199
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     },
     "/tools/{path}": {
@@ -7201,7 +7312,11 @@
         },
         "x-bootimus-public": true,
         "x-bootimus-readonly": true,
+<<<<<<< HEAD
         "x-bootimus-order": 202
+=======
+        "x-bootimus-order": 198
+>>>>>>> 1078289b1854139772eda27b8ecd45a6fc813391
       }
     }
   },
