@@ -1,0 +1,12 @@
+name: Test Call
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  call-cache:
+    uses: ./.github/workflows/cache-housekeeping.yml
+    secrets: inherit
