@@ -5,7 +5,8 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
-  call-hello:
-    uses: ./.github/workflows/test-hello.yml
+  call-cache:
+    uses: ./.github/workflows/cache-housekeeping.yml
