@@ -2,7 +2,7 @@ name: Ops Housekeeping (fork)
 
 # 合并原 4 个每日巡检 cron（patch-risk / cache-housekeeping / ghcr-retention / dockerhub-retention）
 # 为单一调度入口，顺序串跑；各子 workflow 仍可单独手动触发，retention 的
-# workflow_run（Release 完成后清理）触发不变。
+# workflow_run（Release 完成后清理）触发不变。注册刷新：2026-11-24
 on:
   schedule:
     - cron: "23 20 * * *" # 每天 20:23 UTC（北京时间次日 04:23）
