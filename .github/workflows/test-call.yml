@@ -7,6 +7,5 @@ permissions:
   contents: read
 
 jobs:
-  call-cache:
-    uses: ./.github/workflows/cache-housekeeping.yml
-    secrets: inherit
+  call-hello:
+    uses: ./.github/workflows/test-hello.yml
