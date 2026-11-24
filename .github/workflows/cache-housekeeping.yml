@@ -14,8 +14,6 @@ name: Cache housekeeping (fork)
 #   dry_run    true 只看计划，不删
 
 on:
-  schedule:
-    - cron: "23 20 * * *" # 每天 20:23 UTC（北京时间次日 04:23）
   workflow_dispatch:
     inputs:
       budget_gb:
@@ -26,6 +24,8 @@ on:
         description: "true = 只打印计划，不删除"
         required: false
         default: "false"
+
+  workflow_call:
 
 permissions:
   actions: write # 列出并删除 Actions 缓存

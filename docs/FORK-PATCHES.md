@@ -624,7 +624,7 @@ housekeeping、安装记录、副本同步等），fork 的补丁在这个基线
 
 - `fork-release.yml` 的 docker job 里「构建前腾缓存空间」（`BUDGET_GB=6`，`continue-on-error`
   保证清理失败不挡发布）——这是**跑构建前的机制性清理**
-- `cache-housekeeping.yml`：每天 04:23（北京时间）+ 手动，兜底扫一遍
+- `cache-housekeeping.yml`：每天 04:23（北京时间，由 ops-housekeeping.yml 合并调度）+ 手动，兜底扫一遍
 
 手动演练：Actions → `Cache housekeeping (fork)` → `dry_run=true`。
 
@@ -707,7 +707,7 @@ func (s *SQLiteStore) AutoMigrate() error {
 
 什么时候跑：
 
-- `patch-risk.yml`：push 到 main 和每天 04:37（北京时间）各跑一次，带审计器自测
+- `patch-risk.yml`：push 到 main 和每天 04:23（北京时间，由 ops-housekeeping.yml 合并调度）各跑一次，带审计器自测
 - `sync-upstream.yml`：上游有新提交时，rebase **之前**先跑一次，把结果写进 Job Summary，
   这样失败时能直接看到「是哪个补丁、哪个文件、几行」
 

@@ -13,8 +13,6 @@ on:
   workflow_run:
     workflows: ["Release (fork)"]
     types: [completed]
-  schedule:
-    - cron: "37 21 * * *" # 05:37 CST
   workflow_dispatch:
     inputs:
       dry_run:
@@ -29,6 +27,8 @@ on:
         description: "额外保留的 tag（逗号分隔；留空则按默认策略）"
         required: false
         default: ""
+
+  workflow_call:
 
 permissions:
   contents: read

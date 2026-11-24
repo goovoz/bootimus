@@ -34,6 +34,7 @@ on:
       - "v*"
     # 纯文档/巡检脚本改了不用重建镜像。ops/i18n 不能排除 —— 它会改 i18n.js。
     paths-ignore:
+      - ".github/**"
       - "**.md"
       - "docs/**"
       - "ops/watchdog/**"
